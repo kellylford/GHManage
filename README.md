@@ -9,6 +9,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, and workflow runs
+- **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (30 at a time)
@@ -61,6 +62,7 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl++` | View More — load the next page of items |
 | `Ctrl+O` | Open the selected item on GitHub in your browser |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
+| `Ctrl+B` | Select a branch for the Commits view (commits view only) |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
@@ -75,6 +77,12 @@ python ghviewer.py --repo owner/repo-name
 | `O` | Reopen the selected issue/PR |
 | `M` or `Ctrl+M` | Add a comment to the selected item |
 
+### In the branches view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Switch to Commits view for the selected branch |
+
 ### View menu → Show
 
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**, and **Workflow Runs**.
@@ -83,8 +91,13 @@ Each view has its own set of columns and detail formatting.
 ## Building a standalone executable
 
 ```bash
-pip install pyinstaller
-pyinstaller --noconsole --name ghmanage ghviewer.py
+build.bat
 ```
 
-The executable will be in `dist/ghmanage/`.
+Or with a clean build:
+
+```bash
+build.bat clean
+```
+
+The executable will be in `dist/ghmanage.exe`. See `build.bat` for details.

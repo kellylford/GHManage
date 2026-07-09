@@ -6,7 +6,7 @@
 ## What This Project Is
 
 **GHManage** (package name `ghviewer`) is a **wxPython desktop GUI** for viewing and managing
-GitHub issues, pull requests, and (coming) git metadata — branches, commits, tags, releases,
+GitHub issues, pull requests, and git metadata — branches, commits, tags, releases,
 and CI workflow runs. It is designed specifically to be **screen-reader-friendly** without being
 patronizing: keyboard-first navigation, a "Full mode" that includes field names in list rows,
 status-bar announcements, and comment navigation via Alt+N/Alt+P.
@@ -43,7 +43,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `Item` — dataclass for issues/PRs. Has `to_row(columns)` and `to_accessible_string(columns)`.
 - `_run_gh(args)` — runs `gh` subprocess, returns stdout, raises `GhError` on failure.
 - `fetch_issues(repo, state, limit)` / `fetch_prs(repo, state, limit)` — list issues/PRs.
-- `fetch_item_detail(item, repo)` — re-fetch a single item with full detail.
+- `fetch_branches(repo, limit)` — list branches via REST API.
+- `fetch_commits(repo, branch, limit)` — list commits, optionally for a specific branch.
+- `fetch_commit_detail(repo, sha)` — full commit with file changes.
+- `fetch_tags(repo, limit)` / `fetch_releases(repo, limit)` / `fetch_workflow_runs(repo, limit)`.
+- `fetch_compare(repo, base, head)` — compare two refs.
+- `fetch_item_detail(item, repo)` — re-fetch a single issue/PR with full detail.
 - `close_item` / `reopen_item` / `add_comment` — actions on issues/PRs.
 - `list_repos(limit)` — list user's GitHub repos.
 - `detect_repo()` — detect repo from current git directory.
@@ -51,13 +56,17 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 ### ghviewer.py
 
-- `GhViewerFrame` — main window. Owns all state: `repo`, `items`, `columns`, `sort_order`,
-  `list_mode`, `state_filter`, `tab_filter`, `page_size`, `current_limit`.
+- `GhViewerFrame` — main window. Owns all state: `repo`, `items`, `git_items`, `columns`,
+  `sort_order`, `list_mode`, `state_filter`, `tab_filter`, `page_size`, `current_limit`,
+  `view_mode`, `commit_branch`.
 - `_build_ui` / `_build_menu` / `_bind_events` — construction.
-- `_load_items` — background fetch + populate list.
-- `_show_details(idx)` — populate the details TextCtrl for a selected item.
+- `_load_items` — background fetch + populate list (dispatches by `view_mode`).
+- `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases, Workflow.
+- `_show_details(idx)` — dispatches to `_show_issue_details` or `_show_git_details`.
 - `_navigate_comment(direction)` — Alt+N/Alt+P comment jumping.
-- `_refresh_list_display` — re-populate list from `self.items` without re-fetching.
+- `_refresh_list_display` — re-populate list from `self.items` or `self.git_items` without re-fetching.
+- `on_item_activated` — context-dependent: in Branches view, Enter switches to Commits for that branch; otherwise opens in browser.
+- `on_select_branch` — Ctrl+B branch picker dialog for Commits view.
 
 ## Conventions
 
@@ -121,11 +130,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 - v0.1.0 — initial release
 - v0.1.1 — fixed missing issues (paging), added View More
+- v0.1.2 — git views: branches, commits, tags, releases, workflow runs
+- v0.1.3 — branch-specific commits: Enter on a branch switches to its commits, Ctrl+B branch picker
 
 ## Roadmap
 
-- **Git integration** — branches, commits, tags, releases, workflow runs as browsable lists.
 - **PR diff view** — show file-level changes for a PR in the details panel.
-- **Workflow run status** — see CI status inline without going to browser.
 - **Branch comparison** — compare two branches or tags, show commits and file changes.
 - **Multi-repo dashboard** — watch multiple repos at once.
+- **Workflow run filtering** — filter workflow runs by branch.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghviewer"
-version = "0.1.2"
+version = "0.1.3"
 description = "A wxPython GUI viewer and manager for GitHub issues and pull requests"
 readme = "README.md"
 requires-python = ">=3.9"

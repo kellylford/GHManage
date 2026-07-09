@@ -80,6 +80,7 @@ ID_VIEW_COMMITS = wx.NewIdRef()
 ID_VIEW_TAGS = wx.NewIdRef()
 ID_VIEW_RELEASES = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
+ID_SELECT_BRANCH = wx.NewIdRef()
 
 
 # View modes
@@ -127,6 +128,7 @@ class GhViewerFrame(wx.Frame):
         self.current_limit: int = 30  # current fetch limit (grows via View More)
         self.view_mode: str = VIEW_ISSUES  # current view: issues, branches, commits, etc.
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
+        self.commit_branch: str = ""  # branch for commits view ("" = default branch)
 
         self._build_ui()
         self._bind_events()
@@ -257,6 +259,7 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_REOPEN, "Reopen\tCtrl+Shift+W")
         file_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
+        file_menu.Append(ID_SELECT_BRANCH, "Select Branch…\tCtrl+B")
         file_menu.AppendSeparator()
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
@@ -391,6 +394,9 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == mode:
             return
         self.view_mode = mode
+        # Reset commit branch when leaving commits view
+        if mode != VIEW_COMMITS:
+            self.commit_branch = ""
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
         self.columns = list(default_cols)
@@ -416,6 +422,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
+        self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
         self.Bind(wx.EVT_MENU, self.on_next_comment, id=ID_NEXT_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_prev_comment, id=ID_PREV_COMMENT)
@@ -507,7 +514,7 @@ class GhViewerFrame(wx.Frame):
                     branches = fetch_branches(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, branches, "branches")
                 elif self.view_mode == VIEW_COMMITS:
-                    commits = fetch_commits(self.repo, limit=self.current_limit)
+                    commits = fetch_commits(self.repo, self.commit_branch, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, commits, "commits")
                 elif self.view_mode == VIEW_TAGS:
                     tags = fetch_tags(self.repo, self.current_limit)
@@ -563,10 +570,14 @@ class GhViewerFrame(wx.Frame):
                     self.list_ctrl.InsertItem(i, label)
                 else:
                     self.list_ctrl.SetItem(i, j, label)
+        # Build status text — include branch name for commits view
+        branch_info = ""
+        if self.view_mode == VIEW_COMMITS:
+            branch_info = f" on {self.commit_branch}" if self.commit_branch else " on default branch"
         self.SetStatusText(
-            f"{self.repo} — {len(items)} {kind}. "
+            f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
-            f"Ctrl++=view more  R=refresh  "
+            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  "
             f"Mode={self.list_mode}"
         )
         if items:
@@ -664,6 +675,8 @@ class GhViewerFrame(wx.Frame):
         elif isinstance(item, Commit):
             lines.append(f"Commit: {item.sha}")
             lines.append(f"Short SHA: {item.short_sha}")
+            branch = self.commit_branch if self.commit_branch else "default branch"
+            lines.append(f"Branch: {branch}")
             lines.append(f"Author: {item.author}")
             lines.append(f"Date: {item.date}")
             lines.append(f"URL: {item.url}")
@@ -741,10 +754,17 @@ class GhViewerFrame(wx.Frame):
                 self._announce(item.to_accessible_string(self.columns))
 
     def on_item_activated(self, event: wx.ListEvent) -> None:
-        """Double-click or Enter — open in browser."""
+        """Double-click or Enter — context-dependent action."""
         item = self._focused_item()
         if not item:
             return
+        # In Branches view, Enter switches to Commits for that branch
+        if self.view_mode == VIEW_BRANCHES and isinstance(item, Branch):
+            self.commit_branch = item.name
+            self._switch_view(VIEW_COMMITS)
+            self._announce(f"Showing commits on branch {item.name}")
+            return
+        # All other views: open in browser
         url = getattr(item, "url", "") or ""
         if url:
             webbrowser.open(url)
@@ -887,6 +907,53 @@ class GhViewerFrame(wx.Frame):
                 self._announce(f"Jumped to #{number} — {item.title}")
                 return
         self._announce(f"#{number} not found in the current list.")
+
+    def on_select_branch(self, event: wx.CommandEvent) -> None:
+        """Ctrl+B — select which branch to view commits for."""
+        if self.view_mode != VIEW_COMMITS:
+            self._announce("Select Branch is only available in Commits view.")
+            return
+        if not self.repo:
+            self._announce("No repository loaded.")
+            return
+        # Fetch branch names in background, then show a selection dialog
+        self._announce("Loading branches…")
+
+        def worker() -> None:
+            try:
+                branches = fetch_branches(self.repo, 200)
+                names = [b.name for b in branches]
+                wx.CallAfter(self._show_branch_picker, names)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_branch_picker(self, names: list[str]) -> None:
+        """Show a dialog to pick a branch for the commits view."""
+        if not names:
+            self._announce("No branches found.")
+            return
+        current = self.commit_branch if self.commit_branch else names[0]
+        dlg = wx.SingleChoiceDialog(
+            self,
+            "Select a branch to view commits:",
+            "Select Branch",
+            names,
+        )
+        # Try to pre-select the current branch
+        if current in names:
+            dlg.SetSelection(names.index(current))
+        if dlg.ShowModal() == wx.ID_OK:
+            selected = dlg.GetStringSelection()
+            dlg.Destroy()
+            if selected and selected != self.commit_branch:
+                self.commit_branch = selected
+                self.current_limit = self.page_size
+                self._load_items()
+                self._announce(f"Showing commits on branch {selected}")
+        else:
+            dlg.Destroy()
 
     def on_quit(self, event: wx.CommandEvent) -> None:
         self.Destroy()
