@@ -14,16 +14,39 @@ import wx
 
 from gh_data import (
     ALL_COLUMNS,
+    BRANCH_COLUMNS,
+    BRANCH_DEFAULT_COLUMNS,
+    BRANCH_COLUMNS,
+    BRANCH_DEFAULT_COLUMNS,
+    COMMIT_COLUMNS,
+    COMMIT_DEFAULT_COLUMNS,
     DEFAULT_COLUMNS,
     GhError,
     Item,
+    RELEASE_COLUMNS,
+    RELEASE_DEFAULT_COLUMNS,
     SORT_ORDERS,
+    TAG_COLUMNS,
+    TAG_DEFAULT_COLUMNS,
+    WORKFLOW_COLUMNS,
+    WORKFLOW_DEFAULT_COLUMNS,
+    Branch,
+    Commit,
+    Release,
+    Tag,
+    WorkflowRun,
     add_comment,
     close_item,
     detect_repo,
+    fetch_branches,
+    fetch_commits,
+    fetch_commit_detail,
     fetch_issues,
     fetch_item_detail,
     fetch_prs,
+    fetch_releases,
+    fetch_tags,
+    fetch_workflow_runs,
     list_repos,
     open_in_browser,
     reopen_item,
@@ -51,6 +74,31 @@ ID_GOTO = wx.NewIdRef()
 ID_NEXT_COMMENT = wx.NewIdRef()
 ID_PREV_COMMENT = wx.NewIdRef()
 ID_VIEW_MORE = wx.NewIdRef()
+ID_VIEW_ISSUES = wx.NewIdRef()
+ID_VIEW_BRANCHES = wx.NewIdRef()
+ID_VIEW_COMMITS = wx.NewIdRef()
+ID_VIEW_TAGS = wx.NewIdRef()
+ID_VIEW_RELEASES = wx.NewIdRef()
+ID_VIEW_WORKFLOW = wx.NewIdRef()
+
+
+# View modes
+VIEW_ISSUES = "issues"
+VIEW_BRANCHES = "branches"
+VIEW_COMMITS = "commits"
+VIEW_TAGS = "tags"
+VIEW_RELEASES = "releases"
+VIEW_WORKFLOW = "workflow"
+
+# Column defaults per view mode
+VIEW_COLUMNS = {
+    VIEW_ISSUES: (DEFAULT_COLUMNS, ALL_COLUMNS),
+    VIEW_BRANCHES: (BRANCH_DEFAULT_COLUMNS, BRANCH_COLUMNS),
+    VIEW_COMMITS: (COMMIT_DEFAULT_COLUMNS, COMMIT_COLUMNS),
+    VIEW_TAGS: (TAG_DEFAULT_COLUMNS, TAG_COLUMNS),
+    VIEW_RELEASES: (RELEASE_DEFAULT_COLUMNS, RELEASE_COLUMNS),
+    VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
+}
 
 
 # ── Main frame ──────────────────────────────────────────────────────────
@@ -77,6 +125,8 @@ class GhViewerFrame(wx.Frame):
         self.tab_filter: str = "both"  # "issues", "prs", "both"
         self.page_size: int = 30       # how many items to fetch per page
         self.current_limit: int = 30  # current fetch limit (grows via View More)
+        self.view_mode: str = VIEW_ISSUES  # current view: issues, branches, commits, etc.
+        self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
 
         self._build_ui()
         self._bind_events()
@@ -173,10 +223,22 @@ class GhViewerFrame(wx.Frame):
         self.list_ctrl.DeleteAllItems()
         self.list_ctrl.DeleteAllColumns()
         widths = {
+            # Issues/PRs
             "number": 60, "type": 60, "state": 70, "title": 400,
             "author": 120, "created": 100, "updated": 100, "labels": 150,
             "assignees": 120, "comments": 70, "draft": 50, "review": 100,
             "+/-": 90, "files": 50, "base": 100, "head": 100,
+            # Branches
+            "branch": 150, "last commit": 400, "date": 100, "protected": 70,
+            "ahead": 60, "behind": 60,
+            # Commits
+            "sha": 80, "message": 400,
+            # Tags
+            "tag": 150, "commit": 80,
+            # Releases
+            "tag": 100, "name": 250, "draft": 50, "prerelease": 70,
+            # Workflow
+            "name": 150, "status": 100, "result": 100, "event": 100, "#": 50,
         }
         for i, col in enumerate(self.columns):
             self.list_ctrl.InsertColumn(i, col, width=widths.get(col, 100))
@@ -207,6 +269,18 @@ class GhViewerFrame(wx.Frame):
         # View menu
         view_menu = wx.Menu()
 
+        # Show submenu — switch between Issues/PRs and Git views
+        show_menu = wx.Menu()
+        show_menu.AppendRadioItem(ID_VIEW_ISSUES, "Issues & PRs")
+        show_menu.AppendRadioItem(ID_VIEW_BRANCHES, "Branches")
+        show_menu.AppendRadioItem(ID_VIEW_COMMITS, "Commits")
+        show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags")
+        show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases")
+        show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs")
+        view_menu.AppendSubMenu(show_menu, "Show")
+
+        view_menu.AppendSeparator()
+
         # List mode submenu
         mode_menu = wx.Menu()
         mode_menu.AppendRadioItem(ID_QUICK_MODE, "Quick Mode (compact)")
@@ -227,15 +301,11 @@ class GhViewerFrame(wx.Frame):
 
         view_menu.AppendSeparator()
 
-        # Columns submenu
-        col_menu = wx.Menu()
+        # Columns submenu (rebuilt when view mode changes)
+        self._col_menu = wx.Menu()
         self._col_menu_items = {}
-        for col in ALL_COLUMNS:
-            item_id = wx.NewIdRef()
-            self._col_menu_items[item_id] = col
-            mi = col_menu.AppendCheckItem(item_id, col)
-            self.Bind(wx.EVT_MENU, self.on_column_toggled, id=item_id)
-        view_menu.AppendSubMenu(col_menu, "Columns")
+        self._rebuild_columns_menu()
+        view_menu.AppendSubMenu(self._col_menu, "Columns")
 
         view_menu.AppendSeparator()
 
@@ -266,6 +336,12 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_tab_issues, id=ID_TAB_ISSUES)
         self.Bind(wx.EVT_MENU, self.on_tab_prs, id=ID_TAB_PRS)
         self.Bind(wx.EVT_MENU, self.on_tab_both, id=ID_TAB_BOTH)
+        self.Bind(wx.EVT_MENU, self.on_view_issues, id=ID_VIEW_ISSUES)
+        self.Bind(wx.EVT_MENU, self.on_view_branches, id=ID_VIEW_BRANCHES)
+        self.Bind(wx.EVT_MENU, self.on_view_commits, id=ID_VIEW_COMMITS)
+        self.Bind(wx.EVT_MENU, self.on_view_tags, id=ID_VIEW_TAGS)
+        self.Bind(wx.EVT_MENU, self.on_view_releases, id=ID_VIEW_RELEASES)
+        self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
 
     def _update_menu_checks(self) -> None:
         """Update checkmarks/radio selections to match current settings."""
@@ -273,6 +349,13 @@ class GhViewerFrame(wx.Frame):
         # List mode
         menu_bar.Check(ID_QUICK_MODE, self.list_mode == "quick")
         menu_bar.Check(ID_FULL_MODE, self.list_mode == "full")
+        # View mode (Show submenu)
+        menu_bar.Check(ID_VIEW_ISSUES, self.view_mode == VIEW_ISSUES)
+        menu_bar.Check(ID_VIEW_BRANCHES, self.view_mode == VIEW_BRANCHES)
+        menu_bar.Check(ID_VIEW_COMMITS, self.view_mode == VIEW_COMMITS)
+        menu_bar.Check(ID_VIEW_TAGS, self.view_mode == VIEW_TAGS)
+        menu_bar.Check(ID_VIEW_RELEASES, self.view_mode == VIEW_RELEASES)
+        menu_bar.Check(ID_VIEW_WORKFLOW, self.view_mode == VIEW_WORKFLOW)
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
         menu_bar.Check(ID_STATE_CLOSED, self.state_filter == "closed")
@@ -287,6 +370,36 @@ class GhViewerFrame(wx.Frame):
         # Sort order
         for item_id, order in self._sort_menu_items.items():
             menu_bar.Check(item_id, order == self.sort_order)
+
+    def _rebuild_columns_menu(self) -> None:
+        """Rebuild the Columns submenu for the current view mode."""
+        # Remove old items
+        for item_id in list(self._col_menu_items.keys()):
+            self.Unbind(wx.EVT_MENU, id=item_id)
+            self._col_menu.DestroyItem(self._col_menu.FindItemById(item_id))
+        self._col_menu_items = {}
+        # Get available columns for current view
+        _, all_cols = VIEW_COLUMNS.get(self.view_mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
+        for col in all_cols:
+            item_id = wx.NewIdRef()
+            self._col_menu_items[item_id] = col
+            self._col_menu.AppendCheckItem(item_id, col)
+            self.Bind(wx.EVT_MENU, self.on_column_toggled, id=item_id)
+
+    def _switch_view(self, mode: str) -> None:
+        """Switch to a different view mode (issues, branches, commits, etc.)."""
+        if self.view_mode == mode:
+            return
+        self.view_mode = mode
+        # Update columns for the new view
+        default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
+        self.columns = list(default_cols)
+        self._rebuild_columns()
+        self._rebuild_columns_menu()
+        self._update_menu_checks()
+        self.current_limit = self.page_size
+        if self.repo:
+            self._load_items()
 
     # ── Event binding ───────────────────────────────────────────────────
 
@@ -366,7 +479,11 @@ class GhViewerFrame(wx.Frame):
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
         self.current_limit = self.page_size  # reset to first page
-        self._load_items()
+        # Reset to issues view when switching repos
+        if self.view_mode != VIEW_ISSUES:
+            self._switch_view(VIEW_ISSUES)
+        else:
+            self._load_items()
 
     # ── Item loading ───────────────────────────────────────────────────
 
@@ -377,21 +494,37 @@ class GhViewerFrame(wx.Frame):
 
         def worker() -> None:
             try:
-                issues = []
-                prs = []
-                if self.tab_filter in ("issues", "both"):
-                    issues = fetch_issues(self.repo, self.state_filter, self.current_limit)
-                if self.tab_filter in ("prs", "both"):
-                    prs = fetch_prs(self.repo, self.state_filter, self.current_limit)
+                if self.view_mode == VIEW_ISSUES:
+                    issues = []
+                    prs = []
+                    if self.tab_filter in ("issues", "both"):
+                        issues = fetch_issues(self.repo, self.state_filter, self.current_limit)
+                    if self.tab_filter in ("prs", "both"):
+                        prs = fetch_prs(self.repo, self.state_filter, self.current_limit)
+                    combined = sort_items(issues + prs, self.sort_order)
+                    wx.CallAfter(self._on_items_loaded, combined, len(issues), len(prs))
+                elif self.view_mode == VIEW_BRANCHES:
+                    branches = fetch_branches(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, branches, "branches")
+                elif self.view_mode == VIEW_COMMITS:
+                    commits = fetch_commits(self.repo, limit=self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, commits, "commits")
+                elif self.view_mode == VIEW_TAGS:
+                    tags = fetch_tags(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, tags, "tags")
+                elif self.view_mode == VIEW_RELEASES:
+                    releases = fetch_releases(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, releases, "releases")
+                elif self.view_mode == VIEW_WORKFLOW:
+                    runs = fetch_workflow_runs(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, runs, "workflow runs")
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))
                 return
-            combined = sort_items(issues + prs, self.sort_order)
-            wx.CallAfter(self._on_items_loaded, combined, len(issues), len(prs))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _item_label(self, item: Item, col: str) -> str:
+    def _item_label(self, item, col: str) -> str:
         """Get the display value for a single column, with mode-aware formatting."""
         val = item.to_row(self.columns).get(col, "")
         if self.list_mode == "full":
@@ -400,6 +533,7 @@ class GhViewerFrame(wx.Frame):
 
     def _on_items_loaded(self, items: list[Item], n_issues: int, n_prs: int) -> None:
         self.items = items
+        self.git_items = []
         self.list_ctrl.DeleteAllItems()
         for i, item in enumerate(items):
             for j, col in enumerate(self.columns):
@@ -415,8 +549,27 @@ class GhViewerFrame(wx.Frame):
             f"Mode={self.list_mode}"
         )
         if items:
-            # Delay the focus move so it happens after the combo box
-            # Enter event has fully completed processing.
+            wx.CallLater(100, self._focus_list)
+
+    def _on_git_items_loaded(self, items: list, kind: str) -> None:
+        """Handle loaded git items (branches, commits, tags, releases, workflow runs)."""
+        self.git_items = items
+        self.items = []  # clear issues/PRs
+        self.list_ctrl.DeleteAllItems()
+        for i, item in enumerate(items):
+            for j, col in enumerate(self.columns):
+                label = self._item_label(item, col)
+                if j == 0:
+                    self.list_ctrl.InsertItem(i, label)
+                else:
+                    self.list_ctrl.SetItem(i, j, label)
+        self.SetStatusText(
+            f"{self.repo} — {len(items)} {kind}. "
+            f"Showing up to {self.current_limit}. "
+            f"Ctrl++=view more  R=refresh  "
+            f"Mode={self.list_mode}"
+        )
+        if items:
             wx.CallLater(100, self._focus_list)
 
     def _focus_list(self) -> None:
@@ -435,6 +588,13 @@ class GhViewerFrame(wx.Frame):
         """Show details for the item at idx in the details panel."""
         self._comment_positions = []
         self._current_comment = -1
+        if self.view_mode == VIEW_ISSUES:
+            self._show_issue_details(idx)
+        else:
+            self._show_git_details(idx)
+
+    def _show_issue_details(self, idx: int) -> None:
+        """Show details for an issue/PR."""
         if idx < 0 or idx >= len(self.items):
             self.details_text.Clear()
             return
@@ -482,13 +642,89 @@ class GhViewerFrame(wx.Frame):
                 self._comment_positions.append((start_line, len(comment_lines) + 1))
         self.details_text.SetValue("\n".join(lines))
 
+    def _show_git_details(self, idx: int) -> None:
+        """Show details for a git item (branch, commit, tag, release, workflow run)."""
+        if idx < 0 or idx >= len(self.git_items):
+            self.details_text.Clear()
+            return
+        item = self.git_items[idx]
+        lines = []
+        if isinstance(item, Branch):
+            lines.append(f"Branch: {item.name}")
+            lines.append(f"Last commit: {item.commit_sha}")
+            lines.append(f"Message: {item.commit_message}")
+            lines.append(f"Author: {item.commit_author}")
+            lines.append(f"Date: {item.commit_date}")
+            lines.append(f"Protected: {'Yes' if item.protected else 'No'}")
+            if item.ahead:
+                lines.append(f"Ahead: {item.ahead}")
+            if item.behind:
+                lines.append(f"Behind: {item.behind}")
+            lines.append(f"URL: {item.url}")
+        elif isinstance(item, Commit):
+            lines.append(f"Commit: {item.sha}")
+            lines.append(f"Short SHA: {item.short_sha}")
+            lines.append(f"Author: {item.author}")
+            lines.append(f"Date: {item.date}")
+            lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append(item.message or "(no message)")
+            if item.files:
+                lines.append("")
+                lines.append("─" * 60)
+                lines.append(f"Files changed ({item.files_changed}):")
+                lines.append("─" * 60)
+                for f in item.files:
+                    status = f.get("status", "")
+                    fname = f.get("filename", "")
+                    adds = f.get("additions", 0)
+                    dels = f.get("deletions", 0)
+                    lines.append(f"  {status}: {fname} (+{adds} -{dels})")
+            if item.additions or item.deletions:
+                lines.append("")
+                lines.append(f"Total: +{item.additions} -{item.deletions} ({item.files_changed} files)")
+        elif isinstance(item, Tag):
+            lines.append(f"Tag: {item.name}")
+            lines.append(f"Commit: {item.commit_sha}")
+            lines.append(f"URL: {item.url}")
+        elif isinstance(item, Release):
+            lines.append(f"Release: {item.name}")
+            lines.append(f"Tag: {item.tag}")
+            lines.append(f"Date: {item.created_at}")
+            lines.append(f"Draft: {'Yes' if item.draft else 'No'}")
+            lines.append(f"Prerelease: {'Yes' if item.prerelease else 'No'}")
+            lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append(item.body or "(no release notes)")
+        elif isinstance(item, WorkflowRun):
+            lines.append(f"Workflow: {item.name}")
+            lines.append(f"Run #: {item.run_number}")
+            lines.append(f"Status: {item.status}")
+            lines.append(f"Result: {item.conclusion or '(running)'}")
+            lines.append(f"Branch: {item.branch}")
+            lines.append(f"Event: {item.event}")
+            lines.append(f"Date: {item.created_at}")
+            lines.append(f"URL: {item.url}")
+        self.details_text.SetValue("\n".join(lines))
+
     # ── Helpers ─────────────────────────────────────────────────────────
 
-    def _focused_item(self) -> Item | None:
+    def _focused_item(self):
+        """Return the currently focused item (issue/PR or git item)."""
         idx = self.list_ctrl.GetFirstSelected()
-        if idx < 0 or idx >= len(self.items):
+        if idx < 0:
             return None
-        return self.items[idx]
+        if self.view_mode == VIEW_ISSUES:
+            if idx < len(self.items):
+                return self.items[idx]
+        else:
+            if idx < len(self.git_items):
+                return self.git_items[idx]
+        return None
 
     def _announce(self, msg: str) -> None:
         """Update status bar (screen reader accessible)."""
@@ -500,27 +736,37 @@ class GhViewerFrame(wx.Frame):
         idx = event.GetIndex()
         self._show_details(idx)
         if self.list_mode == "full":
-            item = self.items[idx] if idx < len(self.items) else None
+            item = self._focused_item()
             if item:
                 self._announce(item.to_accessible_string(self.columns))
 
     def on_item_activated(self, event: wx.ListEvent) -> None:
         """Double-click or Enter — open in browser."""
         item = self._focused_item()
-        if item:
-            open_in_browser(item)
-            self._announce(f"Opened #{item.number} in browser")
+        if not item:
+            return
+        url = getattr(item, "url", "") or ""
+        if url:
+            webbrowser.open(url)
+            label = getattr(item, "number", None) or getattr(item, "name", "") or getattr(item, "short_sha", "")
+            self._announce(f"Opened {label} in browser")
+        else:
+            self._announce("No URL for this item")
 
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
-        if key == ord("C"):
-            self._do_close()
-        elif key == ord("O"):
-            self._do_reopen()
-        elif key == ord("R"):
+        if key == ord("R"):
             self._load_items()
-        elif key == ord("M"):
-            self._do_comment()
+        elif self.view_mode == VIEW_ISSUES:
+            # Issue/PR-specific keys
+            if key == ord("C"):
+                self._do_close()
+            elif key == ord("O"):
+                self._do_reopen()
+            elif key == ord("M"):
+                self._do_comment()
+            else:
+                event.Skip()
         else:
             event.Skip()
 
@@ -587,9 +833,15 @@ class GhViewerFrame(wx.Frame):
 
     def on_open_browser(self, event: wx.CommandEvent) -> None:
         item = self._focused_item()
-        if item:
-            open_in_browser(item)
-            self._announce(f"Opened #{item.number} in browser")
+        if not item:
+            return
+        url = getattr(item, "url", "") or ""
+        if url:
+            webbrowser.open(url)
+            label = getattr(item, "number", None) or getattr(item, "name", "") or getattr(item, "short_sha", "")
+            self._announce(f"Opened {label} in browser")
+        else:
+            self._announce("No URL for this item")
 
     def on_close_item(self, event: wx.CommandEvent) -> None:
         self._do_close()
@@ -602,6 +854,9 @@ class GhViewerFrame(wx.Frame):
 
     def on_goto(self, event: wx.CommandEvent) -> None:
         """Ctrl+G — open a dialog to jump to a specific issue/PR by number."""
+        if self.view_mode != VIEW_ISSUES:
+            self._announce("Go To is only available in Issues & PRs view.")
+            return
         if not self.items:
             self._announce("No items loaded. Load a repository first.")
             return
@@ -642,14 +897,14 @@ class GhViewerFrame(wx.Frame):
         self.list_mode = "quick"
         self._update_menu_checks()
         self._announce("Quick mode: compact display")
-        if self.items:
+        if self.items or self.git_items:
             self._refresh_list_display()
 
     def on_full_mode(self, event: wx.CommandEvent) -> None:
         self.list_mode = "full"
         self._update_menu_checks()
         self._announce("Full mode: field names included for screen reader")
-        if self.items:
+        if self.items or self.git_items:
             self._refresh_list_display()
 
     def on_sort_selected(self, event: wx.CommandEvent) -> None:
@@ -713,19 +968,40 @@ class GhViewerFrame(wx.Frame):
             self.current_limit = self.page_size
             self._load_items()
 
+    # ── View mode switching (Show submenu) ──────────────────────────────
+
+    def on_view_issues(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_ISSUES)
+
+    def on_view_branches(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_BRANCHES)
+
+    def on_view_commits(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_COMMITS)
+
+    def on_view_tags(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_TAGS)
+
+    def on_view_releases(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_RELEASES)
+
+    def on_view_workflow(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_WORKFLOW)
+
     # ── List display refresh ───────────────────────────────────────────
 
     def _refresh_list_display(self) -> None:
-        """Re-populate the list from self.items without re-fetching."""
+        """Re-populate the list from current data without re-fetching."""
         self.list_ctrl.DeleteAllItems()
-        for i, item in enumerate(self.items):
+        items = self.items if self.view_mode == VIEW_ISSUES else self.git_items
+        for i, item in enumerate(items):
             for j, col in enumerate(self.columns):
                 label = self._item_label(item, col)
                 if j == 0:
                     self.list_ctrl.InsertItem(i, label)
                 else:
                     self.list_ctrl.SetItem(i, j, label)
-        if self.items:
+        if items:
             wx.CallLater(100, self._focus_list)
 
     # ── Actions ─────────────────────────────────────────────────────────

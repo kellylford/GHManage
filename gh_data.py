@@ -351,3 +351,388 @@ def list_repos(limit: int = 100) -> list[dict]:
     if not raw.strip():
         return []
     return json.loads(raw)
+
+
+# ── Git metadata: branches, commits, tags, releases, workflow runs ────
+#
+# These use `gh api` (GitHub REST API) because `gh` doesn't have first-class
+# commands for browsing branches/commits/tags.  All functions accept an
+# optional ``repo`` (``OWNER/NAME``); when None, the API uses the current
+# git repo context.
+
+
+def _api(args: list[str], repo: Optional[str]) -> str:
+    """Run ``gh api`` with the given endpoint args.
+
+    ``gh api`` doesn't support ``--repo``. Instead, we substitute the
+    owner/repo into the endpoint path directly when ``repo`` is provided.
+    When ``repo`` is None, ``gh api`` uses the current git repo context
+    and expands ``{owner}/{repo}`` placeholders automatically.
+    """
+    full_args = ["api"]
+    if repo:
+        # Replace {owner}/{repo} in the endpoint with the actual repo path
+        owner_name = repo.replace("/", "/")
+        substituted = []
+        for arg in args:
+            substituted.append(arg.replace("{owner}/{repo}", owner_name))
+        full_args += substituted
+    else:
+        full_args += args
+    return _run_gh(full_args)
+
+
+def _api_json(args: list[str], repo: Optional[str]) -> list | dict:
+    """Run ``gh api`` and parse JSON (list or dict)."""
+    raw = _api(args, repo)
+    if not raw.strip():
+        return []
+    return json.loads(raw)
+
+
+@dataclass
+class Branch:
+    """A git branch with its latest commit info."""
+    name: str
+    commit_sha: str
+    commit_message: str
+    commit_author: str
+    commit_date: str
+    protected: bool = False
+    ahead: int = 0       # ahead of default branch (only set when comparing)
+    behind: int = 0      # behind default branch
+    url: str = ""
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "branch": self.name,
+            "last commit": self.commit_message[:60],
+            "author": self.commit_author,
+            "date": self.commit_date[:10] if self.commit_date else "",
+            "protected": "Yes" if self.protected else "No",
+            "ahead": str(self.ahead) if self.ahead else "",
+            "behind": str(self.behind) if self.behind else "",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+BRANCH_COLUMNS = ["branch", "last commit", "author", "date", "protected", "ahead", "behind"]
+BRANCH_DEFAULT_COLUMNS = ["branch", "last commit", "author", "date"]
+
+
+def fetch_branches(repo: Optional[str], limit: int = 100) -> list[Branch]:
+    """Fetch branches for the repo via GitHub REST API."""
+    rows = _api_json(
+        ["repos/{owner}/{repo}/branches", "--paginate", "-q",
+         f"[.[] | {{name, sha: .commit.sha, protected}}] | .[0:{limit}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    branches: list[Branch] = []
+    for row in rows:
+        sha = row.get("sha", "")
+        # Fetch commit details for each branch tip
+        commit_info = _fetch_commit_info(repo, sha) if sha else {}
+        branches.append(Branch(
+            name=row.get("name", ""),
+            commit_sha=sha[:8] if sha else "",
+            commit_message=commit_info.get("message", ""),
+            commit_author=commit_info.get("author", ""),
+            commit_date=commit_info.get("date", ""),
+            protected=row.get("protected", False),
+            url=f"https://github.com/{repo}/tree/{row.get('name', '')}" if repo else "",
+        ))
+    return branches
+
+
+def _fetch_commit_info(repo: Optional[str], sha: str) -> dict:
+    """Fetch commit message, author, date for a single SHA."""
+    try:
+        row = _api_json(
+            [f"repos/{{owner}}/{{repo}}/commits/{sha}",
+             "-q", "{message: .commit.message, author: .commit.author.name, date: .commit.author.date}"],
+            repo,
+        )
+        if isinstance(row, dict):
+            return row
+    except GhError:
+        pass
+    return {}
+
+
+@dataclass
+class Commit:
+    """A git commit."""
+    sha: str
+    short_sha: str
+    message: str
+    author: str
+    date: str
+    url: str = ""
+    additions: int = 0
+    deletions: int = 0
+    files_changed: int = 0
+    files: list[dict] = field(default_factory=list)
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "sha": self.short_sha,
+            "message": self.message[:80],
+            "author": self.author,
+            "date": self.date[:10] if self.date else "",
+            "files": str(self.files_changed) if self.files_changed else "",
+            "+/-": f"+{self.additions}/-{self.deletions}" if self.additions or self.deletions else "",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+COMMIT_COLUMNS = ["sha", "message", "author", "date", "files", "+/-"]
+COMMIT_DEFAULT_COLUMNS = ["sha", "message", "author", "date"]
+
+
+def fetch_commits(repo: Optional[str], branch: str = "", limit: int = 100) -> list[Commit]:
+    """Fetch commits for the repo (optionally for a specific branch)."""
+    endpoint = "repos/{owner}/{repo}/commits"
+    if branch:
+        endpoint += f"?sha={branch}"
+    endpoint += f"&per_page={limit}" if branch else f"?per_page={limit}"
+    rows = _api_json([endpoint, "-q",
+                      f"[.[] | {{sha, message: .commit.message, author: .commit.author.name, date: .commit.author.date, url: .html_url}}]"],
+                     repo)
+    if not isinstance(rows, list):
+        return []
+    commits: list[Commit] = []
+    for row in rows:
+        sha = row.get("sha", "")
+        msg = row.get("message", "")
+        first_line = msg.split("\n")[0] if msg else ""
+        commits.append(Commit(
+            sha=sha,
+            short_sha=sha[:8] if sha else "",
+            message=first_line,
+            author=row.get("author", ""),
+            date=row.get("date", ""),
+            url=row.get("url", ""),
+        ))
+    return commits
+
+
+def fetch_commit_detail(repo: Optional[str], sha: str) -> Commit:
+    """Fetch full commit detail including file changes."""
+    row = _api_json(
+        [f"repos/{{owner}}/{{repo}}/commits/{sha}",
+         "-q", "{sha, message: .commit.message, author: .commit.author.name, date: .commit.author.date, url: .html_url, additions: .stats.additions, deletions: .stats.deletions, files: [.files[] | {filename, status, additions, deletions}]}"],
+        repo,
+    )
+    if not isinstance(row, dict):
+        return Commit(sha=sha, short_sha=sha[:8], message="", author="", date="")
+    msg = row.get("message", "")
+    return Commit(
+        sha=row.get("sha", sha),
+        short_sha=row.get("sha", sha)[:8],
+        message=msg,
+        author=row.get("author", ""),
+        date=row.get("date", ""),
+        url=row.get("url", ""),
+        additions=row.get("additions", 0),
+        deletions=row.get("deletions", 0),
+        files_changed=len(row.get("files", [])),
+        files=row.get("files", []),
+    )
+
+
+@dataclass
+class Tag:
+    """A git tag."""
+    name: str
+    commit_sha: str
+    url: str = ""
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "tag": self.name,
+            "commit": self.commit_sha,
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+TAG_COLUMNS = ["tag", "commit"]
+TAG_DEFAULT_COLUMNS = ["tag", "commit"]
+
+
+def fetch_tags(repo: Optional[str], limit: int = 100) -> list[Tag]:
+    """Fetch tags for the repo."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/tags?per_page={limit}",
+         "-q", "[.[] | {name, sha: .commit.sha}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    tags: list[Tag] = []
+    for row in rows:
+        sha = row.get("sha", "")
+        tags.append(Tag(
+            name=row.get("name", ""),
+            commit_sha=sha[:8] if sha else "",
+            url=f"https://github.com/{repo}/releases/tag/{row.get('name', '')}" if repo else "",
+        ))
+    return tags
+
+
+@dataclass
+class Release:
+    """A GitHub release."""
+    tag: str
+    name: str
+    draft: bool
+    prerelease: bool
+    created_at: str
+    url: str = ""
+    body: str = ""
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "tag": self.tag,
+            "name": self.name,
+            "draft": "Yes" if self.draft else "No",
+            "prerelease": "Yes" if self.prerelease else "No",
+            "date": self.created_at[:10] if self.created_at else "",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+RELEASE_COLUMNS = ["tag", "name", "date", "draft", "prerelease"]
+RELEASE_DEFAULT_COLUMNS = ["tag", "name", "date"]
+
+
+def fetch_releases(repo: Optional[str], limit: int = 30) -> list[Release]:
+    """Fetch releases for the repo."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/releases?per_page={limit}",
+         "-q", "[.[] | {tag: .tag_name, name, draft, prerelease, created: .created_at, url: .html_url, body: .body}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    releases: list[Release] = []
+    for row in rows:
+        releases.append(Release(
+            tag=row.get("tag", ""),
+            name=row.get("name", ""),
+            draft=row.get("draft", False),
+            prerelease=row.get("prerelease", False),
+            created_at=row.get("created", ""),
+            url=row.get("url", ""),
+            body=row.get("body", "") or "",
+        ))
+    return releases
+
+
+@dataclass
+class WorkflowRun:
+    """A GitHub Actions workflow run."""
+    name: str
+    status: str       # queued, in_progress, completed
+    conclusion: str   # success, failure, cancelled, None (if still running)
+    branch: str
+    event: str        # push, pull_request, workflow_dispatch
+    created_at: str
+    url: str = ""
+    run_number: int = 0
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "name": self.name,
+            "status": self.status,
+            "result": self.conclusion or "(running)",
+            "branch": self.branch,
+            "event": self.event,
+            "date": self.created_at[:10] if self.created_at else "",
+            "#": str(self.run_number),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+WORKFLOW_COLUMNS = ["name", "status", "result", "branch", "event", "date", "#"]
+WORKFLOW_DEFAULT_COLUMNS = ["name", "status", "result", "branch", "date"]
+
+
+def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRun]:
+    """Fetch recent workflow runs for the repo."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/actions/runs?per_page={limit}",
+         "-q", "[.workflow_runs[] | {name, status, conclusion, branch: .head_branch, event, created: .created_at, url: .html_url, number: .run_number}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    runs: list[WorkflowRun] = []
+    for row in rows:
+        runs.append(WorkflowRun(
+            name=row.get("name", ""),
+            status=row.get("status", ""),
+            conclusion=row.get("conclusion") or "",
+            branch=row.get("branch", ""),
+            event=row.get("event", ""),
+            created_at=row.get("created", ""),
+            url=row.get("url", ""),
+            run_number=row.get("number", 0),
+        ))
+    return runs
+
+
+@dataclass
+class CompareResult:
+    """Result of comparing two refs (branches/tags/SHAs)."""
+    base: str
+    head: str
+    ahead_by: int
+    behind_by: int
+    commits: list[dict] = field(default_factory=list)   # {sha, message}
+    files: list[dict] = field(default_factory=list)      # {filename, status, additions, deletions}
+
+
+def fetch_compare(repo: Optional[str], base: str, head: str) -> CompareResult:
+    """Compare two refs via the GitHub compare API."""
+    row = _api_json(
+        [f"repos/{{owner}}/{{repo}}compare/{base}...{head}",
+         "-q", "{ahead: .ahead_by, behind: .behind_by, commits: [.commits[] | {sha: .sha, message: .commit.message}], files: [.files[] | {filename, status, additions, deletions}]}"],
+        repo,
+    )
+    if not isinstance(row, dict):
+        return CompareResult(base=base, head=head, ahead_by=0, behind_by=0)
+    return CompareResult(
+        base=base,
+        head=head,
+        ahead_by=row.get("ahead", 0),
+        behind_by=row.get("behind", 0),
+        commits=row.get("commits", []),
+        files=row.get("files", []),
+    )
