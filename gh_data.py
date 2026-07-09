@@ -247,17 +247,25 @@ def _parse_prs(raw: str) -> list[Item]:
     return items
 
 
-def fetch_issues(repo: Optional[str], state: str = "open") -> list[Item]:
-    """Fetch issues (excluding PRs) for the repo."""
-    args = ["issue", "list", "--state", state, "--json", ISSUE_FIELDS]
+def fetch_issues(repo: Optional[str], state: str = "open", limit: int = 30) -> list[Item]:
+    """Fetch issues (excluding PRs) for the repo.
+
+    ``gh issue list`` defaults to only 30 items and returns newest first.
+    Pass ``limit`` to control how many are fetched.
+    """
+    args = ["issue", "list", "--state", state, "--limit", str(limit), "--json", ISSUE_FIELDS]
     if repo:
         args += ["--repo", repo]
     return _parse_issues(_run_gh(args))
 
 
-def fetch_prs(repo: Optional[str], state: str = "open") -> list[Item]:
-    """Fetch pull requests for the repo."""
-    args = ["pr", "list", "--state", state, "--json", PR_FIELDS]
+def fetch_prs(repo: Optional[str], state: str = "open", limit: int = 30) -> list[Item]:
+    """Fetch pull requests for the repo.
+
+    ``gh pr list`` defaults to only 30 items and returns newest first.
+    Pass ``limit`` to control how many are fetched.
+    """
+    args = ["pr", "list", "--state", state, "--limit", str(limit), "--json", PR_FIELDS]
     if repo:
         args += ["--repo", repo]
     return _parse_prs(_run_gh(args))

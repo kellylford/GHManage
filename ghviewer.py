@@ -50,6 +50,7 @@ ID_COMMENT_DLG = wx.NewIdRef()
 ID_GOTO = wx.NewIdRef()
 ID_NEXT_COMMENT = wx.NewIdRef()
 ID_PREV_COMMENT = wx.NewIdRef()
+ID_VIEW_MORE = wx.NewIdRef()
 
 
 # ── Main frame ──────────────────────────────────────────────────────────
@@ -74,6 +75,8 @@ class GhViewerFrame(wx.Frame):
         self.list_mode: str = "quick"  # "quick" or "full"
         self.state_filter: str = "open"  # "open", "closed", "all"
         self.tab_filter: str = "both"  # "issues", "prs", "both"
+        self.page_size: int = 30       # how many items to fetch per page
+        self.current_limit: int = 30  # current fetch limit (grows via View More)
 
         self._build_ui()
         self._bind_events()
@@ -193,6 +196,8 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
         file_menu.AppendSeparator()
+        file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
+        file_menu.AppendSeparator()
         file_menu.Append(ID_NEXT_COMMENT, "Next Comment\tAlt+N")
         file_menu.Append(ID_PREV_COMMENT, "Previous Comment\tAlt+P")
         file_menu.AppendSeparator()
@@ -298,6 +303,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
+        self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
         self.Bind(wx.EVT_MENU, self.on_next_comment, id=ID_NEXT_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_prev_comment, id=ID_PREV_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_quit, id=wx.ID_EXIT)
@@ -359,6 +365,7 @@ class GhViewerFrame(wx.Frame):
         if " — " in repo:
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
+        self.current_limit = self.page_size  # reset to first page
         self._load_items()
 
     # ── Item loading ───────────────────────────────────────────────────
@@ -373,9 +380,9 @@ class GhViewerFrame(wx.Frame):
                 issues = []
                 prs = []
                 if self.tab_filter in ("issues", "both"):
-                    issues = fetch_issues(self.repo, self.state_filter)
+                    issues = fetch_issues(self.repo, self.state_filter, self.current_limit)
                 if self.tab_filter in ("prs", "both"):
-                    prs = fetch_prs(self.repo, self.state_filter)
+                    prs = fetch_prs(self.repo, self.state_filter, self.current_limit)
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))
                 return
@@ -403,7 +410,8 @@ class GhViewerFrame(wx.Frame):
                     self.list_ctrl.SetItem(i, j, label)
         self.SetStatusText(
             f"{self.repo} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
-            f"Enter=open  C=close  O=reopen  R=refresh  M=comment  "
+            f"Showing up to {self.current_limit} newest. "
+            f"Ctrl++=view more  R=refresh  M=comment  "
             f"Mode={self.list_mode}"
         )
         if items:
@@ -567,7 +575,15 @@ class GhViewerFrame(wx.Frame):
 
     def on_refresh(self, event: wx.CommandEvent) -> None:
         if self.repo:
+            self.current_limit = self.page_size  # reset to first page
             self._load_items()
+
+    def on_view_more(self, event: wx.CommandEvent) -> None:
+        """Increase the fetch limit and reload to show more items."""
+        if not self.repo:
+            return
+        self.current_limit += self.page_size
+        self._load_items()
 
     def on_open_browser(self, event: wx.CommandEvent) -> None:
         item = self._focused_item()
@@ -659,36 +675,42 @@ class GhViewerFrame(wx.Frame):
         self.state_filter = "open"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     def on_state_closed(self, event: wx.CommandEvent) -> None:
         self.state_filter = "closed"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     def on_state_all(self, event: wx.CommandEvent) -> None:
         self.state_filter = "all"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     def on_tab_issues(self, event: wx.CommandEvent) -> None:
         self.tab_filter = "issues"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     def on_tab_prs(self, event: wx.CommandEvent) -> None:
         self.tab_filter = "prs"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     def on_tab_both(self, event: wx.CommandEvent) -> None:
         self.tab_filter = "both"
         self._update_menu_checks()
         if self.repo:
+            self.current_limit = self.page_size
             self._load_items()
 
     # ── List display refresh ───────────────────────────────────────────
