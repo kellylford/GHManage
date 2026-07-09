@@ -47,6 +47,9 @@ ID_TAB_ISSUES = wx.NewIdRef()
 ID_TAB_PRS = wx.NewIdRef()
 ID_TAB_BOTH = wx.NewIdRef()
 ID_COMMENT_DLG = wx.NewIdRef()
+ID_GOTO = wx.NewIdRef()
+ID_NEXT_COMMENT = wx.NewIdRef()
+ID_PREV_COMMENT = wx.NewIdRef()
 
 
 # ── Main frame ──────────────────────────────────────────────────────────
@@ -87,27 +90,30 @@ class GhViewerFrame(wx.Frame):
     # ── UI construction ─────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        # Top panel: repo chooser
-        top_panel = wx.Panel(self, name="repo_chooser_panel")
-        top_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        top_sizer.Add(
-            wx.StaticText(top_panel, label="Repository:"),
-            flag=wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT,
-            border=5,
-        )
-        self.repo_combo = wx.ComboBox(
-            top_panel,
-            name="repo_combo",
-            style=wx.CB_DROPDOWN | wx.TE_PROCESS_ENTER | wx.WANTS_CHARS,
-            size=(350, -1),
-        )
-        top_sizer.Add(self.repo_combo, flag=wx.ALIGN_CENTER_VERTICAL, border=5)
-        self.load_btn = wx.Button(top_panel, label="Load", name="load_button")
-        top_sizer.Add(self.load_btn, flag=wx.ALIGN_CENTER_VERTICAL | wx.LEFT, border=5)
-        top_panel.SetSizer(top_sizer)
+        # Main splitter: repo list (left) | issues+details (right)
+        self.main_splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE, name="main_splitter")
+        self.main_splitter.SetMinimumPaneSize(200)
 
-        # Splitter: list (top) + details (bottom)
-        self.splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE)
+        # Left panel: repo list
+        repo_panel = wx.Panel(self.main_splitter, name="repo_panel")
+        repo_sizer = wx.BoxSizer(wx.VERTICAL)
+        repo_sizer.Add(
+            wx.StaticText(repo_panel, label="Repositories"),
+            flag=wx.LEFT | wx.TOP, border=3,
+        )
+        self.repo_list = wx.ListBox(
+            repo_panel,
+            name="repo_list",
+            style=wx.LB_SINGLE | wx.BORDER_SUNKEN,
+        )
+        repo_sizer.Add(self.repo_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=3)
+        repo_panel.SetSizer(repo_sizer)
+
+        # Right panel: issue list (top) + details (bottom)
+        right_panel = wx.Panel(self.main_splitter, name="right_panel")
+        right_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.splitter = wx.SplitterWindow(right_panel, style=wx.SP_LIVE_UPDATE)
         self.splitter.SetMinimumPaneSize(120)
 
         # List panel
@@ -141,14 +147,19 @@ class GhViewerFrame(wx.Frame):
         self.splitter.SplitHorizontally(list_panel, details_panel, 400)
         self.splitter.SetSashPosition(400)
 
+        right_sizer.Add(self.splitter, proportion=1, flag=wx.EXPAND)
+        right_panel.SetSizer(right_sizer)
+
+        self.main_splitter.SplitVertically(repo_panel, right_panel, 300)
+        self.main_splitter.SetSashPosition(300)
+
         # Status bar
         self.CreateStatusBar()
         self.SetStatusText("Ready")
 
         # Layout
         sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(top_panel, flag=wx.EXPAND | wx.ALL, border=5)
-        sizer.Add(self.splitter, proportion=1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer.Add(self.main_splitter, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
         self.SetSizer(sizer)
 
         # Initial columns
@@ -180,6 +191,10 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_CLOSE_ITEM, "Close\tCtrl+W")
         file_menu.Append(ID_REOPEN, "Reopen\tCtrl+Shift+W")
         file_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
+        file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
+        file_menu.AppendSeparator()
+        file_menu.Append(ID_NEXT_COMMENT, "Next Comment\tAlt+N")
+        file_menu.Append(ID_PREV_COMMENT, "Previous Comment\tAlt+P")
         file_menu.AppendSeparator()
         file_menu.Append(wx.ID_EXIT, "Quit\tCtrl+Q")
         menu_bar.Append(file_menu, "File")
@@ -271,9 +286,8 @@ class GhViewerFrame(wx.Frame):
     # ── Event binding ───────────────────────────────────────────────────
 
     def _bind_events(self) -> None:
-        self.Bind(wx.EVT_BUTTON, self.on_load_clicked, self.load_btn)
-        self.Bind(wx.EVT_COMBOBOX, self.on_repo_selected, self.repo_combo)
-        self.Bind(wx.EVT_TEXT_ENTER, self.on_repo_enter, self.repo_combo)
+        self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_repo_activated, self.repo_list)
+        self.repo_list.Bind(wx.EVT_CHAR_HOOK, self.on_repo_key_down)
         self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_item_selected, self.list_ctrl)
         self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_item_activated, self.list_ctrl)
         self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
@@ -283,6 +297,9 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_close_item, id=ID_CLOSE_ITEM)
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
+        self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
+        self.Bind(wx.EVT_MENU, self.on_next_comment, id=ID_NEXT_COMMENT)
+        self.Bind(wx.EVT_MENU, self.on_prev_comment, id=ID_PREV_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_quit, id=wx.ID_EXIT)
         self.Bind(wx.EVT_CLOSE, self.on_quit)
 
@@ -303,42 +320,45 @@ class GhViewerFrame(wx.Frame):
 
     def _on_repos_loaded(self, repos: list[dict]) -> None:
         self._all_repos = repos
-        self.repo_combo.Clear()
+        self.repo_list.Clear()
         for repo in repos:
             name = repo.get("nameWithOwner", "")
             desc = repo.get("description") or ""
             label = f"{name} — {desc}" if desc else name
-            self.repo_combo.Append(label, clientData=name)
+            self.repo_list.Append(label, clientData=name)
         if repos:
-            self.SetStatusText(f"Loaded {len(repos)} repositories. Pick one or type owner/name.")
+            self.SetStatusText(f"Loaded {len(repos)} repositories. Select one to view issues and PRs.")
+            self.repo_list.SetSelection(0)
+            self.repo_list.SetFocus()
         else:
-            self.SetStatusText("No repositories found. Type owner/name and press Enter.")
+            self.SetStatusText("No repositories found.")
 
     def _on_repos_error(self, msg: str) -> None:
         self.SetStatusText(f"Error loading repos: {msg}")
 
-    def on_repo_selected(self, event: wx.CommandEvent) -> None:
-        idx = self.repo_combo.GetSelection()
+    def on_repo_activated(self, event: wx.CommandEvent) -> None:
+        """Double-click on repo list — load that repo's items."""
+        idx = self.repo_list.GetSelection()
         if idx != wx.NOT_FOUND:
-            name = self.repo_combo.GetClientData(idx)
+            name = self.repo_list.GetClientData(idx)
             if name:
                 self._select_repo(name)
 
-    def on_repo_enter(self, event: wx.CommandEvent) -> None:
-        value = self.repo_combo.GetValue().strip()
-        if value:
-            self._select_repo(value)
-
-    def on_load_clicked(self, event: wx.CommandEvent) -> None:
-        value = self.repo_combo.GetValue().strip()
-        if value:
-            self._select_repo(value)
+    def on_repo_key_down(self, event: wx.KeyEvent) -> None:
+        """Handle Enter key on repo list — load the selected repo."""
+        if event.GetKeyCode() == wx.WXK_RETURN:
+            idx = self.repo_list.GetSelection()
+            if idx != wx.NOT_FOUND:
+                name = self.repo_list.GetClientData(idx)
+                if name:
+                    self._select_repo(name)
+            return  # swallow the key
+        event.Skip()
 
     def _select_repo(self, repo: str) -> None:
         if " — " in repo:
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
-        self.repo_combo.SetValue(repo)
         self._load_items()
 
     # ── Item loading ───────────────────────────────────────────────────
@@ -497,15 +517,16 @@ class GhViewerFrame(wx.Frame):
             event.Skip()
 
     def on_details_key_down(self, event: wx.KeyEvent) -> None:
-        """Handle n/p for next/previous comment when focus is in the details box."""
-        key = event.GetKeyCode()
-        if key == ord("N"):
-            self._navigate_comment(1)
-            return  # swallow the key
-        elif key == ord("P"):
-            self._navigate_comment(-1)
-            return
+        """Pass key events through — comment navigation is handled via Alt+N/Alt+P menu accelerators."""
         event.Skip()
+
+    def on_next_comment(self, event: wx.CommandEvent) -> None:
+        """Alt+N — jump to the next comment in the details box."""
+        self._navigate_comment(1)
+
+    def on_prev_comment(self, event: wx.CommandEvent) -> None:
+        """Alt+P — jump to the previous comment in the details box."""
+        self._navigate_comment(-1)
 
     def _navigate_comment(self, direction: int) -> None:
         """Move to the next (1) or previous (-1) comment in the details box."""
@@ -562,6 +583,39 @@ class GhViewerFrame(wx.Frame):
 
     def on_comment(self, event: wx.CommandEvent) -> None:
         self._do_comment()
+
+    def on_goto(self, event: wx.CommandEvent) -> None:
+        """Ctrl+G — open a dialog to jump to a specific issue/PR by number."""
+        if not self.items:
+            self._announce("No items loaded. Load a repository first.")
+            return
+        dlg = wx.NumberEntryDialog(
+            self,
+            "Enter the issue or PR number:",
+            "Go To Issue #",
+            "Go To Issue",
+            1,
+            1,
+            1000000,
+        )
+        if dlg.ShowModal() == wx.ID_OK:
+            number = dlg.GetValue()
+            self._goto_issue(number)
+        dlg.Destroy()
+
+    def _goto_issue(self, number: int) -> None:
+        """Select the item with the given number and focus the details box."""
+        for i, item in enumerate(self.items):
+            if item.number == number:
+                self.list_ctrl.SetFocus()
+                self.list_ctrl.Select(i, on=True)
+                self.list_ctrl.Focus(i)
+                self._show_details(i)
+                # Move focus to the details box so user can read/navigate comments
+                wx.CallLater(100, self.details_text.SetFocus)
+                self._announce(f"Jumped to #{number} — {item.title}")
+                return
+        self._announce(f"#{number} not found in the current list.")
 
     def on_quit(self, event: wx.CommandEvent) -> None:
         self.Destroy()

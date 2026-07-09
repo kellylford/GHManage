@@ -1,0 +1,51 @@
+name: GHManage
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --noconsole --name ghmanage --onefile ghviewer.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghmanage-win-x64
+          path: dist/ghmanage.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      # Create a GitHub Release when a version tag is pushed (e.g. v0.1.0)
+      # Release notes are read from docs/release-notes-<tag>.md if present,
+      # otherwise GitHub auto-generates notes from commits.
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: GHManage ${{ github.ref_name }}
+          files: |
+            dist/ghmanage.exe
+          fail_on_unmatched_files: true
+          body_path: docs/release-notes-${{ github.ref_name }}.md
