@@ -71,7 +71,7 @@ class GhViewerFrame(wx.Frame):
         # View settings
         self.columns: list[str] = list(DEFAULT_COLUMNS)
         self.sort_order: str = SORT_ORDERS[0]
-        self.accessibility_mode: str = "quick"  # "quick" or "full"
+        self.list_mode: str = "quick"  # "quick" or "full"
         self.state_filter: str = "open"  # "open", "closed", "all"
         self.tab_filter: str = "both"  # "issues", "prs", "both"
 
@@ -202,11 +202,11 @@ class GhViewerFrame(wx.Frame):
         # View menu
         view_menu = wx.Menu()
 
-        # Accessibility mode submenu
+        # List mode submenu
         mode_menu = wx.Menu()
         mode_menu.AppendRadioItem(ID_QUICK_MODE, "Quick Mode (compact)")
         mode_menu.AppendRadioItem(ID_FULL_MODE, "Full Mode (field names for screen reader)")
-        view_menu.AppendSubMenu(mode_menu, "Accessibility Mode")
+        view_menu.AppendSubMenu(mode_menu, "List Mode")
 
         view_menu.AppendSeparator()
 
@@ -265,9 +265,9 @@ class GhViewerFrame(wx.Frame):
     def _update_menu_checks(self) -> None:
         """Update checkmarks/radio selections to match current settings."""
         menu_bar = self.GetMenuBar()
-        # Accessibility mode
-        menu_bar.Check(ID_QUICK_MODE, self.accessibility_mode == "quick")
-        menu_bar.Check(ID_FULL_MODE, self.accessibility_mode == "full")
+        # List mode
+        menu_bar.Check(ID_QUICK_MODE, self.list_mode == "quick")
+        menu_bar.Check(ID_FULL_MODE, self.list_mode == "full")
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
         menu_bar.Check(ID_STATE_CLOSED, self.state_filter == "closed")
@@ -387,7 +387,7 @@ class GhViewerFrame(wx.Frame):
     def _item_label(self, item: Item, col: str) -> str:
         """Get the display value for a single column, with mode-aware formatting."""
         val = item.to_row(self.columns).get(col, "")
-        if self.accessibility_mode == "full":
+        if self.list_mode == "full":
             return f"{col}: {val}" if val else ""
         return val
 
@@ -404,7 +404,7 @@ class GhViewerFrame(wx.Frame):
         self.SetStatusText(
             f"{self.repo} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
             f"Enter=open  C=close  O=reopen  R=refresh  M=comment  "
-            f"Mode={self.accessibility_mode}"
+            f"Mode={self.list_mode}"
         )
         if items:
             # Delay the focus move so it happens after the combo box
@@ -491,7 +491,7 @@ class GhViewerFrame(wx.Frame):
     def on_item_selected(self, event: wx.ListEvent) -> None:
         idx = event.GetIndex()
         self._show_details(idx)
-        if self.accessibility_mode == "full":
+        if self.list_mode == "full":
             item = self.items[idx] if idx < len(self.items) else None
             if item:
                 self._announce(item.to_accessible_string(self.columns))
@@ -623,14 +623,14 @@ class GhViewerFrame(wx.Frame):
     # ── View menu actions ───────────────────────────────────────────────
 
     def on_quick_mode(self, event: wx.CommandEvent) -> None:
-        self.accessibility_mode = "quick"
+        self.list_mode = "quick"
         self._update_menu_checks()
         self._announce("Quick mode: compact display")
         if self.items:
             self._refresh_list_display()
 
     def on_full_mode(self, event: wx.CommandEvent) -> None:
-        self.accessibility_mode = "full"
+        self.list_mode = "full"
         self._update_menu_checks()
         self._announce("Full mode: field names included for screen reader")
         if self.items:

@@ -11,7 +11,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Details panel** — full body, metadata, comments, and PR diff stats shown below the list
 - **Comment navigation** — press N/P in the details box to jump between comments
 - **View menu** with:
-  - **Quick / Full accessibility mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
+  - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle any of 16 columns on/off
   - **State filter** — open, closed, or all

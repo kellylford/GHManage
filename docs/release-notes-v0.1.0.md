@@ -23,7 +23,7 @@ This is the first release of **GHManage**, a wxPython GUI for viewing and managi
 - **Details panel** — full body, metadata, comments, and PR diff stats shown below the list
 - **Comment navigation** — press Alt+N / Alt+P to jump between comments in the details box
 - **Go To Issue** — press Ctrl+G to jump to a specific issue/PR by number
-- **Accessibility modes** — Quick (compact) or Full (includes field names for screen readers)
+- **List modes** — Quick (compact) or Full (includes field names for screen readers)
 - **View menu** — sort order, column selection, state filter (open/closed/all), show filter (issues/PRs/both)
 - **Actions** — close, reopen, add comment, open in browser
 
