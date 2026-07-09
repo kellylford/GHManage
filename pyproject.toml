@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghviewer"
+version = "1.0.0"
+description = "A wxPython GUI viewer and manager for GitHub issues and pull requests"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Kelly Ford" }]
+dependencies = [
+    "wxPython>=4.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+    "build>=1.0",
+]
+
+[project.scripts]
+ghviewer = "ghviewer:main"
+
+[tool.setuptools]
+py-modules = ["ghviewer", "gh_data"]
+
+[tool.pyinstaller]
+# Build a standalone .exe with:  pyinstaller --noconsole --name ghviewer ghviewer.py
