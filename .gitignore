@@ -6,3 +6,5 @@ build/
 *.egg-info/
 .eggs/
 *.spec
+/.venv
+build.log
