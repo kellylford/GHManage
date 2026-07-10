@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import threading
 import webbrowser
+from typing import Optional
 
 import wx
 
@@ -44,6 +45,7 @@ from gh_data import (
     fetch_commits,
     fetch_commit_detail,
     fetch_issues,
+    fetch_item_by_number,
     fetch_item_detail,
     fetch_prs,
     fetch_releases,
@@ -316,7 +318,7 @@ class GhViewerFrame(wx.Frame):
         # View menu
         view_menu = wx.Menu()
 
-        # Show submenu — switch between Issues/PRs and Git views
+        # View Mode submenu — switch between Issues/PRs and Git views
         show_menu = wx.Menu()
         show_menu.AppendRadioItem(ID_VIEW_ISSUES, "Issues & PRs")
         show_menu.AppendRadioItem(ID_VIEW_BRANCHES, "Branches")
@@ -324,7 +326,7 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags")
         show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases")
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs")
-        view_menu.AppendSubMenu(show_menu, "Show")
+        view_menu.AppendSubMenu(show_menu, "View Mode")
 
         view_menu.AppendSeparator()
 
@@ -363,12 +365,12 @@ class GhViewerFrame(wx.Frame):
         state_menu.AppendRadioItem(ID_STATE_ALL, "All")
         view_menu.AppendSubMenu(state_menu, "State")
 
-        # Tab filter submenu
+        # Filter submenu — which item types to show in Issues & PRs view
         tab_menu = wx.Menu()
         tab_menu.AppendRadioItem(ID_TAB_ISSUES, "Issues Only")
         tab_menu.AppendRadioItem(ID_TAB_PRS, "PRs Only")
         tab_menu.AppendRadioItem(ID_TAB_BOTH, "Issues & PRs")
-        view_menu.AppendSubMenu(tab_menu, "Show")
+        view_menu.AppendSubMenu(tab_menu, "Filter")
 
         menu_bar.Append(view_menu, "View")
 
@@ -1038,7 +1040,12 @@ class GhViewerFrame(wx.Frame):
         dlg.Destroy()
 
     def _goto_issue(self, number: int) -> None:
-        """Select the item with the given number and focus the details box."""
+        """Select the item with the given number and focus the details box.
+
+        If the item isn't in the currently loaded list (e.g. it's closed, or
+        beyond the fetch limit), it's fetched on-demand via ``gh`` and inserted
+        into the list so the user can still view it.
+        """
         for i, item in enumerate(self.items):
             if item.number == number:
                 self.list_ctrl.SetFocus()
@@ -1049,7 +1056,62 @@ class GhViewerFrame(wx.Frame):
                 wx.CallLater(100, self.details_text.SetFocus)
                 self._announce(f"Jumped to #{number} — {item.title}")
                 return
-        self._announce(f"#{number} not found in the current list.")
+        # Not in the current list — fetch it on-demand in the background
+        self._announce(f"#{number} not in current list, fetching…")
+
+        def worker() -> None:
+            try:
+                item = fetch_item_by_number(number, self.repo)
+            except GhError as exc:
+                wx.CallAfter(self._goto_error, number, str(exc))
+                return
+            wx.CallAfter(self._on_goto_fetched, item, number)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _goto_error(self, number: int, msg: str) -> None:
+        """Show an error dialog when a Go To fetch fails."""
+        self._announce(f"Error fetching #{number}: {msg}")
+        wx.MessageBox(
+            f"Could not fetch #{number}:\n{msg}",
+            "Go To Error",
+            wx.OK | wx.ICON_WARNING,
+            self,
+        )
+
+    def _on_goto_fetched(self, item: Optional[Item], number: int) -> None:
+        """Called when an on-demand fetch for Go To completes."""
+        if item is None:
+            self._announce(f"#{number} not found in {self.repo}.")
+            wx.MessageBox(
+                f"#{number} does not exist as an issue or PR in {self.repo}.",
+                "Not Found",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+        # Insert the fetched item into the list and select it
+        self.items.append(item)
+        self.items = sort_items(self.items, self.sort_order)
+        idx = next((i for i, it in enumerate(self.items) if it.number == number), -1)
+        if idx < 0:
+            self._announce(f"#{number} could not be added to the list.")
+            return
+        # Rebuild the list ctrl to reflect the new sorted order
+        self.list_ctrl.DeleteAllItems()
+        for i, it in enumerate(self.items):
+            for j, col in enumerate(self.columns):
+                label = self._item_label(it, col)
+                if j == 0:
+                    self.list_ctrl.InsertItem(i, label)
+                else:
+                    self.list_ctrl.SetItem(i, j, label)
+        self.list_ctrl.SetFocus()
+        self.list_ctrl.Select(idx, on=True)
+        self.list_ctrl.Focus(idx)
+        self._show_details(idx)
+        wx.CallLater(100, self.details_text.SetFocus)
+        self._announce(f"Jumped to #{number} — {item.title}")
 
     def on_select_branch(self, event: wx.CommandEvent) -> None:
         """Ctrl+B — select which branch to view commits for."""

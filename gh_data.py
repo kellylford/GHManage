@@ -15,6 +15,8 @@ class GhError(RuntimeError):
 
 def _run_gh(args: list[str]) -> str:
     """Run a `gh` command and return stdout, raising GhError on failure."""
+    # On Windows, suppress the console window that subprocess would otherwise pop up.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
             ["gh", *args],
@@ -23,6 +25,7 @@ def _run_gh(args: list[str]) -> str:
             encoding="utf-8",
             errors="replace",
             check=True,
+            creationflags=creationflags,
         )
     except FileNotFoundError:
         raise GhError(
@@ -298,6 +301,33 @@ def fetch_item_detail(item: Item, repo: Optional[str]) -> Item:
     else:
         updated = _parse_issues(raw)
         return updated[0] if updated else item
+
+
+def fetch_item_by_number(number: int, repo: Optional[str]) -> Optional[Item]:
+    """Fetch a single issue or PR by number, regardless of state.
+
+    Tries ``gh issue view`` first; if that fails (e.g. the number is a PR,
+    not an issue), falls back to ``gh pr view``. Returns ``None`` if the
+    number doesn't exist as either an issue or a PR.
+    """
+    effective = resolve_issue_repo(repo)
+    for sub, fields, parser in (
+        ("issue", ISSUE_FIELDS, _parse_issues),
+        ("pr", PR_FIELDS, _parse_prs),
+    ):
+        args = [sub, "view", str(number), "--json", fields]
+        if effective:
+            args += ["--repo", effective]
+        try:
+            raw = _run_gh(args)
+        except GhError:
+            continue
+        if not raw.strip():
+            continue
+        items = parser(raw)
+        if items:
+            return items[0]
+    return None
 
 
 # ── Actions ────────────────────────────────────────────────────────────
