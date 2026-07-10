@@ -252,10 +252,14 @@ def fetch_issues(repo: Optional[str], state: str = "open", limit: int = 30) -> l
 
     ``gh issue list`` defaults to only 30 items and returns newest first.
     Pass ``limit`` to control how many are fetched.
+
+    If ``repo`` is a fork, issues are fetched from its upstream parent,
+    since forks have issues disabled on GitHub.
     """
+    effective = resolve_issue_repo(repo)
     args = ["issue", "list", "--state", state, "--limit", str(limit), "--json", ISSUE_FIELDS]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     return _parse_issues(_run_gh(args))
 
 
@@ -264,20 +268,26 @@ def fetch_prs(repo: Optional[str], state: str = "open", limit: int = 30) -> list
 
     ``gh pr list`` defaults to only 30 items and returns newest first.
     Pass ``limit`` to control how many are fetched.
+
+    If ``repo`` is a fork, PRs are fetched from its upstream parent so that
+    PRs opened against the upstream repo are visible. Fork-local PRs are not
+    shown in this case.
     """
+    effective = resolve_issue_repo(repo)
     args = ["pr", "list", "--state", state, "--limit", str(limit), "--json", PR_FIELDS]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     return _parse_prs(_run_gh(args))
 
 
 def fetch_item_detail(item: Item, repo: Optional[str]) -> Item:
     """Re-fetch a single item with full detail (body, comments count, etc.)."""
+    effective = resolve_issue_repo(repo)
     sub = "pr" if item.is_pr else "issue"
     fields = PR_FIELDS if item.is_pr else ISSUE_FIELDS
     args = [sub, "view", str(item.number), "--json", fields]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     raw = _run_gh(args)
     if not raw.strip():
         return item
@@ -295,28 +305,31 @@ def fetch_item_detail(item: Item, repo: Optional[str]) -> Item:
 
 def close_item(item: Item, repo: Optional[str]) -> None:
     """Close the given issue or PR via `gh`."""
+    effective = resolve_issue_repo(repo)
     sub = "pr" if item.is_pr else "issue"
     args = [sub, "close", str(item.number)]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     _run_gh(args)
 
 
 def reopen_item(item: Item, repo: Optional[str]) -> None:
     """Reopen the given issue or PR via `gh`."""
+    effective = resolve_issue_repo(repo)
     sub = "pr" if item.is_pr else "issue"
     args = [sub, "reopen", str(item.number)]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     _run_gh(args)
 
 
 def add_comment(item: Item, comment: str, repo: Optional[str]) -> None:
     """Add a comment to an issue or PR."""
+    effective = resolve_issue_repo(repo)
     sub = "pr" if item.is_pr else "issue"
     args = [sub, "comment", str(item.number), "--body", comment]
-    if repo:
-        args += ["--repo", repo]
+    if effective:
+        args += ["--repo", effective]
     _run_gh(args)
 
 
@@ -342,15 +355,59 @@ def detect_repo() -> Optional[str]:
 
 
 def list_repos(limit: int = 100) -> list[dict]:
-    """List the user's GitHub repositories via `gh repo list`."""
+    """List the user's GitHub repositories via `gh repo list`.
+
+    Includes ``isFork`` and ``parent`` so callers can detect forks and
+    resolve the upstream repo that actually hosts issues/PRs.
+    """
     args = [
         "repo", "list", "--limit", str(limit),
-        "--json", "nameWithOwner,description,isArchived",
+        "--json", "nameWithOwner,description,isArchived,isFork,parent",
     ]
     raw = _run_gh(args)
     if not raw.strip():
         return []
     return json.loads(raw)
+
+
+def parent_repo(repo: Optional[str]) -> Optional[str]:
+    """Return the ``OWNER/NAME`` of ``repo``'s upstream parent, or None.
+
+    Forks on GitHub have issues disabled by default; the issues live on the
+    parent (upstream) repo. Callers that fetch issues/PRs should use this to
+    resolve the effective repo before calling ``gh issue list`` / ``gh pr list``.
+    """
+    if not repo:
+        return None
+    try:
+        out = _run_gh(["repo", "view", repo, "--json", "isFork,parent"])
+    except GhError:
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    if not data.get("isFork"):
+        return None
+    parent = data.get("parent")
+    if isinstance(parent, dict):
+        owner = parent.get("owner", {})
+        owner_login = owner.get("login") if isinstance(owner, dict) else None
+        name = parent.get("name")
+        if owner_login and name:
+            return f"{owner_login}/{name}"
+    return None
+
+
+def resolve_issue_repo(repo: Optional[str]) -> Optional[str]:
+    """Return the repo to query for issues/PRs.
+
+    For a fork, this is the upstream parent (forks have issues disabled).
+    For a non-fork or when the parent can't be determined, returns ``repo``
+    unchanged.
+    """
+    parent = parent_repo(repo)
+    return parent if parent else repo
 
 
 # ── Git metadata: branches, commits, tags, releases, workflow runs ────

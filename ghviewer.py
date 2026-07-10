@@ -12,6 +12,8 @@ import webbrowser
 
 import wx
 
+from pinned_repos import add_pinned, load_pinned, remove_pinned
+
 from gh_data import (
     ALL_COLUMNS,
     BRANCH_COLUMNS,
@@ -49,9 +51,45 @@ from gh_data import (
     fetch_workflow_runs,
     list_repos,
     open_in_browser,
+    parent_repo,
     reopen_item,
     sort_items,
 )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+
+def _parse_repo_spec(value: str) -> str | None:
+    """Parse a GitHub repo URL or OWNER/NAME into normalized OWNER/NAME.
+
+    Accepts:
+      - https://github.com/owner/name
+      - https://github.com/owner/name.git
+      - git@github.com:owner/name.git
+      - owner/name
+    Returns None if the input can't be parsed.
+    """
+    v = value.strip()
+    if not v:
+        return None
+    # SSH form: git@github.com:owner/name.git
+    if v.startswith("git@github.com:"):
+        v = v[len("git@github.com:"):]
+    # HTTPS form: strip scheme + host
+    elif "github.com/" in v:
+        v = v.split("github.com/", 1)[1]
+    # Strip trailing .git
+    if v.endswith(".git"):
+        v = v[:-4]
+    # Strip trailing slash or extra path (e.g. /issues, /pull/123)
+    v = v.split("/", 2)
+    if len(v) < 2 or not v[0] or not v[1]:
+        return None
+    owner, name = v[0], v[1].split("?", 1)[0].split("#", 1)[0]
+    if not owner or not name:
+        return None
+    return f"{owner}/{name}"
 
 
 # ── IDs ─────────────────────────────────────────────────────────────────
@@ -81,6 +119,8 @@ ID_VIEW_TAGS = wx.NewIdRef()
 ID_VIEW_RELEASES = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
+ID_OPEN_REPO = wx.NewIdRef()
+ID_REMOVE_REPO = wx.NewIdRef()
 
 
 # View modes
@@ -117,6 +157,7 @@ class GhViewerFrame(wx.Frame):
         self.repo: str | None = None
         self.items: list[Item] = []
         self._all_repos: list[dict] = []
+        self._pinned_repos: list[str] = load_pinned()
 
         # View settings
         self.columns: list[str] = list(DEFAULT_COLUMNS)
@@ -124,8 +165,8 @@ class GhViewerFrame(wx.Frame):
         self.list_mode: str = "quick"  # "quick" or "full"
         self.state_filter: str = "open"  # "open", "closed", "all"
         self.tab_filter: str = "both"  # "issues", "prs", "both"
-        self.page_size: int = 30       # how many items to fetch per page
-        self.current_limit: int = 30  # current fetch limit (grows via View More)
+        self.page_size: int = 100      # how many items to fetch per page
+        self.current_limit: int = 100  # current fetch limit (grows via View More)
         self.view_mode: str = VIEW_ISSUES  # current view: issues, branches, commits, etc.
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
@@ -252,6 +293,9 @@ class GhViewerFrame(wx.Frame):
 
         # File menu
         file_menu = wx.Menu()
+        file_menu.Append(ID_OPEN_REPO, "Open Repository…\tCtrl+Shift+O")
+        file_menu.Append(ID_REMOVE_REPO, "Remove from List…")
+        file_menu.AppendSeparator()
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
         file_menu.AppendSeparator()
         file_menu.Append(ID_OPEN_BROWSER, "Open in Browser\tCtrl+O")
@@ -417,6 +461,8 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
         self.details_text.Bind(wx.EVT_CHAR_HOOK, self.on_details_key_down)
         self.Bind(wx.EVT_MENU, self.on_refresh, id=ID_REFRESH)
+        self.Bind(wx.EVT_MENU, self.on_open_repo, id=ID_OPEN_REPO)
+        self.Bind(wx.EVT_MENU, self.on_remove_repo, id=ID_REMOVE_REPO)
         self.Bind(wx.EVT_MENU, self.on_open_browser, id=ID_OPEN_BROWSER)
         self.Bind(wx.EVT_MENU, self.on_close_item, id=ID_CLOSE_ITEM)
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
@@ -447,13 +493,32 @@ class GhViewerFrame(wx.Frame):
     def _on_repos_loaded(self, repos: list[dict]) -> None:
         self._all_repos = repos
         self.repo_list.Clear()
+        # Pinned (added-by-URL) repos first, marked with a pin
+        existing = {r.get("nameWithOwner", "") for r in repos}
+        shown = set()
+        for name in self._pinned_repos:
+            if name in shown:
+                continue
+            shown.add(name)
+            # If it's also in the gh list, reuse its description
+            desc = ""
+            for r in repos:
+                if r.get("nameWithOwner", "") == name:
+                    desc = r.get("description") or ""
+                    break
+            label = f"📌 {name} — {desc}" if desc else f"📌 {name}"
+            self.repo_list.Append(label, clientData=name)
+        # Then the user's own repos from gh
         for repo in repos:
             name = repo.get("nameWithOwner", "")
+            if name in shown:
+                continue
+            shown.add(name)
             desc = repo.get("description") or ""
             label = f"{name} — {desc}" if desc else name
             self.repo_list.Append(label, clientData=name)
-        if repos:
-            self.SetStatusText(f"Loaded {len(repos)} repositories. Select one to view issues and PRs.")
+        if self.repo_list.GetCount():
+            self.SetStatusText(f"Loaded {self.repo_list.GetCount()} repositories. Select one to view issues and PRs.")
             self.repo_list.SetSelection(0)
             self.repo_list.SetFocus()
         else:
@@ -486,6 +551,7 @@ class GhViewerFrame(wx.Frame):
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
         self.current_limit = self.page_size  # reset to first page
+        self._update_title()
         # Reset to issues view when switching repos
         if self.view_mode != VIEW_ISSUES:
             self._switch_view(VIEW_ISSUES)
@@ -538,6 +604,28 @@ class GhViewerFrame(wx.Frame):
             return f"{col}: {val}" if val else ""
         return val
 
+    # View-mode display labels for the window title
+    _VIEW_LABELS = {
+        VIEW_ISSUES: "Issues",
+        VIEW_BRANCHES: "Branches",
+        VIEW_COMMITS: "Commits",
+        VIEW_TAGS: "Tags",
+        VIEW_RELEASES: "Releases",
+        VIEW_WORKFLOW: "Workflow Runs",
+    }
+
+    def _update_title(self) -> None:
+        """Set the window title: <view> [<branch>] — <repo> — ghviewer."""
+        view_label = self._VIEW_LABELS.get(self.view_mode, self.view_mode.title())
+        parts: list[str] = [view_label]
+        # Include branch where it matters (commits view)
+        if self.view_mode == VIEW_COMMITS and self.commit_branch:
+            parts.append(self.commit_branch)
+        if self.repo:
+            parts.append(self.repo)
+        parts.append("ghviewer")
+        self.SetTitle(" — ".join(parts))
+
     def _on_items_loaded(self, items: list[Item], n_issues: int, n_prs: int) -> None:
         self.items = items
         self.git_items = []
@@ -549,12 +637,16 @@ class GhViewerFrame(wx.Frame):
                     self.list_ctrl.InsertItem(i, label)
                 else:
                     self.list_ctrl.SetItem(i, j, label)
+        # Note fork→parent redirection in the status bar
+        upstream = parent_repo(self.repo)
+        source = f"{self.repo} (issues from upstream {upstream})" if upstream else self.repo
         self.SetStatusText(
-            f"{self.repo} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
+            f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
             f"Showing up to {self.current_limit} newest. "
             f"Ctrl++=view more  R=refresh  M=comment  "
             f"Mode={self.list_mode}"
         )
+        self._update_title()
         if items:
             wx.CallLater(100, self._focus_list)
 
@@ -580,6 +672,7 @@ class GhViewerFrame(wx.Frame):
             f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  "
             f"Mode={self.list_mode}"
         )
+        self._update_title()
         if items:
             wx.CallLater(100, self._focus_list)
 
@@ -592,6 +685,7 @@ class GhViewerFrame(wx.Frame):
 
     def _on_items_error(self, msg: str) -> None:
         self.SetStatusText(f"Error: {msg}")
+        self._update_title()
 
     # ── Details panel ──────────────────────────────────────────────────
 
@@ -871,6 +965,55 @@ class GhViewerFrame(wx.Frame):
 
     def on_comment(self, event: wx.CommandEvent) -> None:
         self._do_comment()
+
+    def on_open_repo(self, event: wx.CommandEvent) -> None:
+        """Ctrl+Shift+O — open any repo by URL or OWNER/NAME without cloning."""
+        dlg = wx.TextEntryDialog(
+            self,
+            "Enter a GitHub repository URL or OWNER/NAME\n"
+            "(e.g. https://github.com/Community-Access/quill or Community-Access/quill)",
+            "Open Repository",
+            "",
+        )
+        if dlg.ShowModal() == wx.ID_OK:
+            value = dlg.GetValue().strip()
+            dlg.Destroy()
+            if not value:
+                return
+            repo = _parse_repo_spec(value)
+            if not repo:
+                self._announce(
+                    "Couldn't parse that. Use a github.com URL or OWNER/NAME."
+                )
+                return
+            # Pin it so it shows in the left list across sessions
+            self._pinned_repos = add_pinned(repo)
+            self._refresh_repo_list()
+            self._select_repo(repo)
+        else:
+            dlg.Destroy()
+
+    def on_remove_repo(self, event: wx.CommandEvent) -> None:
+        """Remove the currently selected repo from the pinned list."""
+        idx = self.repo_list.GetSelection()
+        if idx == wx.NOT_FOUND:
+            self._announce("Select a repository in the list first.")
+            return
+        name = self.repo_list.GetClientData(idx)
+        if not name:
+            return
+        if name not in self._pinned_repos:
+            self._announce(
+                f"{name} is one of your own repositories and can't be removed from here."
+            )
+            return
+        self._pinned_repos = remove_pinned(name)
+        self._refresh_repo_list()
+        self._announce(f"Removed {name} from the pinned list.")
+
+    def _refresh_repo_list(self) -> None:
+        """Rebuild the repo list from cached gh results + current pinned repos."""
+        self._on_repos_loaded(self._all_repos)
 
     def on_goto(self, event: wx.CommandEvent) -> None:
         """Ctrl+G — open a dialog to jump to a specific issue/PR by number."""
