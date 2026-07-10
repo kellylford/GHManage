@@ -14,6 +14,7 @@ from typing import Optional
 import wx
 
 from pinned_repos import add_pinned, load_pinned, remove_pinned
+from favorites import FavoriteEntry, load_favorites, save_favorites, is_favorite, toggle_favorite
 
 from gh_data import (
     ALL_COLUMNS,
@@ -120,6 +121,8 @@ ID_VIEW_COMMITS = wx.NewIdRef()
 ID_VIEW_TAGS = wx.NewIdRef()
 ID_VIEW_RELEASES = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
+ID_VIEW_FAVORITES = wx.NewIdRef()
+ID_FILTER = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
@@ -132,6 +135,11 @@ VIEW_COMMITS = "commits"
 VIEW_TAGS = "tags"
 VIEW_RELEASES = "releases"
 VIEW_WORKFLOW = "workflow"
+VIEW_FAVORITES = "favorites"
+
+# Columns for the favorites view (mixed item types)
+FAVORITES_COLUMNS = ["type", "repo", "title", "subtitle"]
+FAVORITES_DEFAULT_COLUMNS = ["type", "repo", "title", "subtitle"]
 
 # Column defaults per view mode
 VIEW_COLUMNS = {
@@ -141,6 +149,7 @@ VIEW_COLUMNS = {
     VIEW_TAGS: (TAG_DEFAULT_COLUMNS, TAG_COLUMNS),
     VIEW_RELEASES: (RELEASE_DEFAULT_COLUMNS, RELEASE_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
+    VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
 
 
@@ -160,6 +169,7 @@ class GhViewerFrame(wx.Frame):
         self.items: list[Item] = []
         self._all_repos: list[dict] = []
         self._pinned_repos: list[str] = load_pinned()
+        self.favorites: list[FavoriteEntry] = load_favorites()
 
         # View settings
         self.columns: list[str] = list(DEFAULT_COLUMNS)
@@ -172,6 +182,7 @@ class GhViewerFrame(wx.Frame):
         self.view_mode: str = VIEW_ISSUES  # current view: issues, branches, commits, etc.
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
+        self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
 
         self._build_ui()
         self._bind_events()
@@ -284,6 +295,8 @@ class GhViewerFrame(wx.Frame):
             "tag": 100, "name": 250, "draft": 50, "prerelease": 70,
             # Workflow
             "name": 150, "status": 100, "result": 100, "event": 100, "#": 50,
+            # Favorites
+            "repo": 180, "subtitle": 250,
         }
         for i, col in enumerate(self.columns):
             self.list_ctrl.InsertColumn(i, col, width=widths.get(col, 100))
@@ -305,6 +318,7 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_REOPEN, "Reopen\tCtrl+Shift+W")
         file_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
+        file_menu.Append(ID_FILTER, "Quick Filter…\tCtrl+F")
         file_menu.Append(ID_SELECT_BRANCH, "Select Branch…\tCtrl+B")
         file_menu.AppendSeparator()
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
@@ -326,6 +340,7 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags")
         show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases")
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs")
+        show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites")
         view_menu.AppendSubMenu(show_menu, "View Mode")
 
         view_menu.AppendSeparator()
@@ -391,6 +406,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_tags, id=ID_VIEW_TAGS)
         self.Bind(wx.EVT_MENU, self.on_view_releases, id=ID_VIEW_RELEASES)
         self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
+        self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
 
     def _update_menu_checks(self) -> None:
         """Update checkmarks/radio selections to match current settings."""
@@ -405,6 +421,7 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_TAGS, self.view_mode == VIEW_TAGS)
         menu_bar.Check(ID_VIEW_RELEASES, self.view_mode == VIEW_RELEASES)
         menu_bar.Check(ID_VIEW_WORKFLOW, self.view_mode == VIEW_WORKFLOW)
+        menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
         menu_bar.Check(ID_STATE_CLOSED, self.state_filter == "closed")
@@ -440,9 +457,10 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == mode:
             return
         self.view_mode = mode
-        # Reset commit branch when leaving commits view
+        # Reset commit branch and filter when leaving a view
         if mode != VIEW_COMMITS:
             self.commit_branch = ""
+        self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
         self.columns = list(default_cols)
@@ -450,7 +468,9 @@ class GhViewerFrame(wx.Frame):
         self._rebuild_columns_menu()
         self._update_menu_checks()
         self.current_limit = self.page_size
-        if self.repo:
+        if mode == VIEW_FAVORITES:
+            self._load_favorites_view()
+        elif self.repo:
             self._load_items()
 
     # ── Event binding ───────────────────────────────────────────────────
@@ -470,6 +490,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
+        self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
         self.Bind(wx.EVT_MENU, self.on_next_comment, id=ID_NEXT_COMMENT)
@@ -495,7 +516,11 @@ class GhViewerFrame(wx.Frame):
     def _on_repos_loaded(self, repos: list[dict]) -> None:
         self._all_repos = repos
         self.repo_list.Clear()
-        # Pinned (added-by-URL) repos first, marked with a pin
+        # ★ Favorites entry first — special pseudo-repo
+        n_fav = len(self.favorites)
+        fav_label = f"★ Favorites ({n_fav})" if n_fav else "★ Favorites"
+        self.repo_list.Append(fav_label, clientData="__favorites__")
+        # Pinned (added-by-URL) repos next, marked with a pin
         existing = {r.get("nameWithOwner", "") for r in repos}
         shown = set()
         for name in self._pinned_repos:
@@ -535,7 +560,10 @@ class GhViewerFrame(wx.Frame):
         if idx != wx.NOT_FOUND:
             name = self.repo_list.GetClientData(idx)
             if name:
-                self._select_repo(name)
+                if name == "__favorites__":
+                    self._select_favorites()
+                else:
+                    self._select_repo(name)
 
     def on_repo_key_down(self, event: wx.KeyEvent) -> None:
         """Handle Enter key on repo list — load the selected repo."""
@@ -544,7 +572,10 @@ class GhViewerFrame(wx.Frame):
             if idx != wx.NOT_FOUND:
                 name = self.repo_list.GetClientData(idx)
                 if name:
-                    self._select_repo(name)
+                    if name == "__favorites__":
+                        self._select_favorites()
+                    else:
+                        self._select_repo(name)
             return  # swallow the key
         event.Skip()
 
@@ -553,6 +584,7 @@ class GhViewerFrame(wx.Frame):
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
         self.current_limit = self.page_size  # reset to first page
+        self.filter_text = ""  # clear filter on repo switch
         self._update_title()
         # Reset to issues view when switching repos
         if self.view_mode != VIEW_ISSUES:
@@ -560,7 +592,35 @@ class GhViewerFrame(wx.Frame):
         else:
             self._load_items()
 
+    def _select_favorites(self) -> None:
+        """Switch to the Favorites view — shows all favorited items across repos."""
+        self.repo = None
+        self._update_title()
+        if self.view_mode != VIEW_FAVORITES:
+            self._switch_view(VIEW_FAVORITES)
+        else:
+            self._load_favorites_view()
+
     # ── Item loading ───────────────────────────────────────────────────
+
+    def _load_favorites_view(self) -> None:
+        """Populate the list with all favorited items (mixed types, cross-repo)."""
+        self.SetStatusText("Loading favorites…")
+        self.details_text.Clear()
+        self.favorites = load_favorites()
+        self.git_items = list(self.favorites)  # favorites are stored as git_items for the list
+        self.items = []
+        filtered = self._populate_filtered_list(self.favorites)
+        n = len(self.favorites)
+        self.SetStatusText(
+            f"★ Favorites — {n} item{'s' if n != 1 else ''}.  "
+            f"F=unfavorite  Enter=open in browser  Ctrl+F=filter  "
+            f"Mode={self.list_mode}"
+            + self._filter_status_suffix()
+        )
+        self._update_title()
+        if filtered:
+            wx.CallLater(100, self._focus_list)
 
     def _load_items(self) -> None:
         self.SetStatusText(f"Loading {self.repo}…")
@@ -606,6 +666,13 @@ class GhViewerFrame(wx.Frame):
             return f"{col}: {val}" if val else ""
         return val
 
+    def _favorite_prefix(self, item) -> str:
+        """Return '★ ' if the item is in favorites, else empty string."""
+        url = getattr(item, "url", "") or ""
+        if url and is_favorite(url, self.favorites):
+            return "★ "
+        return ""
+
     # View-mode display labels for the window title
     _VIEW_LABELS = {
         VIEW_ISSUES: "Issues",
@@ -614,6 +681,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_TAGS: "Tags",
         VIEW_RELEASES: "Releases",
         VIEW_WORKFLOW: "Workflow Runs",
+        VIEW_FAVORITES: "Favorites",
     }
 
     def _update_title(self) -> None:
@@ -628,42 +696,63 @@ class GhViewerFrame(wx.Frame):
         parts.append("ghviewer")
         self.SetTitle(" — ".join(parts))
 
+    def _populate_filtered_list(self, source_items: list, use_favorite_prefix: bool = False) -> None:
+        """Populate the list ctrl with items that match the current filter.
+
+        ``source_items`` is the full unfiltered list (self.items, self.git_items,
+        or self.favorites). Only items matching ``self.filter_text`` are shown.
+        """
+        self.list_ctrl.DeleteAllItems()
+        filtered = [it for it in source_items if self._matches_filter(it)]
+        for i, item in enumerate(filtered):
+            prefix = self._favorite_prefix(item) if use_favorite_prefix else ""
+            if isinstance(item, FavoriteEntry):
+                row = {
+                    "type": item.item_type,
+                    "repo": item.repo,
+                    "title": item.title,
+                    "subtitle": item.subtitle,
+                }
+                for j, col in enumerate(self.columns):
+                    label = row.get(col, "")
+                    if self.list_mode == "full":
+                        label = f"{col}: {label}" if label else ""
+                    if j == 0:
+                        self.list_ctrl.InsertItem(i, prefix + label)
+                    else:
+                        self.list_ctrl.SetItem(i, j, label)
+            else:
+                for j, col in enumerate(self.columns):
+                    label = self._item_label(item, col)
+                    if j == 0:
+                        self.list_ctrl.InsertItem(i, prefix + label)
+                    else:
+                        self.list_ctrl.SetItem(i, j, label)
+        return filtered
+
     def _on_items_loaded(self, items: list[Item], n_issues: int, n_prs: int) -> None:
         self.items = items
         self.git_items = []
-        self.list_ctrl.DeleteAllItems()
-        for i, item in enumerate(items):
-            for j, col in enumerate(self.columns):
-                label = self._item_label(item, col)
-                if j == 0:
-                    self.list_ctrl.InsertItem(i, label)
-                else:
-                    self.list_ctrl.SetItem(i, j, label)
+        filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
         # Note fork→parent redirection in the status bar
         upstream = parent_repo(self.repo)
         source = f"{self.repo} (issues from upstream {upstream})" if upstream else self.repo
         self.SetStatusText(
             f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
             f"Showing up to {self.current_limit} newest. "
-            f"Ctrl++=view more  R=refresh  M=comment  "
+            f"Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter  "
             f"Mode={self.list_mode}"
+            + self._filter_status_suffix()
         )
         self._update_title()
-        if items:
+        if filtered:
             wx.CallLater(100, self._focus_list)
 
     def _on_git_items_loaded(self, items: list, kind: str) -> None:
         """Handle loaded git items (branches, commits, tags, releases, workflow runs)."""
         self.git_items = items
         self.items = []  # clear issues/PRs
-        self.list_ctrl.DeleteAllItems()
-        for i, item in enumerate(items):
-            for j, col in enumerate(self.columns):
-                label = self._item_label(item, col)
-                if j == 0:
-                    self.list_ctrl.InsertItem(i, label)
-                else:
-                    self.list_ctrl.SetItem(i, j, label)
+        filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
         # Build status text — include branch name for commits view
         branch_info = ""
         if self.view_mode == VIEW_COMMITS:
@@ -671,11 +760,12 @@ class GhViewerFrame(wx.Frame):
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
-            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  "
+            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  Ctrl+F=filter  "
             f"Mode={self.list_mode}"
+            + self._filter_status_suffix()
         )
         self._update_title()
-        if items:
+        if filtered:
             wx.CallLater(100, self._focus_list)
 
     def _focus_list(self) -> None:
@@ -697,8 +787,32 @@ class GhViewerFrame(wx.Frame):
         self._current_comment = -1
         if self.view_mode == VIEW_ISSUES:
             self._show_issue_details(idx)
+        elif self.view_mode == VIEW_FAVORITES:
+            self._show_favorite_details(idx)
         else:
             self._show_git_details(idx)
+
+    def _show_favorite_details(self, idx: int) -> None:
+        """Show details for a favorited item in the details panel."""
+        if idx < 0 or idx >= len(self.favorites):
+            self.details_text.Clear()
+            return
+        fav = self.favorites[idx]
+        lines = []
+        lines.append(f"★ {fav.title}")
+        lines.append(f"Type: {fav.item_type}")
+        lines.append(f"Repo: {fav.repo}")
+        if fav.subtitle:
+            lines.append(f"Detail: {fav.subtitle}")
+        if fav.added_at:
+            lines.append(f"Favorited: {fav.added_at[:10]}")
+        lines.append(f"URL: {fav.url}")
+        lines.append("")
+        lines.append("─" * 60)
+        lines.append("")
+        lines.append("Press Enter to open in browser.")
+        lines.append("Press F to remove from favorites.")
+        self.details_text.SetValue("\n".join(lines))
 
     def _show_issue_details(self, idx: int) -> None:
         """Show details for an issue/PR."""
@@ -823,13 +937,16 @@ class GhViewerFrame(wx.Frame):
     # ── Helpers ─────────────────────────────────────────────────────────
 
     def _focused_item(self):
-        """Return the currently focused item (issue/PR or git item)."""
+        """Return the currently focused item (issue/PR, git item, or favorite)."""
         idx = self.list_ctrl.GetFirstSelected()
         if idx < 0:
             return None
         if self.view_mode == VIEW_ISSUES:
             if idx < len(self.items):
                 return self.items[idx]
+        elif self.view_mode == VIEW_FAVORITES:
+            if idx < len(self.favorites):
+                return self.favorites[idx]
         else:
             if idx < len(self.git_items):
                 return self.git_items[idx]
@@ -847,7 +964,13 @@ class GhViewerFrame(wx.Frame):
         if self.list_mode == "full":
             item = self._focused_item()
             if item:
-                self._announce(item.to_accessible_string(self.columns))
+                if isinstance(item, FavoriteEntry):
+                    self._announce(
+                        f"type: {item.item_type}, repo: {item.repo}, "
+                        f"title: {item.title}, subtitle: {item.subtitle}"
+                    )
+                else:
+                    self._announce(item.to_accessible_string(self.columns))
 
     def on_item_activated(self, event: wx.ListEvent) -> None:
         """Double-click or Enter — context-dependent action."""
@@ -860,6 +983,14 @@ class GhViewerFrame(wx.Frame):
             self._switch_view(VIEW_COMMITS)
             self._announce(f"Showing commits on branch {item.name}")
             return
+        # In Favorites view, Enter opens in browser
+        if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
+            if item.url:
+                webbrowser.open(item.url)
+                self._announce(f"Opened {item.title} in browser")
+            else:
+                self._announce("No URL for this favorite")
+            return
         # All other views: open in browser
         url = getattr(item, "url", "") or ""
         if url:
@@ -871,8 +1002,15 @@ class GhViewerFrame(wx.Frame):
 
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
-        if key == ord("R"):
-            self._load_items()
+        if key == wx.WXK_ESCAPE:
+            self._clear_filter()
+        elif key == ord("F"):
+            self._toggle_favorite()
+        elif key == ord("R"):
+            if self.view_mode == VIEW_FAVORITES:
+                self._load_favorites_view()
+            else:
+                self._load_items()
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):
@@ -885,6 +1023,90 @@ class GhViewerFrame(wx.Frame):
                 event.Skip()
         else:
             event.Skip()
+
+    def _toggle_favorite(self) -> None:
+        """Toggle favorite status on the currently focused item (F key)."""
+        item = self._focused_item()
+        if not item:
+            return
+
+        # In the favorites view, F unfavorites the item
+        if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
+            self.favorites = [f for f in self.favorites if f.url != item.url]
+            save_favorites(self.favorites)
+            self._announce(f"Removed '{item.title}' from favorites")
+            self._load_favorites_view()
+            self._refresh_repo_list_fav_count()
+            return
+
+        # In other views, F toggles favorite on the current item
+        url = getattr(item, "url", "") or ""
+        if not url:
+            self._announce("No URL for this item — can't favorite.")
+            return
+
+        entry = self._build_favorite_entry(item)
+        if entry is None:
+            self._announce("Can't determine item type for favorite.")
+            return
+
+        self.favorites, was_added = toggle_favorite(entry, self.favorites)
+        if was_added:
+            self._announce(f"★ Added '{entry.title}' to favorites")
+        else:
+            self._announce(f"Removed '{entry.title}' from favorites")
+        self._refresh_repo_list_fav_count()
+
+    def _build_favorite_entry(self, item) -> FavoriteEntry | None:
+        """Build a FavoriteEntry from any item type (Item, Branch, Commit, etc.)."""
+        url = getattr(item, "url", "") or ""
+        repo = self.repo or ""
+        if isinstance(item, Item):
+            item_type = "PR" if item.is_pr else "issue"
+            title = f"#{item.number} — {item.title}"
+            subtitle = item.state_display
+        elif isinstance(item, Branch):
+            item_type = "branch"
+            title = item.name
+            subtitle = item.commit_message[:60] if item.commit_message else ""
+        elif isinstance(item, Commit):
+            item_type = "commit"
+            title = item.short_sha
+            subtitle = item.message[:60] if item.message else ""
+        elif isinstance(item, Tag):
+            item_type = "tag"
+            title = item.name
+            subtitle = item.commit_sha
+        elif isinstance(item, Release):
+            item_type = "release"
+            title = item.tag
+            subtitle = item.name
+        elif isinstance(item, WorkflowRun):
+            item_type = "workflow"
+            title = f"#{item.run_number} {item.name}"
+            subtitle = f"{item.conclusion or item.status} on {item.branch}"
+        else:
+            return None
+
+        from datetime import datetime
+        return FavoriteEntry(
+            repo=repo,
+            item_type=item_type,
+            url=url,
+            title=title,
+            subtitle=subtitle,
+            added_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+    def _refresh_repo_list_fav_count(self) -> None:
+        """Update the ★ Favorites count in the repo list without full reload."""
+        for i in range(self.repo_list.GetCount()):
+            data = self.repo_list.GetClientData(i)
+            if data == "__favorites__":
+                n = len(self.favorites)
+                label = f"★ Favorites ({n})" if n else "★ Favorites"
+                self.repo_list.SetString(i, label)
+                break
 
     def on_details_key_down(self, event: wx.KeyEvent) -> None:
         """Pass key events through — comment navigation is handled via Alt+N/Alt+P menu accelerators."""
@@ -954,8 +1176,11 @@ class GhViewerFrame(wx.Frame):
         url = getattr(item, "url", "") or ""
         if url:
             webbrowser.open(url)
-            label = getattr(item, "number", None) or getattr(item, "name", "") or getattr(item, "short_sha", "")
-            self._announce(f"Opened {label} in browser")
+            if isinstance(item, FavoriteEntry):
+                self._announce(f"Opened {item.title} in browser")
+            else:
+                label = getattr(item, "number", None) or getattr(item, "name", "") or getattr(item, "short_sha", "")
+                self._announce(f"Opened {label} in browser")
         else:
             self._announce("No URL for this item")
 
@@ -1039,6 +1264,67 @@ class GhViewerFrame(wx.Frame):
             self._goto_issue(number)
         dlg.Destroy()
 
+    def on_filter(self, event: wx.CommandEvent) -> None:
+        """Ctrl+F — quick filter the current list by text across all columns."""
+        dlg = wx.TextEntryDialog(
+            self,
+            "Filter the current list (case-insensitive).\n"
+            "Matches against all visible columns.\n"
+            "Leave empty to clear the filter.",
+            "Quick Filter",
+            self.filter_text,
+        )
+        if dlg.ShowModal() == wx.ID_OK:
+            self.filter_text = dlg.GetValue().strip()
+            self._refresh_list_display()
+            if self.filter_text:
+                self._announce(f"Filter: '{self.filter_text}' applied")
+            else:
+                self._announce("Filter cleared")
+        dlg.Destroy()
+
+    def _clear_filter(self) -> None:
+        """Clear the quick filter and refresh the display."""
+        if not self.filter_text:
+            self._announce("No filter active.")
+            return
+        self.filter_text = ""
+        self._refresh_list_display()
+        self._announce("Filter cleared")
+
+    def _matches_filter(self, item) -> bool:
+        """Return True if the item matches the current filter text (or no filter)."""
+        if not self.filter_text:
+            return True
+        needle = self.filter_text.lower()
+        if isinstance(item, FavoriteEntry):
+            haystack = " ".join([
+                item.item_type, item.repo, item.title, item.subtitle,
+            ]).lower()
+            return needle in haystack
+        row = item.to_row(self.columns)
+        haystack = " ".join(str(v) for v in row.values()).lower()
+        return needle in haystack
+
+    def _filtered_items(self) -> list:
+        """Return the filtered list for the current view mode."""
+        if self.view_mode == VIEW_ISSUES:
+            return [it for it in self.items if self._matches_filter(it)]
+        elif self.view_mode == VIEW_FAVORITES:
+            return [fav for fav in self.favorites if self._matches_filter(fav)]
+        else:
+            return [it for it in self.git_items if self._matches_filter(it)]
+
+    def _filter_status_suffix(self) -> str:
+        """Return a status-bar fragment showing the filter state."""
+        if not self.filter_text:
+            return ""
+        total = len(self.items) if self.view_mode == VIEW_ISSUES else (
+            len(self.favorites) if self.view_mode == VIEW_FAVORITES else len(self.git_items)
+        )
+        shown = len(self._filtered_items())
+        return f"  Filter: '{self.filter_text}' ({shown}/{total})"
+
     def _goto_issue(self, number: int) -> None:
         """Select the item with the given number and focus the details box.
 
@@ -1098,14 +1384,7 @@ class GhViewerFrame(wx.Frame):
             self._announce(f"#{number} could not be added to the list.")
             return
         # Rebuild the list ctrl to reflect the new sorted order
-        self.list_ctrl.DeleteAllItems()
-        for i, it in enumerate(self.items):
-            for j, col in enumerate(self.columns):
-                label = self._item_label(it, col)
-                if j == 0:
-                    self.list_ctrl.InsertItem(i, label)
-                else:
-                    self.list_ctrl.SetItem(i, j, label)
+        self._populate_filtered_list(self.items, use_favorite_prefix=True)
         self.list_ctrl.SetFocus()
         self.list_ctrl.Select(idx, on=True)
         self.list_ctrl.Focus(idx)
@@ -1260,20 +1539,19 @@ class GhViewerFrame(wx.Frame):
     def on_view_workflow(self, event: wx.CommandEvent) -> None:
         self._switch_view(VIEW_WORKFLOW)
 
+    def on_view_favorites(self, event: wx.CommandEvent) -> None:
+        self._select_favorites()
+
     # ── List display refresh ───────────────────────────────────────────
 
     def _refresh_list_display(self) -> None:
         """Re-populate the list from current data without re-fetching."""
-        self.list_ctrl.DeleteAllItems()
+        if self.view_mode == VIEW_FAVORITES:
+            self._load_favorites_view()
+            return
         items = self.items if self.view_mode == VIEW_ISSUES else self.git_items
-        for i, item in enumerate(items):
-            for j, col in enumerate(self.columns):
-                label = self._item_label(item, col)
-                if j == 0:
-                    self.list_ctrl.InsertItem(i, label)
-                else:
-                    self.list_ctrl.SetItem(i, j, label)
-        if items:
+        filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
+        if filtered:
             wx.CallLater(100, self._focus_list)
 
     # ── Actions ─────────────────────────────────────────────────────────

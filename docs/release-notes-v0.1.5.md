@@ -14,6 +14,23 @@ You do need the [GitHub CLI (`gh`)](https://cli.github.com/) installed and authe
 
 ## What's new
 
+### New features
+
+- **Favorites** — mark any item as a favorite by pressing **F** on it in any view. Favorites are a mixed collection that can include issues, PRs, branches, commits, tags, releases, and workflow runs — across any number of repos.
+  - A **★ Favorites** entry appears at the top of the left repo list. Select it to see all your favorited items in one place.
+  - The favorites count is shown in the repo list: `★ Favorites (12)`.
+  - In the favorites view, press **F** on an item to unfavorite it, or **Enter** to open it in the browser.
+  - Favorited items in any view are marked with a **★** prefix in the list.
+  - Favorites persist across sessions (stored in `%APPDATA%\ghmanage\favorites.json`).
+  - Dedup is by GitHub URL — each item has a unique URL.
+
+- **Quick Filter** — press **Ctrl+F** to filter the current list by text. The filter matches case-insensitively against all visible columns in the current view.
+  - Works in every view: Issues & PRs, Branches, Commits, Tags, Releases, Workflow Runs, and Favorites.
+  - The status bar shows the filter state: `Filter: 'login' (3/142)`.
+  - Press **Escape** in the list to clear the filter instantly.
+  - Filter auto-clears when switching views or repos.
+  - Leave the filter dialog empty to clear.
+
 ### Bug fixes
 
 - **No more console window flashing** — on Windows, every background `gh` CLI call used to briefly pop up a console window. This is now suppressed with `CREATE_NO_WINDOW`, so the app runs quietly without terminal windows flashing on screen during loads.
@@ -25,7 +42,7 @@ You do need the [GitHub CLI (`gh`)](https://cli.github.com/) installed and authe
 ### Improvements
 
 - **View menu cleanup** — the View menu had two submenus both named "Show," which was confusing. They are now clearly labeled:
-  - **View Mode** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflow Runs
+  - **View Mode** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflow Runs, ★ Favorites
   - **Filter** — filter Issues Only / PRs Only / Issues & PRs within the Issues & PRs view
 
 ### Keybindings
@@ -35,8 +52,12 @@ You do need the [GitHub CLI (`gh`)](https://cli.github.com/) installed and authe
 | `Ctrl+Shift+O` | Open a repository by URL or OWNER/NAME |
 | `Ctrl++` | View More — load the next page of items |
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
+| `Ctrl+F` | Quick Filter — filter the current list by text |
+| `Escape` | Clear the quick filter |
+| `F` | Toggle favorite on the focused item |
 | `Enter` (in Branches view) | Switch to Commits view for the selected branch |
 | `Enter` (in other views) | Open the selected item on GitHub in your browser |
+| `Enter` (in Favorites view) | Open the selected favorite in browser |
 | `C` | Close the selected issue/PR (issues view only) |
 | `O` | Reopen the selected issue/PR (issues view only) |
 | `R` or `Ctrl+R` | Refresh the list (resets to first page) |
