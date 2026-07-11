@@ -34,6 +34,9 @@ from gh_data import (
     WORKFLOW_DEFAULT_COLUMNS,
     WORKFLOW_DEF_COLUMNS,
     WORKFLOW_DEF_DEFAULT_COLUMNS,
+    ARTIFACT_COLUMNS,
+    ARTIFACT_DEFAULT_COLUMNS,
+    Artifact,
     Branch,
     Commit,
     Release,
@@ -45,7 +48,9 @@ from gh_data import (
     close_item,
     detect_repo,
     dispatch_workflow,
+    download_artifact,
     fetch_branches,
+    fetch_run_artifacts,
     fetch_compare,
     fetch_commits,
     fetch_commit_detail,
@@ -135,6 +140,7 @@ ID_COMPARE_BRANCHES = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
 ID_RUN_WORKFLOW = wx.NewIdRef()
+ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 
 
 # View modes
@@ -145,6 +151,7 @@ VIEW_TAGS = "tags"
 VIEW_RELEASES = "releases"
 VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
 VIEW_WORKFLOW = "workflow"     # workflow runs
+VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
 VIEW_FAVORITES = "favorites"
 
 # Columns for the favorites view (mixed item types)
@@ -160,6 +167,7 @@ VIEW_COLUMNS = {
     VIEW_RELEASES: (RELEASE_DEFAULT_COLUMNS, RELEASE_COLUMNS),
     VIEW_WORKFLOWS: (WORKFLOW_DEF_DEFAULT_COLUMNS, WORKFLOW_DEF_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
+    VIEW_ARTIFACTS: (ARTIFACT_DEFAULT_COLUMNS, ARTIFACT_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
 
@@ -193,6 +201,7 @@ class GhViewerFrame(wx.Frame):
         self.view_mode: str = VIEW_ISSUES  # current view: issues, branches, commits, etc.
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
+        self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
         self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
 
         self._build_ui()
@@ -304,9 +313,9 @@ class GhViewerFrame(wx.Frame):
             "tag": 150, "commit": 80,
             # Releases
             "tag": 100, "name": 250, "draft": 50, "prerelease": 70,
-            # Workflow (runs + definitions)
+            # Workflow (runs + definitions) + artifacts
             "name": 150, "status": 100, "result": 100, "event": 100, "#": 50,
-            "state": 90, "path": 320,
+            "state": 90, "path": 320, "size": 90, "expired": 70,
             # Favorites
             "repo": 180, "subtitle": 250,
         }
@@ -473,9 +482,11 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == mode:
             return
         self.view_mode = mode
-        # Reset commit branch and filter when leaving a view
+        # Reset per-view drill-down context and filter when leaving a view
         if mode != VIEW_COMMITS:
             self.commit_branch = ""
+        if mode != VIEW_ARTIFACTS:
+            self.artifacts_run = None
         self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
@@ -674,6 +685,14 @@ class GhViewerFrame(wx.Frame):
                 elif self.view_mode == VIEW_WORKFLOW:
                     runs = fetch_workflow_runs(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, runs, "workflow runs")
+                elif self.view_mode == VIEW_ARTIFACTS:
+                    if self.artifacts_run:
+                        arts = fetch_run_artifacts(
+                            self.repo, self.artifacts_run.run_id, self.current_limit
+                        )
+                        wx.CallAfter(self._on_git_items_loaded, arts, "artifacts")
+                    else:
+                        wx.CallAfter(self._on_git_items_loaded, [], "artifacts")
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))
                 return
@@ -703,6 +722,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_RELEASES: "Releases",
         VIEW_WORKFLOWS: "Workflows",
         VIEW_WORKFLOW: "Workflow Runs",
+        VIEW_ARTIFACTS: "Artifacts",
         VIEW_FAVORITES: "Favorites",
     }
 
@@ -713,6 +733,9 @@ class GhViewerFrame(wx.Frame):
         # Include branch where it matters (commits view)
         if self.view_mode == VIEW_COMMITS and self.commit_branch:
             parts.append(self.commit_branch)
+        # Include the run being drilled into (artifacts view)
+        if self.view_mode == VIEW_ARTIFACTS and self.artifacts_run:
+            parts.append(f"run #{self.artifacts_run.run_number} {self.artifacts_run.name}")
         if self.repo:
             parts.append(self.repo)
         parts.append("ghviewer")
@@ -782,6 +805,10 @@ class GhViewerFrame(wx.Frame):
         compare_hint = "  Ctrl+Shift+B=compare branches" if self.view_mode == VIEW_BRANCHES else ""
         if self.view_mode == VIEW_WORKFLOWS:
             compare_hint = "  Enter=run on branch"
+        elif self.view_mode == VIEW_WORKFLOW:
+            compare_hint = "  Enter=list artifacts"
+        elif self.view_mode == VIEW_ARTIFACTS:
+            compare_hint = "  Enter=download  Backspace=back to runs"
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
@@ -969,6 +996,24 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Event: {item.event}")
             lines.append(f"Date: {item.created_at}")
             lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append("Press Enter to list this run's artifacts.")
+        elif isinstance(item, Artifact):
+            lines.append(f"Artifact: {item.name}")
+            lines.append(f"Size: {item.size_human()}")
+            lines.append(f"Expired: {'Yes' if item.expired else 'No'}")
+            lines.append(f"Created: {item.created_at}")
+            lines.append(f"ID: {item.id}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            if item.expired:
+                lines.append("This artifact has expired and can no longer be downloaded.")
+            else:
+                lines.append("Press Enter to download this artifact into a folder you choose.")
+            lines.append("Press Backspace to return to the workflow runs.")
         self.details_text.SetValue("\n".join(lines))
 
     # ── Helpers ─────────────────────────────────────────────────────────
@@ -1024,6 +1069,16 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):
             self._run_workflow_flow(item)
             return
+        # In Workflow Runs view, Enter drills into that run's artifacts
+        if self.view_mode == VIEW_WORKFLOW and isinstance(item, WorkflowRun):
+            self.artifacts_run = item
+            self._switch_view(VIEW_ARTIFACTS)
+            self._announce(f"Showing artifacts for run #{item.run_number} {item.name}")
+            return
+        # In Artifacts view, Enter downloads the selected artifact
+        if self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
+            self._download_artifact_flow(item)
+            return
         # In Favorites view, Enter opens in browser
         if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
             if item.url:
@@ -1051,6 +1106,17 @@ class GhViewerFrame(wx.Frame):
                 wx.EVT_MENU,
                 lambda evt, wf=item: self._run_workflow_flow(wf),
                 id=ID_RUN_WORKFLOW,
+            )
+            self.list_ctrl.PopupMenu(menu)
+            menu.Destroy()
+        elif self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
+            menu = wx.Menu()
+            dl = menu.Append(ID_DOWNLOAD_ARTIFACT, "Download…")
+            dl.Enable(not item.expired)
+            menu.Bind(
+                wx.EVT_MENU,
+                lambda evt, art=item: self._download_artifact_flow(art),
+                id=ID_DOWNLOAD_ARTIFACT,
             )
             self.list_ctrl.PopupMenu(menu)
             menu.Destroy()
@@ -1129,6 +1195,52 @@ class GhViewerFrame(wx.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ── Download an artifact ────────────────────────────────────────────
+
+    def _download_artifact_flow(self, art: "Artifact") -> None:
+        """Prompt for a destination folder, then download the artifact into it."""
+        if not self.repo:
+            self._announce("No repository loaded.")
+            return
+        if art.expired:
+            self._announce(f"'{art.name}' has expired and can't be downloaded.")
+            wx.MessageBox(
+                f"'{art.name}' has expired and can no longer be downloaded.",
+                "Download Artifact",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+        dlg = wx.DirDialog(
+            self,
+            f"Choose a folder to download '{art.name}' into",
+            style=wx.DD_DEFAULT_STYLE,
+        )
+        if dlg.ShowModal() == wx.ID_OK:
+            dest = dlg.GetPath()
+            dlg.Destroy()
+            self._do_download_artifact(art, dest)
+        else:
+            dlg.Destroy()
+            self._announce("Download cancelled.")
+
+    def _do_download_artifact(self, art: "Artifact", dest: str) -> None:
+        """Download ``art`` into ``dest`` in the background."""
+        run_id = art.run_id or (self.artifacts_run.run_id if self.artifacts_run else 0)
+        self._announce(f"Downloading '{art.name}'…")
+
+        def worker() -> None:
+            try:
+                download_artifact(self.repo, run_id, art.name, dest)
+                wx.CallAfter(
+                    self._announce,
+                    f"Downloaded '{art.name}' into {dest}.",
+                )
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
         if key == wx.WXK_ESCAPE:
@@ -1140,6 +1252,10 @@ class GhViewerFrame(wx.Frame):
                 self._load_favorites_view()
             else:
                 self._load_items()
+        elif key == wx.WXK_BACK and self.view_mode == VIEW_ARTIFACTS:
+            # Backspace returns from a run's artifacts to the workflow runs list
+            self._switch_view(VIEW_WORKFLOW)
+            self._announce("Back to workflow runs")
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):

@@ -758,6 +758,7 @@ class WorkflowRun:
     created_at: str
     url: str = ""
     run_number: int = 0
+    run_id: int = 0     # database id, used for the artifacts API
 
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {
@@ -785,7 +786,7 @@ def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRu
     """Fetch recent workflow runs for the repo."""
     rows = _api_json(
         [f"repos/{{owner}}/{{repo}}/actions/runs?per_page={limit}",
-         "-q", "[.workflow_runs[] | {name, status, conclusion, branch: .head_branch, event, created: .created_at, url: .html_url, number: .run_number}]"],
+         "-q", "[.workflow_runs[] | {name, status, conclusion, branch: .head_branch, event, created: .created_at, url: .html_url, number: .run_number, id}]"],
         repo,
     )
     if not isinstance(rows, list):
@@ -801,8 +802,81 @@ def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRu
             created_at=row.get("created", ""),
             url=row.get("url", ""),
             run_number=row.get("number", 0),
+            run_id=row.get("id", 0),
         ))
     return runs
+
+
+@dataclass
+class Artifact:
+    """A build artifact attached to a workflow run."""
+    id: int
+    name: str
+    size_bytes: int
+    expired: bool
+    created_at: str
+    run_id: int = 0
+
+    def size_human(self) -> str:
+        size = float(self.size_bytes)
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{self.size_bytes} B"
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "name": self.name,
+            "size": self.size_human(),
+            "expired": "Yes" if self.expired else "No",
+            "date": self.created_at[:10] if self.created_at else "",
+            "#": str(self.id),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+ARTIFACT_COLUMNS = ["name", "size", "expired", "date", "#"]
+ARTIFACT_DEFAULT_COLUMNS = ["name", "size", "expired", "date"]
+
+
+def fetch_run_artifacts(repo: Optional[str], run_id: int, limit: int = 100) -> list[Artifact]:
+    """Fetch the artifacts produced by a single workflow run."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/artifacts?per_page={limit}",
+         "-q", "[.artifacts[] | {id, name, size: .size_in_bytes, expired, created: .created_at}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    artifacts: list[Artifact] = []
+    for row in rows:
+        artifacts.append(Artifact(
+            id=row.get("id", 0),
+            name=row.get("name", ""),
+            size_bytes=row.get("size", 0),
+            expired=row.get("expired", False),
+            created_at=row.get("created", ""),
+            run_id=run_id,
+        ))
+    return artifacts
+
+
+def download_artifact(repo: Optional[str], run_id: int, name: str, dest_dir: str) -> None:
+    """Download a run's artifact by name, extracting its contents into ``dest_dir``.
+
+    Uses ``gh run download`` which fetches the artifact zip and unpacks it.
+    Raises GhError if the artifact is missing or expired.
+    """
+    args = ["run", "download", str(run_id), "-n", name, "-D", dest_dir]
+    if repo:
+        args += ["-R", repo]
+    _run_gh(args)
 
 
 @dataclass

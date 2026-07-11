@@ -8,7 +8,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
-- **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs
+- **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
@@ -92,6 +92,16 @@ python ghviewer.py --repo owner/repo-name
 Manual runs only work when the workflow declares an `on: workflow_dispatch`
 trigger; if it doesn't, the app tells you so instead of triggering anything.
 After a run starts, switch to **Workflow Runs** and refresh to watch it.
+
+### In the workflow runs view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Drill into the selected run's artifacts (shown in the same list) |
+
+From a run's **Artifacts** list, press `Enter` (or right-click → Download…) on an
+artifact to download it into a folder you choose, and `Backspace` to return to the
+runs list. Expired artifacts can't be downloaded and are marked as such.
 
 ### View menu → Show
 
