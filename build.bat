@@ -40,7 +40,6 @@ call .venv\Scripts\activate.bat
 
 REM Install dependencies
 echo Installing dependencies...
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
 if errorlevel 1 (
