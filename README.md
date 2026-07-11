@@ -8,13 +8,13 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
-- **Git views** — browse branches, commits, tags, releases, and workflow runs
+- **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (30 at a time)
 - **View menu** with:
-  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, and Workflow Runs
+  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, and Workflow Runs
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
@@ -83,9 +83,21 @@ python ghviewer.py --repo owner/repo-name
 |-----|--------|
 | `Enter` | Switch to Commits view for the selected branch |
 
+### In the workflows view
+
+| Key | Action |
+|-----|--------|
+| `Enter` (or right-click → Run on branch…) | Run the selected workflow on a branch you pick |
+
+Manual runs only work when the workflow declares an `on: workflow_dispatch`
+trigger; if it doesn't, the app tells you so instead of triggering anything.
+After a run starts, switch to **Workflow Runs** and refresh to watch it.
+
 ### View menu → Show
 
-Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**, and **Workflow Runs**.
+Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**,
+**Workflows** (the workflow definitions, which you can run on a branch), and
+**Workflow Runs** (recent run history).
 Each view has its own set of columns and detail formatting.
 
 ## Building a standalone executable

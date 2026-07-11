@@ -806,6 +806,84 @@ def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRu
 
 
 @dataclass
+class Workflow:
+    """A GitHub Actions workflow definition (a .github/workflows/*.yml file)."""
+    id: int
+    name: str
+    path: str
+    state: str        # active, disabled_manually, disabled_inactivity
+    url: str = ""     # html_url of the workflow
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "name": self.name,
+            "state": self.state,
+            "path": self.path,
+            "#": str(self.id),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+WORKFLOW_DEF_COLUMNS = ["name", "state", "path", "#"]
+WORKFLOW_DEF_DEFAULT_COLUMNS = ["name", "state", "path"]
+
+
+def fetch_workflows(repo: Optional[str], limit: int = 100) -> list[Workflow]:
+    """Fetch the workflow definitions (files) configured for the repo."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/actions/workflows?per_page={limit}",
+         "-q", "[.workflows[] | {id, name, path, state, url: .html_url}]"],
+        repo,
+    )
+    if not isinstance(rows, list):
+        return []
+    workflows: list[Workflow] = []
+    for row in rows:
+        workflows.append(Workflow(
+            id=row.get("id", 0),
+            name=row.get("name", ""),
+            path=row.get("path", ""),
+            state=row.get("state", ""),
+            url=row.get("url", ""),
+        ))
+    return workflows
+
+
+def workflow_supports_dispatch(repo: Optional[str], path: str) -> bool:
+    """Return True if the workflow file declares a ``workflow_dispatch`` trigger.
+
+    Manual runs (and therefore branch selection) are only possible when the
+    workflow opts in with ``on: workflow_dispatch``. We fetch the raw file and
+    look for the trigger keyword.
+    """
+    raw = _api(
+        [f"repos/{{owner}}/{{repo}}/contents/{path}",
+         "-H", "Accept: application/vnd.github.raw"],
+        repo,
+    )
+    return "workflow_dispatch" in raw
+
+
+def dispatch_workflow(repo: Optional[str], workflow_id: int, ref: str) -> None:
+    """Trigger a manual (workflow_dispatch) run of a workflow on ``ref``.
+
+    ``ref`` is a branch or tag name. Raises GhError if the workflow doesn't
+    support manual dispatch or the ref is invalid.
+    """
+    _api(
+        ["-X", "POST",
+         f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow_id}/dispatches",
+         "-f", f"ref={ref}"],
+        repo,
+    )
+
+
+@dataclass
 class CompareResult:
     """Result of comparing two refs (branches/tags/SHAs)."""
     base: str

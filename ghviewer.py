@@ -32,15 +32,19 @@ from gh_data import (
     TAG_DEFAULT_COLUMNS,
     WORKFLOW_COLUMNS,
     WORKFLOW_DEFAULT_COLUMNS,
+    WORKFLOW_DEF_COLUMNS,
+    WORKFLOW_DEF_DEFAULT_COLUMNS,
     Branch,
     Commit,
     Release,
     Tag,
+    Workflow,
     WorkflowRun,
     CompareResult,
     add_comment,
     close_item,
     detect_repo,
+    dispatch_workflow,
     fetch_branches,
     fetch_compare,
     fetch_commits,
@@ -52,7 +56,9 @@ from gh_data import (
     fetch_releases,
     fetch_tags,
     fetch_workflow_runs,
+    fetch_workflows,
     list_repos,
+    workflow_supports_dispatch,
     open_in_browser,
     parent_repo,
     reopen_item,
@@ -120,6 +126,7 @@ ID_VIEW_BRANCHES = wx.NewIdRef()
 ID_VIEW_COMMITS = wx.NewIdRef()
 ID_VIEW_TAGS = wx.NewIdRef()
 ID_VIEW_RELEASES = wx.NewIdRef()
+ID_VIEW_WORKFLOWS = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
 ID_VIEW_FAVORITES = wx.NewIdRef()
 ID_FILTER = wx.NewIdRef()
@@ -127,6 +134,7 @@ ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
+ID_RUN_WORKFLOW = wx.NewIdRef()
 
 
 # View modes
@@ -135,7 +143,8 @@ VIEW_BRANCHES = "branches"
 VIEW_COMMITS = "commits"
 VIEW_TAGS = "tags"
 VIEW_RELEASES = "releases"
-VIEW_WORKFLOW = "workflow"
+VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
+VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_FAVORITES = "favorites"
 
 # Columns for the favorites view (mixed item types)
@@ -149,6 +158,7 @@ VIEW_COLUMNS = {
     VIEW_COMMITS: (COMMIT_DEFAULT_COLUMNS, COMMIT_COLUMNS),
     VIEW_TAGS: (TAG_DEFAULT_COLUMNS, TAG_COLUMNS),
     VIEW_RELEASES: (RELEASE_DEFAULT_COLUMNS, RELEASE_COLUMNS),
+    VIEW_WORKFLOWS: (WORKFLOW_DEF_DEFAULT_COLUMNS, WORKFLOW_DEF_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
@@ -294,8 +304,9 @@ class GhViewerFrame(wx.Frame):
             "tag": 150, "commit": 80,
             # Releases
             "tag": 100, "name": 250, "draft": 50, "prerelease": 70,
-            # Workflow
+            # Workflow (runs + definitions)
             "name": 150, "status": 100, "result": 100, "event": 100, "#": 50,
+            "state": 90, "path": 320,
             # Favorites
             "repo": 180, "subtitle": 250,
         }
@@ -341,6 +352,7 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_COMMITS, "Commits")
         show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags")
         show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases")
+        show_menu.AppendRadioItem(ID_VIEW_WORKFLOWS, "Workflows")
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs")
         show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites")
         view_menu.AppendSubMenu(show_menu, "View Mode")
@@ -407,6 +419,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_commits, id=ID_VIEW_COMMITS)
         self.Bind(wx.EVT_MENU, self.on_view_tags, id=ID_VIEW_TAGS)
         self.Bind(wx.EVT_MENU, self.on_view_releases, id=ID_VIEW_RELEASES)
+        self.Bind(wx.EVT_MENU, self.on_view_workflows, id=ID_VIEW_WORKFLOWS)
         self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
         self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
 
@@ -422,6 +435,7 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_COMMITS, self.view_mode == VIEW_COMMITS)
         menu_bar.Check(ID_VIEW_TAGS, self.view_mode == VIEW_TAGS)
         menu_bar.Check(ID_VIEW_RELEASES, self.view_mode == VIEW_RELEASES)
+        menu_bar.Check(ID_VIEW_WORKFLOWS, self.view_mode == VIEW_WORKFLOWS)
         menu_bar.Check(ID_VIEW_WORKFLOW, self.view_mode == VIEW_WORKFLOW)
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         # State filter
@@ -482,6 +496,7 @@ class GhViewerFrame(wx.Frame):
         self.repo_list.Bind(wx.EVT_CHAR_HOOK, self.on_repo_key_down)
         self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_item_selected, self.list_ctrl)
         self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_item_activated, self.list_ctrl)
+        self.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self.on_item_context_menu, self.list_ctrl)
         self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
         self.details_text.Bind(wx.EVT_CHAR_HOOK, self.on_details_key_down)
         self.Bind(wx.EVT_MENU, self.on_refresh, id=ID_REFRESH)
@@ -653,6 +668,9 @@ class GhViewerFrame(wx.Frame):
                 elif self.view_mode == VIEW_RELEASES:
                     releases = fetch_releases(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, releases, "releases")
+                elif self.view_mode == VIEW_WORKFLOWS:
+                    workflows = fetch_workflows(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, workflows, "workflows")
                 elif self.view_mode == VIEW_WORKFLOW:
                     runs = fetch_workflow_runs(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, runs, "workflow runs")
@@ -683,6 +701,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_COMMITS: "Commits",
         VIEW_TAGS: "Tags",
         VIEW_RELEASES: "Releases",
+        VIEW_WORKFLOWS: "Workflows",
         VIEW_WORKFLOW: "Workflow Runs",
         VIEW_FAVORITES: "Favorites",
     }
@@ -761,6 +780,8 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_COMMITS:
             branch_info = f" on {self.commit_branch}" if self.commit_branch else " on default branch"
         compare_hint = "  Ctrl+Shift+B=compare branches" if self.view_mode == VIEW_BRANCHES else ""
+        if self.view_mode == VIEW_WORKFLOWS:
+            compare_hint = "  Enter=run on branch"
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
@@ -927,6 +948,18 @@ class GhViewerFrame(wx.Frame):
             lines.append("─" * 60)
             lines.append("")
             lines.append(item.body or "(no release notes)")
+        elif isinstance(item, Workflow):
+            lines.append(f"Workflow: {item.name}")
+            lines.append(f"State: {item.state}")
+            lines.append(f"File: {item.path}")
+            lines.append(f"ID: {item.id}")
+            lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append("Press Enter to run this workflow on a branch you choose")
+            lines.append("(only works if the workflow supports manual runs /")
+            lines.append("workflow_dispatch). Right-click for the same option.")
         elif isinstance(item, WorkflowRun):
             lines.append(f"Workflow: {item.name}")
             lines.append(f"Run #: {item.run_number}")
@@ -987,6 +1020,10 @@ class GhViewerFrame(wx.Frame):
             self._switch_view(VIEW_COMMITS)
             self._announce(f"Showing commits on branch {item.name}")
             return
+        # In Workflows view, Enter offers to run the workflow on a branch
+        if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):
+            self._run_workflow_flow(item)
+            return
         # In Favorites view, Enter opens in browser
         if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
             if item.url:
@@ -1003,6 +1040,94 @@ class GhViewerFrame(wx.Frame):
             self._announce(f"Opened {label} in browser")
         else:
             self._announce("No URL for this item")
+
+    def on_item_context_menu(self, event: wx.ListEvent) -> None:
+        """Right-click / Menu key — offer item-specific actions."""
+        item = self._focused_item()
+        if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):
+            menu = wx.Menu()
+            menu.Append(ID_RUN_WORKFLOW, "Run on branch…")
+            menu.Bind(
+                wx.EVT_MENU,
+                lambda evt, wf=item: self._run_workflow_flow(wf),
+                id=ID_RUN_WORKFLOW,
+            )
+            self.list_ctrl.PopupMenu(menu)
+            menu.Destroy()
+
+    # ── Run a workflow (workflow_dispatch) ──────────────────────────────
+
+    def _run_workflow_flow(self, wf: "Workflow") -> None:
+        """Start the 'run this workflow on a branch' flow.
+
+        Checks that the workflow opts in to manual runs (workflow_dispatch)
+        and fetches the branch list in the background, then presents a branch
+        picker. Nothing is triggered until the user confirms a branch.
+        """
+        if not self.repo:
+            self._announce("No repository loaded.")
+            return
+        self._announce(f"Checking how {wf.name} can be run…")
+
+        def worker() -> None:
+            try:
+                supports = workflow_supports_dispatch(self.repo, wf.path)
+                names = [b.name for b in fetch_branches(self.repo, 200)] if supports else []
+                wx.CallAfter(self._on_workflow_dispatch_ready, wf, supports, names)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_workflow_dispatch_ready(
+        self, wf: "Workflow", supports: bool, names: list[str]
+    ) -> None:
+        """Show the branch picker (or explain why the workflow can't be run)."""
+        if not supports:
+            msg = (
+                f"'{wf.name}' can't be run manually because it doesn't declare a "
+                "workflow_dispatch trigger.\n\n"
+                "Add `on: workflow_dispatch` to the workflow file to enable "
+                "manual runs and branch selection."
+            )
+            self._announce(f"{wf.name} doesn't support manual runs.")
+            wx.MessageBox(msg, "Run Workflow", wx.OK | wx.ICON_INFORMATION, self)
+            return
+        if not names:
+            self._announce("No branches found to run against.")
+            return
+        dlg = wx.SingleChoiceDialog(
+            self,
+            f"Run '{wf.name}' on which branch?",
+            "Run Workflow",
+            names,
+        )
+        dlg.SetSelection(0)
+        if dlg.ShowModal() == wx.ID_OK:
+            branch = dlg.GetStringSelection()
+            dlg.Destroy()
+            if branch:
+                self._dispatch_workflow(wf, branch)
+        else:
+            dlg.Destroy()
+            self._announce("Run cancelled.")
+
+    def _dispatch_workflow(self, wf: "Workflow", branch: str) -> None:
+        """Trigger the workflow on ``branch`` in the background."""
+        self._announce(f"Starting '{wf.name}' on {branch}…")
+
+        def worker() -> None:
+            try:
+                dispatch_workflow(self.repo, wf.id, branch)
+                wx.CallAfter(
+                    self._announce,
+                    f"Started '{wf.name}' on {branch}. "
+                    "Switch to Workflow Runs and refresh to watch it.",
+                )
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
@@ -1085,8 +1210,12 @@ class GhViewerFrame(wx.Frame):
             item_type = "release"
             title = item.tag
             subtitle = item.name
-        elif isinstance(item, WorkflowRun):
+        elif isinstance(item, Workflow):
             item_type = "workflow"
+            title = item.name
+            subtitle = f"{item.state} — {item.path}"
+        elif isinstance(item, WorkflowRun):
+            item_type = "workflow run"
             title = f"#{item.run_number} {item.name}"
             subtitle = f"{item.conclusion or item.status} on {item.branch}"
         else:
@@ -1723,6 +1852,9 @@ class GhViewerFrame(wx.Frame):
 
     def on_view_releases(self, event: wx.CommandEvent) -> None:
         self._switch_view(VIEW_RELEASES)
+
+    def on_view_workflows(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_WORKFLOWS)
 
     def on_view_workflow(self, event: wx.CommandEvent) -> None:
         self._switch_view(VIEW_WORKFLOW)
