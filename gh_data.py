@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -521,11 +522,20 @@ def fetch_branches(repo: Optional[str], limit: int = 100) -> list[Branch]:
     )
     if not isinstance(rows, list):
         return []
+    # Fetch each branch tip's commit details concurrently. Doing this serially
+    # is an N+1 that makes the Branches view slow on repos with many branches;
+    # a small thread pool keeps it responsive without hammering the API.
+    shas = [row.get("sha", "") for row in rows]
+    infos: list[dict] = [{}] * len(rows)
+    to_fetch = [(i, sha) for i, sha in enumerate(shas) if sha]
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=min(8, len(to_fetch))) as pool:
+            futures = {pool.submit(_fetch_commit_info, repo, sha): i
+                       for i, sha in to_fetch}
+            for fut in as_completed(futures):
+                infos[futures[fut]] = fut.result()
     branches: list[Branch] = []
-    for row in rows:
-        sha = row.get("sha", "")
-        # Fetch commit details for each branch tip
-        commit_info = _fetch_commit_info(repo, sha) if sha else {}
+    for row, sha, commit_info in zip(rows, shas, infos):
         branches.append(Branch(
             name=row.get("name", ""),
             commit_sha=sha[:8] if sha else "",
@@ -807,10 +817,18 @@ class CompareResult:
 
 
 def fetch_compare(repo: Optional[str], base: str, head: str) -> CompareResult:
-    """Compare two refs via the GitHub compare API."""
+    """Compare two refs (branches/tags/SHAs) via the GitHub compare API.
+
+    Returns the ahead/behind counts plus the commits that are on ``head`` but
+    not ``base`` and the files that differ. The commit and file lists are
+    capped at 100 entries each to keep the request fast; ``ahead_by`` and
+    ``behind_by`` always reflect the true totals.
+    """
+    # NOTE: the path must be repos/{owner}/{repo}/compare/... — the slash
+    # before "compare" is required or the API 404s.
     row = _api_json(
-        [f"repos/{{owner}}/{{repo}}compare/{base}...{head}",
-         "-q", "{ahead: .ahead_by, behind: .behind_by, commits: [.commits[] | {sha: .sha, message: .commit.message}], files: [.files[] | {filename, status, additions, deletions}]}"],
+        [f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
+         "-q", "{ahead: .ahead_by, behind: .behind_by, commits: [.commits[] | {sha: .sha, message: .commit.message}][0:100], files: [(.files // [])[] | {filename, status, additions, deletions}][0:100]}"],
         repo,
     )
     if not isinstance(row, dict):

@@ -20,8 +20,6 @@ from gh_data import (
     ALL_COLUMNS,
     BRANCH_COLUMNS,
     BRANCH_DEFAULT_COLUMNS,
-    BRANCH_COLUMNS,
-    BRANCH_DEFAULT_COLUMNS,
     COMMIT_COLUMNS,
     COMMIT_DEFAULT_COLUMNS,
     DEFAULT_COLUMNS,
@@ -39,10 +37,12 @@ from gh_data import (
     Release,
     Tag,
     WorkflowRun,
+    CompareResult,
     add_comment,
     close_item,
     detect_repo,
     fetch_branches,
+    fetch_compare,
     fetch_commits,
     fetch_commit_detail,
     fetch_issues,
@@ -124,6 +124,7 @@ ID_VIEW_WORKFLOW = wx.NewIdRef()
 ID_VIEW_FAVORITES = wx.NewIdRef()
 ID_FILTER = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
+ID_COMPARE_BRANCHES = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
 
@@ -320,6 +321,7 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
         file_menu.Append(ID_FILTER, "Quick Filter…\tCtrl+F")
         file_menu.Append(ID_SELECT_BRANCH, "Select Branch…\tCtrl+B")
+        file_menu.Append(ID_COMPARE_BRANCHES, "Compare Branches…\tCtrl+Shift+B")
         file_menu.AppendSeparator()
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
@@ -492,6 +494,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
+        self.Bind(wx.EVT_MENU, self.on_compare_branches, id=ID_COMPARE_BRANCHES)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
         self.Bind(wx.EVT_MENU, self.on_next_comment, id=ID_NEXT_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_prev_comment, id=ID_PREV_COMMENT)
@@ -757,10 +760,11 @@ class GhViewerFrame(wx.Frame):
         branch_info = ""
         if self.view_mode == VIEW_COMMITS:
             branch_info = f" on {self.commit_branch}" if self.commit_branch else " on default branch"
+        compare_hint = "  Ctrl+Shift+B=compare branches" if self.view_mode == VIEW_BRANCHES else ""
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
-            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  Ctrl+F=filter  "
+            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  Ctrl+F=filter{compare_hint}  "
             f"Mode={self.list_mode}"
             + self._filter_status_suffix()
         )
@@ -1438,6 +1442,190 @@ class GhViewerFrame(wx.Frame):
                 self._announce(f"Showing commits on branch {selected}")
         else:
             dlg.Destroy()
+
+    def on_compare_branches(self, event: wx.CommandEvent) -> None:
+        """Ctrl+Shift+B — compare two branches (ahead/behind, commits, files)."""
+        if not self.repo:
+            self._announce("No repository loaded.")
+            return
+        # Fetch branch names in the background, then run the pickers.
+        self._announce("Loading branches for comparison…")
+
+        def worker() -> None:
+            try:
+                branches = fetch_branches(self.repo, 200)
+                names = [b.name for b in branches]
+                wx.CallAfter(self._show_compare_pickers, names)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_compare_pickers(self, names: list[str]) -> None:
+        """Pick the base and head branches via two accessible dialogs."""
+        if not names:
+            self._announce("No branches found to compare.")
+            return
+        if len(names) < 2:
+            self._announce("Need at least two branches to compare.")
+            return
+
+        # Sensible defaults: head = the branch currently focused (if any),
+        # base = the first branch (usually the repo's default branch).
+        focused = self._focused_item()
+        head_default = focused.name if isinstance(focused, Branch) else names[1]
+
+        # Step 1 — base branch (compare FROM).
+        base_dlg = wx.SingleChoiceDialog(
+            self,
+            "Step 1 of 2 — choose the BASE branch (compare FROM, e.g. main):",
+            "Compare Branches — Base",
+            names,
+        )
+        base_dlg.SetSelection(0)
+        if base_dlg.ShowModal() != wx.ID_OK:
+            base_dlg.Destroy()
+            self._announce("Compare cancelled.")
+            return
+        base = base_dlg.GetStringSelection()
+        base_dlg.Destroy()
+
+        # Step 2 — head branch (compare TO).
+        head_dlg = wx.SingleChoiceDialog(
+            self,
+            f"Step 2 of 2 — choose the HEAD branch to compare against '{base}' "
+            "(compare TO):",
+            "Compare Branches — Head",
+            names,
+        )
+        if head_default in names:
+            head_dlg.SetSelection(names.index(head_default))
+        if head_dlg.ShowModal() != wx.ID_OK:
+            head_dlg.Destroy()
+            self._announce("Compare cancelled.")
+            return
+        head = head_dlg.GetStringSelection()
+        head_dlg.Destroy()
+
+        if base == head:
+            self._announce("Base and head are the same branch — nothing to compare.")
+            wx.MessageBox(
+                "Pick two different branches to compare.",
+                "Compare Branches",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+        self._run_compare(base, head)
+
+    def _run_compare(self, base: str, head: str) -> None:
+        """Fetch the comparison in the background and show the result."""
+        self._announce(f"Comparing {base}…{head}…")
+
+        def worker() -> None:
+            try:
+                result = fetch_compare(self.repo, base, head)
+                wx.CallAfter(self._show_compare_result, result)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_compare_result(self, result: CompareResult) -> None:
+        """Display a branch comparison in an accessible, focusable text dialog."""
+        text = self._format_compare(result)
+        summary = (
+            f"identical to '{result.base}'"
+            if result.ahead_by == 0 and result.behind_by == 0
+            else f"{result.ahead_by} ahead, {result.behind_by} behind '{result.base}'"
+        )
+        self._announce(f"'{result.head}' is {summary}.")
+        self._show_text_dialog(
+            f"Compare: {result.base} … {result.head}", text
+        )
+
+    def _format_compare(self, r: CompareResult) -> str:
+        """Render a CompareResult as readable, screen-reader-friendly text."""
+        sep = "─" * 60
+        lines = [
+            f"Comparing branches in {self.repo or 'this repository'}",
+            "",
+            f"Base (compare from): {r.base}",
+            f"Head (compare to):   {r.head}",
+            "",
+        ]
+        if r.ahead_by == 0 and r.behind_by == 0:
+            lines.append(f"'{r.head}' and '{r.base}' are identical — no differences.")
+            return "\n".join(lines)
+        lines += [
+            f"'{r.head}' is {r.ahead_by} commit(s) AHEAD of '{r.base}' "
+            f"and {r.behind_by} commit(s) BEHIND.",
+            "",
+            f"  Ahead {r.ahead_by}: commits on '{r.head}' not on '{r.base}'.",
+            f"  Behind {r.behind_by}: commits on '{r.base}' not on '{r.head}'.",
+            "",
+            sep,
+        ]
+        shown = len(r.commits)
+        if r.ahead_by > shown:
+            lines.append(f"Commits added on '{r.head}' (showing {shown} of {r.ahead_by}):")
+        else:
+            lines.append(f"Commits added on '{r.head}' ({shown}):")
+        lines.append(sep)
+        if r.commits:
+            for c in r.commits:
+                sha = (c.get("sha") or "")[:8]
+                msg = c.get("message") or ""
+                first_line = msg.splitlines()[0] if msg else ""
+                lines.append(f"  {sha}  {first_line}")
+        else:
+            lines.append("  (none)")
+        lines += ["", sep]
+        total_add = sum(f.get("additions", 0) for f in r.files)
+        total_del = sum(f.get("deletions", 0) for f in r.files)
+        lines.append(f"Files changed ({len(r.files)}):")
+        lines.append(sep)
+        if r.files:
+            for f in r.files:
+                status = f.get("status", "")
+                fname = f.get("filename", "")
+                adds = f.get("additions", 0)
+                dels = f.get("deletions", 0)
+                lines.append(f"  {status}: {fname} (+{adds} -{dels})")
+            if len(r.files) >= 100:
+                lines.append("  … (file list capped at 100)")
+            lines += ["", f"Total: +{total_add} -{total_del} across {len(r.files)} file(s)"]
+        else:
+            lines.append("  (none)")
+        return "\n".join(lines)
+
+    def _show_text_dialog(self, title: str, text: str) -> None:
+        """Show read-only, focusable, scrollable text in a modal dialog.
+
+        Used for content a screen reader needs to navigate line by line
+        (e.g. a branch comparison). The text control receives focus so the
+        user lands directly on the content.
+        """
+        dlg = wx.Dialog(
+            self, title=title,
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+            size=(680, 500),
+        )
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        txt = wx.TextCtrl(
+            dlg, value=text,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2,
+        )
+        txt.SetName(title)
+        sizer.Add(txt, 1, wx.EXPAND | wx.ALL, 8)
+        btn_sizer = dlg.CreateButtonSizer(wx.OK)
+        if btn_sizer:
+            sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 8)
+        dlg.SetSizer(sizer)
+        txt.SetInsertionPoint(0)
+        wx.CallAfter(txt.SetFocus)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def on_quit(self, event: wx.CommandEvent) -> None:
         self.Destroy()
