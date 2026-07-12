@@ -154,6 +154,14 @@ VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
 VIEW_FAVORITES = "favorites"
 
+# Drill-down views: pressing Backspace in the key view returns to its parent.
+# These are the views you reach by activating an item in another view
+# (a branch's commits, a run's artifacts), so Backspace is a natural "up".
+PARENT_VIEW = {
+    VIEW_COMMITS: VIEW_BRANCHES,
+    VIEW_ARTIFACTS: VIEW_WORKFLOW,
+}
+
 # Columns for the favorites view (mixed item types)
 FAVORITES_COLUMNS = ["type", "repo", "title", "subtitle"]
 FAVORITES_DEFAULT_COLUMNS = ["type", "repo", "title", "subtitle"]
@@ -809,6 +817,8 @@ class GhViewerFrame(wx.Frame):
             compare_hint = "  Enter=list artifacts"
         elif self.view_mode == VIEW_ARTIFACTS:
             compare_hint = "  Enter=download  Backspace=back to runs"
+        elif self.view_mode == VIEW_COMMITS:
+            compare_hint = "  Backspace=back to branches"
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}. "
             f"Showing up to {self.current_limit}. "
@@ -1252,10 +1262,11 @@ class GhViewerFrame(wx.Frame):
                 self._load_favorites_view()
             else:
                 self._load_items()
-        elif key == wx.WXK_BACK and self.view_mode == VIEW_ARTIFACTS:
-            # Backspace returns from a run's artifacts to the workflow runs list
-            self._switch_view(VIEW_WORKFLOW)
-            self._announce("Back to workflow runs")
+        elif key == wx.WXK_BACK and self.view_mode in PARENT_VIEW:
+            # Backspace steps back up a drill-down (artifacts -> runs, commits -> branches)
+            parent = PARENT_VIEW[self.view_mode]
+            self._switch_view(parent)
+            self._announce(f"Back to {self._VIEW_LABELS.get(parent, parent).lower()}")
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):

@@ -83,6 +83,12 @@ python ghviewer.py --repo owner/repo-name
 |-----|--------|
 | `Enter` | Switch to Commits view for the selected branch |
 
+### In the commits view
+
+| Key | Action |
+|-----|--------|
+| `Backspace` | Return to the branches list |
+
 ### In the workflows view
 
 | Key | Action |
