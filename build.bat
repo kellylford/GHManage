@@ -35,21 +35,40 @@ if not exist .venv (
     )
 )
 
-REM Activate venv
+REM Activate venv (verify the activate script exists first)
+if not exist .venv\Scripts\activate.bat (
+    echo Error: .venv\Scripts\activate.bat not found. The venv is broken.
+    exit /b 1
+)
 call .venv\Scripts\activate.bat
-
-REM Install dependencies
-echo Installing dependencies...
-pip install -r requirements.txt
-pip install pyinstaller
 if errorlevel 1 (
-    echo Error: Failed to install dependencies.
+    echo Error: Failed to activate virtual environment.
     exit /b 1
 )
 
-REM Build the .exe
+REM Confirm activation took effect (VIRTUAL_ENV should be set)
+if not defined VIRTUAL_ENV (
+    echo Error: Virtual environment activation did not take effect.
+    exit /b 1
+)
+echo Using venv: %VIRTUAL_ENV%
+
+REM Install dependencies (use venv's python explicitly to be safe)
+echo Installing dependencies...
+".venv\Scripts\python.exe" -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo Error: Failed to install project dependencies.
+    exit /b 1
+)
+".venv\Scripts\python.exe" -m pip install pyinstaller
+if errorlevel 1 (
+    echo Error: Failed to install PyInstaller.
+    exit /b 1
+)
+
+REM Build the .exe (use venv's pyinstaller explicitly)
 echo Building ghmanage.exe...
-pyinstaller --noconsole --onefile --name ghmanage ghviewer.py
+".venv\Scripts\python.exe" -m PyInstaller --noconsole --onefile --name ghmanage ghviewer.py
 if errorlevel 1 (
     echo Error: PyInstaller build failed.
     exit /b 1
