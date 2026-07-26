@@ -879,6 +879,17 @@ def download_artifact(repo: Optional[str], run_id: int, name: str, dest_dir: str
     _run_gh(args)
 
 
+def delete_workflow_run(repo: Optional[str], run_id: int) -> None:
+    """Delete a workflow run by its database id.
+
+    Uses ``gh run delete``. Raises GhError on failure.
+    """
+    args = ["run", "delete", str(run_id)]
+    if repo:
+        args += ["-R", repo]
+    _run_gh(args)
+
+
 @dataclass
 class Workflow:
     """A GitHub Actions workflow definition (a .github/workflows/*.yml file)."""

@@ -47,6 +47,7 @@ from gh_data import (
     add_comment,
     close_item,
     detect_repo,
+    delete_workflow_run,
     dispatch_workflow,
     download_artifact,
     fetch_branches,
@@ -1277,6 +1278,8 @@ class GhViewerFrame(wx.Frame):
                 self._do_comment()
             else:
                 event.Skip()
+        elif self.view_mode == VIEW_WORKFLOW and key == wx.WXK_DELETE:
+            self._do_delete_run()
         else:
             event.Skip()
 
@@ -2084,6 +2087,35 @@ class GhViewerFrame(wx.Frame):
 
     def _on_action_error(self, msg: str) -> None:
         self._announce(msg)
+
+    def _do_delete_run(self) -> None:
+        """Delete the focused workflow run (Delete key in Workflow view)."""
+        item = self._focused_item()
+        if not item or not isinstance(item, WorkflowRun):
+            return
+        confirm = wx.MessageBox(
+            f"Delete workflow run #{item.run_number}?\n\n{item.name} "
+            f"({item.conclusion or item.status} on {item.branch})\n\n"
+            "This cannot be undone.",
+            "Confirm Delete Run",
+            wx.YES_NO | wx.ICON_WARNING,
+            self,
+        )
+        if confirm != wx.YES:
+            return
+        self._announce(f"Deleting run #{item.run_number}…")
+
+        run_id = item.run_id
+        run_number = item.run_number
+
+        def worker() -> None:
+            try:
+                delete_workflow_run(self.repo, run_id)
+                wx.CallAfter(self._on_action_done, f"Deleted run #{run_number}")
+            except GhError as exc:
+                wx.CallAfter(self._on_action_error, f"Error deleting run #{run_number}: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 # ── Entry point ────────────────────────────────────────────────────────
