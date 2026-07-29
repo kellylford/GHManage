@@ -9,6 +9,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
+- **Release download counts** — the Releases view shows how many times each release was downloaded, with a repo total in the status bar; press Enter on a release for a per-file breakdown
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
@@ -89,6 +90,25 @@ python ghviewer.py --repo owner/repo-name
 |-----|--------|
 | `Backspace` | Return to the branches list |
 
+### In the releases view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Drill into the selected release's assets and their download counts |
+
+The **downloads** column totals every file attached to a release, and the status
+bar totals every release currently loaded — press `Ctrl++` to load more and the
+total grows with them. The details panel breaks a release down file by file,
+most-downloaded first.
+
+From a release's **Assets** list, `Enter` downloads the selected file in your
+browser and `Backspace` returns to the releases.
+
+A download count is a **lifetime running total** kept by GitHub. It is not
+broken down by date, and no API offers that — to see downloads over time you
+have to record the numbers and compare them later. Counts include automated
+traffic, so a sharp spike on one release is worth reading with suspicion.
+
 ### In the workflows view
 
 | Key | Action |
@@ -111,9 +131,9 @@ runs list. Expired artifacts can't be downloaded and are marked as such.
 
 ### View menu → Show
 
-Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**,
-**Workflows** (the workflow definitions, which you can run on a branch), and
-**Workflow Runs** (recent run history).
+Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
+(with download counts), **Workflows** (the workflow definitions, which you can run
+on a branch), and **Workflow Runs** (recent run history).
 Each view has its own set of columns and detail formatting.
 
 ## Building a standalone executable

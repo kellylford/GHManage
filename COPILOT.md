@@ -47,6 +47,13 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `fetch_commits(repo, branch, limit)` — list commits, optionally for a specific branch.
 - `fetch_commit_detail(repo, sha)` — full commit with file changes.
 - `fetch_tags(repo, limit)` / `fetch_releases(repo, limit)` / `fetch_workflow_runs(repo, limit)`.
+- `fetch_release_assets(repo, release_id, release_tag, limit)` — a release's files with their
+  download counts. The releases endpoint already returns assets inline, so the Releases list
+  costs no extra call; this exists so the drill-down view can refresh on its own (R key).
+- `total_downloads(releases)` — sum across every asset of every release given.
+- `ReleaseAsset` — dataclass for a release file. `Release.downloads` is a computed property
+  summing its assets. **Download counts are lifetime running totals** — GitHub exposes no
+  date breakdown, so any over-time view would require snapshotting and diffing ourselves.
 - `fetch_compare(repo, base, head)` — compare two refs.
 - `fetch_item_detail(item, repo)` — re-fetch a single issue/PR with full detail.
 - `close_item` / `reopen_item` / `add_comment` — actions on issues/PRs.
@@ -62,6 +69,10 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `_build_ui` / `_build_menu` / `_bind_events` — construction.
 - `_load_items` — background fetch + populate list (dispatches by `view_mode`).
 - `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases, Workflow.
+  Each drill-down view clears its context here when you leave it (`commit_branch`,
+  `artifacts_run`, `assets_release`) — add a reset for any new one.
+- Drill-down views are registered in `PARENT_VIEW`, which is what makes Backspace step back up.
+  A new drill-down needs an entry there, in `VIEW_COLUMNS`, and in `_VIEW_LABELS`.
 - `_show_details(idx)` — dispatches to `_show_issue_details` or `_show_git_details`.
 - `_navigate_comment(direction)` — Alt+N/Alt+P comment jumping.
 - `_refresh_list_display` — re-populate list from `self.items` or `self.git_items` without re-fetching.
@@ -105,7 +116,8 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Commit detail | `repos/{owner}/{repo}/commits/{sha}` |
 | Tags | `repos/{owner}/{repo}/tags` |
 | Compare | `repos/{owner}/{repo}/compare/{base}...{head}` |
-| Releases | `repos/{owner}/{repo}/releases` |
+| Releases (assets inline) | `repos/{owner}/{repo}/releases` |
+| Release assets | `repos/{owner}/{repo}/releases/{id}/assets` |
 | Workflow runs | `repos/{owner}/{repo}/actions/runs` |
 | Contributors | `repos/{owner}/{repo}/contributors` |
 

@@ -693,6 +693,55 @@ def fetch_tags(repo: Optional[str], limit: int = 100) -> list[Tag]:
     return tags
 
 
+def _size_human(size_bytes: int) -> str:
+    """Format a byte count as B/KB/MB/GB."""
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size_bytes} B"
+
+
+@dataclass
+class ReleaseAsset:
+    """A file attached to a release, with its download count.
+
+    ``download_count`` is a lifetime running total kept by GitHub — it is not
+    broken down by date, and there is no API that does so. To see downloads
+    over time you have to snapshot these numbers yourself and diff them.
+    """
+    id: int
+    name: str
+    size_bytes: int
+    download_count: int
+    updated_at: str
+    url: str = ""          # browser_download_url
+    release_tag: str = ""
+
+    def size_human(self) -> str:
+        return _size_human(self.size_bytes)
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "name": self.name,
+            "downloads": str(self.download_count),
+            "size": self.size_human(),
+            "date": self.updated_at[:10] if self.updated_at else "",
+            "#": str(self.id),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+ASSET_COLUMNS = ["name", "downloads", "size", "date", "#"]
+ASSET_DEFAULT_COLUMNS = ["name", "downloads", "size", "date"]
+
+
 @dataclass
 class Release:
     """A GitHub release."""
@@ -703,6 +752,13 @@ class Release:
     created_at: str
     url: str = ""
     body: str = ""
+    id: int = 0
+    assets: list[ReleaseAsset] = field(default_factory=list)
+
+    @property
+    def downloads(self) -> int:
+        """Total downloads across every asset attached to this release."""
+        return sum(a.download_count for a in self.assets)
 
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {
@@ -711,6 +767,8 @@ class Release:
             "draft": "Yes" if self.draft else "No",
             "prerelease": "Yes" if self.prerelease else "No",
             "date": self.created_at[:10] if self.created_at else "",
+            "downloads": str(self.downloads),
+            "assets": str(len(self.assets)),
         }
         return {col: mapping.get(col, "") for col in columns}
 
@@ -720,31 +778,86 @@ class Release:
         return ", ".join(parts)
 
 
-RELEASE_COLUMNS = ["tag", "name", "date", "draft", "prerelease"]
-RELEASE_DEFAULT_COLUMNS = ["tag", "name", "date"]
+RELEASE_COLUMNS = ["tag", "name", "date", "downloads", "assets", "draft", "prerelease"]
+RELEASE_DEFAULT_COLUMNS = ["tag", "name", "date", "downloads"]
+
+
+def _parse_assets(rows: object, release_tag: str = "") -> list[ReleaseAsset]:
+    """Build ReleaseAsset objects from the API's asset array."""
+    if not isinstance(rows, list):
+        return []
+    assets: list[ReleaseAsset] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        assets.append(ReleaseAsset(
+            id=row.get("id", 0),
+            name=row.get("name", ""),
+            size_bytes=row.get("size", 0) or 0,
+            download_count=row.get("downloads", 0) or 0,
+            updated_at=row.get("updated", "") or "",
+            url=row.get("url", "") or "",
+            release_tag=release_tag,
+        ))
+    return assets
+
+
+# Shape of a single asset, shared by the releases list and the per-release fetch.
+_ASSET_FIELDS = (
+    "{id, name, size, downloads: .download_count, "
+    "updated: .updated_at, url: .browser_download_url}"
+)
 
 
 def fetch_releases(repo: Optional[str], limit: int = 30) -> list[Release]:
-    """Fetch releases for the repo."""
+    """Fetch releases for the repo, including each one's assets.
+
+    Assets come back inline on the releases endpoint, so the download counts
+    cost no extra API call.
+    """
     rows = _api_json(
         [f"repos/{{owner}}/{{repo}}/releases?per_page={limit}",
-         "-q", "[.[] | {tag: .tag_name, name, draft, prerelease, created: .created_at, url: .html_url, body: .body}]"],
+         "-q", "[.[] | {tag: .tag_name, name, draft, prerelease, created: .created_at, "
+               f"url: .html_url, body: .body, id, assets: [.assets[] | {_ASSET_FIELDS}]}}]"],
         repo,
     )
     if not isinstance(rows, list):
         return []
     releases: list[Release] = []
     for row in rows:
+        tag = row.get("tag", "")
         releases.append(Release(
-            tag=row.get("tag", ""),
+            tag=tag,
             name=row.get("name", ""),
             draft=row.get("draft", False),
             prerelease=row.get("prerelease", False),
             created_at=row.get("created", ""),
             url=row.get("url", ""),
             body=row.get("body", "") or "",
+            id=row.get("id", 0),
+            assets=_parse_assets(row.get("assets"), tag),
         ))
     return releases
+
+
+def fetch_release_assets(
+    repo: Optional[str], release_id: int, release_tag: str = "", limit: int = 100
+) -> list[ReleaseAsset]:
+    """Fetch the assets of a single release, newest download counts included."""
+    rows = _api_json(
+        [f"repos/{{owner}}/{{repo}}/releases/{release_id}/assets?per_page={limit}",
+         "-q", f"[.[] | {_ASSET_FIELDS}]"],
+        repo,
+    )
+    # Most-downloaded first: the count is the reason for opening this view, so the
+    # answer should be the row you land on rather than something to hunt for.
+    return sorted(_parse_assets(rows, release_tag),
+                  key=lambda a: a.download_count, reverse=True)
+
+
+def total_downloads(releases: list[Release]) -> int:
+    """Total downloads across every asset of every release given."""
+    return sum(r.downloads for r in releases)
 
 
 @dataclass
@@ -818,12 +931,7 @@ class Artifact:
     run_id: int = 0
 
     def size_human(self) -> str:
-        size = float(self.size_bytes)
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024 or unit == "GB":
-                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{self.size_bytes} B"
+        return _size_human(self.size_bytes)
 
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {

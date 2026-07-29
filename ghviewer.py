@@ -36,10 +36,13 @@ from gh_data import (
     WORKFLOW_DEF_DEFAULT_COLUMNS,
     ARTIFACT_COLUMNS,
     ARTIFACT_DEFAULT_COLUMNS,
+    ASSET_COLUMNS,
+    ASSET_DEFAULT_COLUMNS,
     Artifact,
     Branch,
     Commit,
     Release,
+    ReleaseAsset,
     Tag,
     Workflow,
     WorkflowRun,
@@ -59,8 +62,10 @@ from gh_data import (
     fetch_item_by_number,
     fetch_item_detail,
     fetch_prs,
+    fetch_release_assets,
     fetch_releases,
     fetch_tags,
+    total_downloads,
     fetch_workflow_runs,
     fetch_workflows,
     list_repos,
@@ -153,6 +158,7 @@ VIEW_RELEASES = "releases"
 VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
 VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
+VIEW_ASSETS = "assets"         # files attached to a single release (drill-down)
 VIEW_FAVORITES = "favorites"
 
 # Drill-down views: pressing Backspace in the key view returns to its parent.
@@ -161,6 +167,7 @@ VIEW_FAVORITES = "favorites"
 PARENT_VIEW = {
     VIEW_COMMITS: VIEW_BRANCHES,
     VIEW_ARTIFACTS: VIEW_WORKFLOW,
+    VIEW_ASSETS: VIEW_RELEASES,
 }
 
 # Columns for the favorites view (mixed item types)
@@ -177,6 +184,7 @@ VIEW_COLUMNS = {
     VIEW_WORKFLOWS: (WORKFLOW_DEF_DEFAULT_COLUMNS, WORKFLOW_DEF_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
     VIEW_ARTIFACTS: (ARTIFACT_DEFAULT_COLUMNS, ARTIFACT_COLUMNS),
+    VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
 
@@ -211,6 +219,7 @@ class GhViewerFrame(wx.Frame):
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
+        self.assets_release: Release | None = None  # release whose assets are shown
         self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
 
         self._build_ui()
@@ -496,6 +505,8 @@ class GhViewerFrame(wx.Frame):
             self.commit_branch = ""
         if mode != VIEW_ARTIFACTS:
             self.artifacts_run = None
+        if mode != VIEW_ASSETS:
+            self.assets_release = None
         self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
@@ -702,6 +713,17 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, arts, "artifacts")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, [], "artifacts")
+                elif self.view_mode == VIEW_ASSETS:
+                    if self.assets_release:
+                        assets = fetch_release_assets(
+                            self.repo,
+                            self.assets_release.id,
+                            self.assets_release.tag,
+                            self.current_limit,
+                        )
+                        wx.CallAfter(self._on_git_items_loaded, assets, "assets")
+                    else:
+                        wx.CallAfter(self._on_git_items_loaded, [], "assets")
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))
                 return
@@ -732,6 +754,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOWS: "Workflows",
         VIEW_WORKFLOW: "Workflow Runs",
         VIEW_ARTIFACTS: "Artifacts",
+        VIEW_ASSETS: "Release Assets",
         VIEW_FAVORITES: "Favorites",
     }
 
@@ -745,6 +768,9 @@ class GhViewerFrame(wx.Frame):
         # Include the run being drilled into (artifacts view)
         if self.view_mode == VIEW_ARTIFACTS and self.artifacts_run:
             parts.append(f"run #{self.artifacts_run.run_number} {self.artifacts_run.name}")
+        # Include the release being drilled into (assets view)
+        if self.view_mode == VIEW_ASSETS and self.assets_release:
+            parts.append(self.assets_release.tag or self.assets_release.name)
         if self.repo:
             parts.append(self.repo)
         parts.append("ghviewer")
@@ -818,10 +844,20 @@ class GhViewerFrame(wx.Frame):
             compare_hint = "  Enter=list artifacts"
         elif self.view_mode == VIEW_ARTIFACTS:
             compare_hint = "  Enter=download  Backspace=back to runs"
+        elif self.view_mode == VIEW_RELEASES:
+            compare_hint = "  Enter=list assets"
+        elif self.view_mode == VIEW_ASSETS:
+            compare_hint = "  Enter=download in browser  Backspace=back to releases"
         elif self.view_mode == VIEW_COMMITS:
             compare_hint = "  Backspace=back to branches"
+        # Download totals lead the status line where they are the point of the view
+        totals = ""
+        if self.view_mode == VIEW_RELEASES:
+            totals = f" {total_downloads(items):,} downloads across them."
+        elif self.view_mode == VIEW_ASSETS:
+            totals = f" {sum(a.download_count for a in items):,} downloads in total."
         self.SetStatusText(
-            f"{self.repo} — {len(items)} {kind}{branch_info}. "
+            f"{self.repo} — {len(items)} {kind}{branch_info}.{totals} "
             f"Showing up to {self.current_limit}. "
             f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  Ctrl+F=filter{compare_hint}  "
             f"Mode={self.list_mode}"
@@ -981,7 +1017,18 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Date: {item.created_at}")
             lines.append(f"Draft: {'Yes' if item.draft else 'No'}")
             lines.append(f"Prerelease: {'Yes' if item.prerelease else 'No'}")
+            lines.append(f"Downloads: {item.downloads:,} across {len(item.assets)} assets")
             lines.append(f"URL: {item.url}")
+            if item.assets:
+                lines.append("")
+                lines.append("─" * 60)
+                lines.append("Downloads by asset:")
+                lines.append("─" * 60)
+                # Most-downloaded first — the number is why you are looking here
+                for a in sorted(item.assets, key=lambda x: x.download_count, reverse=True):
+                    lines.append(f"  {a.download_count:>7,}  {a.name}  ({a.size_human()})")
+                lines.append("")
+                lines.append("Press Enter to open these assets as their own list.")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -1025,6 +1072,25 @@ class GhViewerFrame(wx.Frame):
             else:
                 lines.append("Press Enter to download this artifact into a folder you choose.")
             lines.append("Press Backspace to return to the workflow runs.")
+        elif isinstance(item, ReleaseAsset):
+            lines.append(f"Asset: {item.name}")
+            lines.append(f"Downloads: {item.download_count:,}")
+            lines.append(f"Size: {item.size_human()}")
+            if item.release_tag:
+                lines.append(f"Release: {item.release_tag}")
+            lines.append(f"Updated: {item.updated_at}")
+            lines.append(f"ID: {item.id}")
+            lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append("The download count is a lifetime running total kept by GitHub.")
+            lines.append("It is not broken down by date, and no API offers that — to see")
+            lines.append("downloads over time you have to record these numbers yourself")
+            lines.append("and compare them later.")
+            lines.append("")
+            lines.append("Press Enter to download this file in your browser.")
+            lines.append("Press Backspace to return to the releases.")
         self.details_text.SetValue("\n".join(lines))
 
     # ── Helpers ─────────────────────────────────────────────────────────
@@ -1089,6 +1155,18 @@ class GhViewerFrame(wx.Frame):
         # In Artifacts view, Enter downloads the selected artifact
         if self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
             self._download_artifact_flow(item)
+            return
+        # In Releases view, Enter drills into that release's assets and their counts
+        if self.view_mode == VIEW_RELEASES and isinstance(item, Release):
+            if not item.assets:
+                self._announce(f"{item.tag} has no assets attached")
+                return
+            self.assets_release = item
+            self._switch_view(VIEW_ASSETS)
+            self._announce(
+                f"Showing {len(item.assets)} assets for {item.tag}, "
+                f"{item.downloads:,} downloads in total"
+            )
             return
         # In Favorites view, Enter opens in browser
         if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
