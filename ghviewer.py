@@ -50,6 +50,8 @@ from gh_data import (
     Workflow,
     WorkflowRun,
     CompareResult,
+    DispatchSpec,
+    WorkflowInput,
     add_comment,
     close_item,
     detect_repo,
@@ -57,6 +59,7 @@ from gh_data import (
     dispatch_workflow,
     download_artifact,
     fetch_branches,
+    fetch_dispatch_spec,
     fetch_run_artifacts,
     fetch_compare,
     fetch_commits,
@@ -72,7 +75,6 @@ from gh_data import (
     fetch_workflow_runs,
     fetch_workflows,
     list_repos,
-    workflow_supports_dispatch,
     open_in_browser,
     parent_repo,
     reopen_item,
@@ -191,6 +193,115 @@ VIEW_COLUMNS = {
     VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
+
+
+# ── Run Workflow: inputs dialog ─────────────────────────────────────────
+
+
+class WorkflowInputsDialog(wx.Dialog):
+    """Collects ``workflow_dispatch`` input values before a manual run.
+
+    Built at runtime from the schema parsed out of the workflow file, the same
+    way GitHub's own "Run workflow" form is. Control per declared type:
+
+        choice / environment → wx.Choice
+        boolean              → wx.CheckBox
+        number / string      → wx.TextCtrl
+
+    Accessibility: because the form is generated rather than hand-written,
+    labelling has to be done deliberately. Every control gets a wx.StaticText
+    placed immediately before it in the sizer *and* a matching SetName, so the
+    accessible name is right whether the screen reader takes it from the
+    associated label or from the control itself. A checkbox carries its own
+    label, so it gets the name only — a separate StaticText would make it read
+    twice. Controls are added in declaration order, which is the tab order.
+    """
+
+    def __init__(
+        self,
+        parent: wx.Window,
+        workflow_name: str,
+        branch: str,
+        inputs: list["WorkflowInput"],
+    ) -> None:
+        super().__init__(
+            parent,
+            title=f"Run {workflow_name}",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self._inputs = inputs
+        self._controls: dict[str, wx.Window] = {}
+
+        outer = wx.BoxSizer(wx.VERTICAL)
+        heading = wx.StaticText(self, label=f"Run '{workflow_name}' on {branch}")
+        outer.Add(heading, 0, wx.ALL, 10)
+
+        grid = wx.BoxSizer(wx.VERTICAL)
+        for spec in inputs:
+            label = spec.label
+            if spec.required:
+                label += " (required)"
+
+            if spec.type == "boolean":
+                ctrl = wx.CheckBox(self, label=label)
+                ctrl.SetValue(spec.default.strip().lower() == "true")
+                ctrl.SetName(label)
+                grid.Add(ctrl, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+            else:
+                text = wx.StaticText(self, label=label)
+                grid.Add(text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+                if spec.options:
+                    ctrl = wx.Choice(self, choices=spec.options)
+                    # Preselect the declared default, else the first option —
+                    # never leave a Choice unset, which reads as blank.
+                    idx = spec.options.index(spec.default) if spec.default in spec.options else 0
+                    ctrl.SetSelection(idx)
+                else:
+                    ctrl = wx.TextCtrl(self, value=spec.default)
+                ctrl.SetName(label)
+                grid.Add(ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+            self._controls[spec.name] = ctrl
+
+        outer.Add(grid, 1, wx.EXPAND)
+        buttons = self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
+        outer.Add(buttons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((420, -1))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        if inputs:
+            self._controls[inputs[0].name].SetFocus()
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        """Block OK on an empty required field, naming the field at fault."""
+        for spec in self._inputs:
+            if not spec.required:
+                continue
+            ctrl = self._controls[spec.name]
+            if isinstance(ctrl, wx.TextCtrl) and not ctrl.GetValue().strip():
+                wx.MessageBox(
+                    f"{spec.label} is required.",
+                    "Run Workflow",
+                    wx.OK | wx.ICON_INFORMATION,
+                    self,
+                )
+                ctrl.SetFocus()
+                return
+        event.Skip()
+
+    def values(self) -> dict[str, str]:
+        """The collected inputs, as the strings the dispatch payload wants."""
+        out: dict[str, str] = {}
+        for spec in self._inputs:
+            ctrl = self._controls[spec.name]
+            if isinstance(ctrl, wx.CheckBox):
+                out[spec.name] = "true" if ctrl.GetValue() else "false"
+            elif isinstance(ctrl, wx.Choice):
+                out[spec.name] = ctrl.GetStringSelection()
+            else:
+                out[spec.name] = ctrl.GetValue().strip()
+        return out
 
 
 # ── Main frame ──────────────────────────────────────────────────────────
@@ -1329,41 +1440,32 @@ class GhViewerFrame(wx.Frame):
     # ── Run a workflow (workflow_dispatch) ──────────────────────────────
 
     def _run_workflow_flow(self, wf: "Workflow") -> None:
-        """Start the 'run this workflow on a branch' flow.
+        """Start the 'run this workflow' flow.
 
-        Checks that the workflow opts in to manual runs (workflow_dispatch)
-        and fetches the branch list in the background, then presents a branch
-        picker. Nothing is triggered until the user confirms a branch.
+        Branch first, then inputs. That order is deliberate and matches the web
+        UI: a workflow's inputs are declared in the workflow file, so a branch
+        that adds or changes an input has a different form from the default
+        branch. Reading the file before the branch is known would show the
+        wrong set of inputs and silently drop the values the user typed.
+
+        Nothing is triggered until the user confirms.
         """
         if not self.repo:
             self._announce("No repository loaded.")
             return
-        self._announce(f"Checking how {wf.name} can be run…")
+        self._announce(f"Loading branches for {wf.name}…")
 
         def worker() -> None:
             try:
-                supports = workflow_supports_dispatch(self.repo, wf.path)
-                names = [b.name for b in fetch_branches(self.repo, 200)] if supports else []
-                wx.CallAfter(self._on_workflow_dispatch_ready, wf, supports, names)
+                names = [b.name for b in fetch_branches(self.repo, 200)]
+                wx.CallAfter(self._on_workflow_branches_ready, wf, names)
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_workflow_dispatch_ready(
-        self, wf: "Workflow", supports: bool, names: list[str]
-    ) -> None:
-        """Show the branch picker (or explain why the workflow can't be run)."""
-        if not supports:
-            msg = (
-                f"'{wf.name}' can't be run manually because it doesn't declare a "
-                "workflow_dispatch trigger.\n\n"
-                "Add `on: workflow_dispatch` to the workflow file to enable "
-                "manual runs and branch selection."
-            )
-            self._announce(f"{wf.name} doesn't support manual runs.")
-            wx.MessageBox(msg, "Run Workflow", wx.OK | wx.ICON_INFORMATION, self)
-            return
+    def _on_workflow_branches_ready(self, wf: "Workflow", names: list[str]) -> None:
+        """Ask which branch to run on, then read that branch's workflow file."""
         if not names:
             self._announce("No branches found to run against.")
             return
@@ -1374,26 +1476,74 @@ class GhViewerFrame(wx.Frame):
             names,
         )
         dlg.SetSelection(0)
-        if dlg.ShowModal() == wx.ID_OK:
-            branch = dlg.GetStringSelection()
+        if dlg.ShowModal() != wx.ID_OK:
             dlg.Destroy()
-            if branch:
-                self._dispatch_workflow(wf, branch)
+            self._announce("Run cancelled.")
+            return
+        branch = dlg.GetStringSelection()
+        dlg.Destroy()
+        if not branch:
+            return
+
+        self._announce(f"Checking how {wf.name} can be run on {branch}…")
+
+        def worker() -> None:
+            try:
+                spec = fetch_dispatch_spec(self.repo, wf.path, branch)
+                wx.CallAfter(self._on_workflow_dispatch_ready, wf, branch, spec)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_workflow_dispatch_ready(
+        self, wf: "Workflow", branch: str, spec: "DispatchSpec"
+    ) -> None:
+        """Collect inputs if the workflow declares any, then dispatch."""
+        if not spec.supports_dispatch:
+            msg = (
+                f"'{wf.name}' can't be run manually because it doesn't declare a "
+                f"workflow_dispatch trigger on {branch}.\n\n"
+                "Add `on: workflow_dispatch` to the workflow file to enable "
+                "manual runs and branch selection."
+            )
+            self._announce(f"{wf.name} doesn't support manual runs on {branch}.")
+            wx.MessageBox(msg, "Run Workflow", wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        # No inputs declared: nothing to ask, so don't put an empty dialog in
+        # the way — this is the original behaviour and stays unchanged.
+        if not spec.inputs:
+            self._dispatch_workflow(wf, branch, {})
+            return
+
+        dlg = WorkflowInputsDialog(self, wf.name, branch, spec.inputs)
+        if dlg.ShowModal() == wx.ID_OK:
+            values = dlg.values()
+            dlg.Destroy()
+            self._dispatch_workflow(wf, branch, values)
         else:
             dlg.Destroy()
             self._announce("Run cancelled.")
 
-    def _dispatch_workflow(self, wf: "Workflow", branch: str) -> None:
+    def _dispatch_workflow(
+        self, wf: "Workflow", branch: str, inputs: dict[str, str]
+    ) -> None:
         """Trigger the workflow on ``branch`` in the background."""
-        self._announce(f"Starting '{wf.name}' on {branch}…")
+        summary = ", ".join(f"{k}={v}" for k, v in inputs.items())
+        self._announce(
+            f"Starting '{wf.name}' on {branch}"
+            + (f" with {summary}…" if summary else "…")
+        )
 
         def worker() -> None:
             try:
-                dispatch_workflow(self.repo, wf.id, branch)
+                dispatch_workflow(self.repo, wf.id, branch, inputs)
                 wx.CallAfter(
                     self._announce,
-                    f"Started '{wf.name}' on {branch}. "
-                    "Switch to Workflow Runs and refresh to watch it.",
+                    f"Started '{wf.name}' on {branch}"
+                    + (f" with {summary}. " if summary else ". ")
+                    + "Switch to Workflow Runs and refresh to watch it.",
                 )
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, str(exc))

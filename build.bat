@@ -84,10 +84,12 @@ if errorlevel 1 (
 
 REM --hidden-import velopack: updater.py imports it lazily inside functions so
 REM the app still runs from source without it, which hides it from PyInstaller.
+REM --hidden-import yaml: same reason — gh_data imports it inside
+REM _parse_dispatch_spec, so it is only needed when setting up a manual run.
 ".venv\Scripts\python.exe" -m PyInstaller --noconsole --onedir --name ghmanage ^
     --icon assets\ghmanage.ico ^
     --version-file build\version_info.txt ^
-    --hidden-import velopack ghviewer.py -y
+    --hidden-import velopack --hidden-import yaml ghviewer.py -y
 if errorlevel 1 (
     echo Error: PyInstaller build failed.
     exit /b 1

@@ -60,6 +60,20 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `list_repos(limit)` — list user's GitHub repos.
 - `detect_repo()` — detect repo from current git directory.
 - `sort_items(items, sort_order)` — sort by named order string.
+- `fetch_dispatch_spec(repo, path, ref)` → `DispatchSpec` — whether a workflow can be run
+  manually and which inputs it declares. **There is no API that returns a workflow's inputs.**
+  GitHub's own "Run workflow" form is built by parsing the workflow file, and so is this.
+  `ref` matters: a branch that adds an input has a different form from the default branch.
+- `_parse_dispatch_spec(raw)` — the YAML parsing half, split out so it is testable without
+  network access. Note the `on:` key: YAML 1.1 reads a bare `on` as boolean `True`, so the
+  lookup checks both. Falls back to the old substring check if the file will not parse.
+- `WorkflowInput` — one declared input: name, type, description, default, required, options.
+- `fetch_environments(repo)` — environment names, used to fill the choices for an
+  `environment`-typed input (the workflow file declares those without options).
+- `dispatch_workflow(repo, workflow_id, ref, inputs)` — trigger a manual run. Inputs go over
+  as `gh api -f "inputs[key]=value"`; `gh` turns the bracket syntax into nested JSON.
+- `workflow_supports_dispatch(repo, path)` — thin wrapper kept for callers that only need the
+  yes/no.
 
 ### ghviewer.py
 
@@ -78,6 +92,16 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `_refresh_list_display` — re-populate list from `self.items` or `self.git_items` without re-fetching.
 - `on_item_activated` — context-dependent: in Branches view, Enter switches to Commits for that branch; otherwise opens in browser.
 - `on_select_branch` — Ctrl+B branch picker dialog for Commits view.
+- `WorkflowInputsDialog` — the "Run workflow" form, generated at runtime from a
+  `DispatchSpec`. choice/environment → `wx.Choice`, boolean → `wx.CheckBox`, everything else
+  → `wx.TextCtrl`. Because it is generated rather than hand-written, **labelling is manual**:
+  each control gets a preceding `wx.StaticText` *and* a matching `SetName`, so the accessible
+  name is right whichever the screen reader picks up. A checkbox carries its own label and so
+  gets the name only — a StaticText too would read it twice.
+- The manual-run flow is **branch first, then inputs** (`_run_workflow_flow` →
+  `_on_workflow_branches_ready` → `_on_workflow_dispatch_ready`). Inputs are declared in the
+  workflow file, so they must be read from the branch being run. Reading them first would
+  show the default branch's form and silently drop values on any branch that differs.
 
 ## Conventions
 
@@ -120,6 +144,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Release assets | `repos/{owner}/{repo}/releases/{id}/assets` |
 | Workflow runs | `repos/{owner}/{repo}/actions/runs` |
 | Contributors | `repos/{owner}/{repo}/contributors` |
+| Workflow file (for inputs) | `repos/{owner}/{repo}/contents/{path}?ref={ref}` |
+| Environments | `repos/{owner}/{repo}/environments` |
+| Manual run | `POST repos/{owner}/{repo}/actions/workflows/{id}/dispatches` |
 
 ## CI/CD
 
@@ -131,8 +158,10 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 ## Release process
 
-1. Update version in `pyproject.toml`.
-2. Create `docs/release-notes-vX.Y.Z.md`.
+1. Update `__version__` in `version.py`. (`pyproject.toml` reads it from there; CI fails the
+   build if the tag and `version.py` disagree.)
+2. Create `docs/release-notes-vX.Y.Z.md`. **Required** — the workflow passes it to both
+   `vpk pack --releaseNotes` and the release body, so a missing file fails the release.
 3. Commit: `git commit -m "Description (vX.Y.Z)"`.
 4. Tag: `git tag vX.Y.Z`.
 5. Push: `git push origin main && git push origin vX.Y.Z`.

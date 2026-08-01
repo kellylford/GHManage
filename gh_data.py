@@ -1047,33 +1047,179 @@ def fetch_workflows(repo: Optional[str], limit: int = 100) -> list[Workflow]:
     return workflows
 
 
-def workflow_supports_dispatch(repo: Optional[str], path: str) -> bool:
-    """Return True if the workflow file declares a ``workflow_dispatch`` trigger.
+@dataclass
+class WorkflowInput:
+    """One ``workflow_dispatch`` input declared by a workflow file.
 
-    Manual runs (and therefore branch selection) are only possible when the
-    workflow opts in with ``on: workflow_dispatch``. We fetch the raw file and
-    look for the trigger keyword.
+    Mirrors what GitHub's own "Run workflow" form is built from. ``type`` is one
+    of choice, boolean, string, number, environment; anything unrecognised (or
+    omitted, which GitHub treats as string) is presented as a text field.
     """
+    name: str
+    type: str = "string"
+    description: str = ""
+    default: str = ""
+    required: bool = False
+    options: list[str] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        """Text to label the control with. The description when there is one —
+        that is what GitHub shows — otherwise the raw input name."""
+        return self.description.strip() or self.name
+
+
+@dataclass
+class DispatchSpec:
+    """What a workflow file at a given ref says about running it manually."""
+    supports_dispatch: bool
+    inputs: list[WorkflowInput] = field(default_factory=list)
+
+
+def _parse_dispatch_spec(raw: str) -> DispatchSpec:
+    """Parse ``on.workflow_dispatch`` out of workflow YAML.
+
+    Split out from the fetch so it can be tested without touching the network.
+
+    Note the ``on:`` key: YAML 1.1 parses a bare ``on`` as the boolean True, so
+    the block is looked up under both. PyYAML's safe_load follows YAML 1.1 here
+    and every GitHub workflow in existence uses the bare form, so the True
+    lookup is the one that actually fires.
+    """
+    import yaml  # deferred: only needed when a manual run is being set up
+
+    try:
+        doc = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        # An unparseable workflow is GitHub's problem, not ours; fall back to
+        # the old substring behaviour so a manual run without inputs still works.
+        return DispatchSpec(supports_dispatch="workflow_dispatch" in raw)
+
+    if not isinstance(doc, dict):
+        return DispatchSpec(supports_dispatch=False)
+
+    triggers = doc.get("on", doc.get(True))
+
+    # `on: workflow_dispatch` (scalar) and `on: [push, workflow_dispatch]` (list)
+    # are both valid and carry no inputs.
+    if triggers == "workflow_dispatch":
+        return DispatchSpec(supports_dispatch=True)
+    if isinstance(triggers, list):
+        return DispatchSpec(supports_dispatch="workflow_dispatch" in triggers)
+    if not isinstance(triggers, dict) or "workflow_dispatch" not in triggers:
+        return DispatchSpec(supports_dispatch=False)
+
+    block = triggers["workflow_dispatch"]
+    # `workflow_dispatch:` with nothing under it parses as None — supported,
+    # no inputs.
+    if not isinstance(block, dict):
+        return DispatchSpec(supports_dispatch=True)
+
+    declared = block.get("inputs")
+    if not isinstance(declared, dict):
+        return DispatchSpec(supports_dispatch=True)
+
+    inputs: list[WorkflowInput] = []
+    for name, spec in declared.items():
+        if not isinstance(spec, dict):
+            spec = {}
+        default = spec.get("default", "")
+        # Booleans and numbers arrive typed from YAML; the dispatch payload and
+        # every control we build want text.
+        if isinstance(default, bool):
+            default = "true" if default else "false"
+        elif default is None:
+            default = ""
+        options = spec.get("options")
+        inputs.append(WorkflowInput(
+            name=str(name),
+            type=str(spec.get("type", "string")),
+            description=str(spec.get("description", "")),
+            default=str(default),
+            required=bool(spec.get("required", False)),
+            options=[str(o) for o in options] if isinstance(options, list) else [],
+        ))
+    return DispatchSpec(supports_dispatch=True, inputs=inputs)
+
+
+def fetch_environments(repo: Optional[str]) -> list[str]:
+    """Names of the repo's configured deployment environments.
+
+    Used to fill the choices for an ``environment``-typed input, which the
+    workflow file declares without options — the web form looks them up the
+    same way. Returns [] when the repo has none or the endpoint is unavailable
+    (it 404s on some plans), leaving the caller with a free-text field rather
+    than a dead end.
+    """
+    try:
+        rows = _api_json(
+            ["repos/{owner}/{repo}/environments", "-q", "[.environments[].name]"],
+            repo,
+        )
+    except GhError:
+        return []
+    return [str(r) for r in rows] if isinstance(rows, list) else []
+
+
+def fetch_dispatch_spec(
+    repo: Optional[str], path: str, ref: Optional[str] = None
+) -> DispatchSpec:
+    """Read a workflow file and report whether/how it can be run manually.
+
+    There is no API that returns a workflow's inputs — GitHub's own web form is
+    built by parsing the workflow file at the selected ref, and this does the
+    same thing. ``ref`` matters: a branch that adds an input has different
+    inputs from the default branch, and running with the wrong set silently
+    drops values.
+    """
+    endpoint = f"repos/{{owner}}/{{repo}}/contents/{path}"
+    if ref:
+        endpoint += f"?ref={ref}"
     raw = _api(
-        [f"repos/{{owner}}/{{repo}}/contents/{path}",
-         "-H", "Accept: application/vnd.github.raw"],
+        [endpoint, "-H", "Accept: application/vnd.github.raw"],
         repo,
     )
-    return "workflow_dispatch" in raw
+    spec = _parse_dispatch_spec(raw)
+
+    # An `environment` input declares no options; its choices are the repo's
+    # environments. Only pay for the extra call when one is actually declared.
+    if any(i.type == "environment" and not i.options for i in spec.inputs):
+        names = fetch_environments(repo)
+        if names:
+            for i in spec.inputs:
+                if i.type == "environment" and not i.options:
+                    i.options = list(names)
+    return spec
 
 
-def dispatch_workflow(repo: Optional[str], workflow_id: int, ref: str) -> None:
+def workflow_supports_dispatch(repo: Optional[str], path: str) -> bool:
+    """Return True if the workflow file declares a ``workflow_dispatch`` trigger."""
+    return fetch_dispatch_spec(repo, path).supports_dispatch
+
+
+def dispatch_workflow(
+    repo: Optional[str],
+    workflow_id: int,
+    ref: str,
+    inputs: Optional[dict[str, str]] = None,
+) -> None:
     """Trigger a manual (workflow_dispatch) run of a workflow on ``ref``.
 
-    ``ref`` is a branch or tag name. Raises GhError if the workflow doesn't
-    support manual dispatch or the ref is invalid.
+    ``ref`` is a branch or tag name. ``inputs`` maps declared input names to
+    string values; GitHub rejects names the workflow does not declare, so pass
+    only what came from its own schema.
+
+    Raises GhError if the workflow doesn't support manual dispatch or the ref
+    is invalid.
     """
-    _api(
-        ["-X", "POST",
-         f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow_id}/dispatches",
-         "-f", f"ref={ref}"],
-        repo,
-    )
+    args = ["-X", "POST",
+            f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow_id}/dispatches",
+            "-f", f"ref={ref}"]
+    # `gh api` builds nested JSON from key[subkey]=value, which is exactly the
+    # {"ref": ..., "inputs": {...}} shape this endpoint wants.
+    for key, value in (inputs or {}).items():
+        args += ["-f", f"inputs[{key}]={value}"]
+    _api(args, repo)
 
 
 @dataclass

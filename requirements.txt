@@ -1,2 +1,6 @@
 wxPython>=4.2.0
 velopack
+# Parses on.workflow_dispatch.inputs out of a workflow file so the Run Workflow
+# dialog can offer the same inputs the web UI does. There is no API for this —
+# GitHub builds its own form from the file too.
+PyYAML>=6.0
