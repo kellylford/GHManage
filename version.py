@@ -5,4 +5,4 @@ versions. CI checks this against the release tag and fails if they differ,
 so bump it in the same commit as the tag.
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
