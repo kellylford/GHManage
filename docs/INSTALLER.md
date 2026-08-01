@@ -64,16 +64,23 @@ The `velopack` PyPI package is only the in-app client library.
 On a `v*` tag, `.github/workflows/ghmanage.yml`:
 
 1. Verifies the tag matches `version.py`.
-2. Builds with PyInstaller (`--onedir --hidden-import velopack`).
+2. Builds with PyInstaller (`--onedir --hidden-import velopack --hidden-import yaml`).
 3. `vpk download github` — fetches the previous release's packages so a delta
    can be built. Allowed to fail (the first Velopack release has no prior).
-4. `vpk pack` — builds the setup exe, full/delta packages, and feed metadata,
-   then deletes the downloaded previous-version `.nupkg`s.
+4. `vpk pack` — builds the setup exe, full/delta packages, and feed metadata.
 5. Uploads Setup.exe, the portable zip, the packages, and the three feed files.
 
 The feed files are required assets, not extras. A release missing `RELEASES`,
 `releases.win.json` or `assets.win.json` strands every installed client
 *silently* — and a broken updater cannot fix itself in the field.
+
+**The previous version's `.nupkg` is uploaded too, on purpose.** `vpk pack` writes
+an entry for every package it saw into `RELEASES` / `releases.win.json`, so
+deleting the older package leaves the published feed pointing at an asset the
+release does not carry. The workflow used to delete it; v0.4.0 shipped that way
+and its feed still references `GHManage-0.3.0-full.nupkg`. Harmless for the
+normal delta path — Velopack takes the delta and never fetches the older full
+package — but fixed from v0.4.1 on.
 
 ## Testing updates locally (no GitHub release needed)
 

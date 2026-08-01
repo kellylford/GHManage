@@ -146,11 +146,14 @@ jobs:
             --instLocation PerUser --shortcuts StartMenuRoot `
             --releaseNotes docs/release-notes-${{ github.ref_name }}.md `
             @signArgs
-          # Drop the previous version's packages pulled in for delta generation
-          # so only this release's assets are uploaded.
-          Get-ChildItem installer/Releases/*.nupkg |
-            Where-Object { $_.Name -notlike "*-$version-*" } |
-            Remove-Item -Force
+          # The previous version's full .nupkg (fetched above as the delta input)
+          # stays in the folder and is uploaded with the rest. It is tempting to
+          # delete it as "not this release's asset", but `vpk pack` writes an
+          # entry for every package it saw into RELEASES/releases.win.json — so
+          # removing the file publishes feed metadata that references an asset
+          # the release does not carry. v0.4.0 shipped that way and its feed
+          # still points at GHManage-0.3.0-full.nupkg; harmless for the delta
+          # path, but not something to keep doing.
           Get-ChildItem installer/Releases | Select-Object Name, Length
 
       - name: Upload artifact
