@@ -75,9 +75,18 @@ if not defined APP_VERSION (
 )
 echo Building GHManage %APP_VERSION%...
 
+REM Product name, version and publisher for the .exe's Properties > Details.
+python assets\make_version_info.py
+if errorlevel 1 (
+    echo Error: Failed to write the version resource.
+    exit /b 1
+)
+
 REM --hidden-import velopack: updater.py imports it lazily inside functions so
 REM the app still runs from source without it, which hides it from PyInstaller.
 ".venv\Scripts\python.exe" -m PyInstaller --noconsole --onedir --name ghmanage ^
+    --icon assets\ghmanage.ico ^
+    --version-file build\version_info.txt ^
     --hidden-import velopack ghviewer.py -y
 if errorlevel 1 (
     echo Error: PyInstaller build failed.
@@ -103,6 +112,7 @@ echo Packing Velopack installer and update feed...
 vpk pack --packId GHManage --packVersion %APP_VERSION% ^
     --packDir dist\ghmanage --mainExe ghmanage.exe ^
     --packTitle "GHManage" --packAuthors "Kelly Ford" ^
+    --icon assets\ghmanage.ico ^
     --outputDir installer\Releases ^
     --instLocation PerUser --shortcuts StartMenuRoot
 if errorlevel 1 (

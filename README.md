@@ -152,16 +152,25 @@ Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases
 on a branch), and **Workflow Runs** (recent run history).
 Each view has its own set of columns and detail formatting.
 
-## Building a standalone executable
+## Building
 
 ```bash
 build.bat
 ```
 
-Or with a clean build:
+Builds the app folder into `dist\ghmanage\`. Add `clean` to wipe artifacts first.
 
 ```bash
-build.bat clean
+build.bat installer
 ```
 
-The executable will be in `dist/ghmanage.exe`. See `build.bat` for details.
+Also packs the Velopack installer and update feed into `installer\Releases\`.
+That step needs `vpk`, a .NET global tool: `dotnet tool install -g vpk`.
+
+The build is `--onedir`, not `--onefile`, and that is not optional — see
+[docs/INSTALLER.md](docs/INSTALLER.md) for why, along with the update flow, how to
+test an upgrade locally, and the code-signing setup.
+
+`assets\` holds the icon stamped into the app, the Start menu shortcut, and
+Setup.exe, plus the two scripts that generate it and the exe's version resource.
+`make_icon.py` only needs re-running if the artwork changes.

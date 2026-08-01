@@ -66,9 +66,12 @@ jobs:
       # --hidden-import velopack: updater.py imports it lazily inside
       # functions, so PyInstaller's static analysis cannot see it.
       - name: Build application
-        run: >
-          pyinstaller --noconsole --onedir --name ghmanage
-          --hidden-import velopack ghviewer.py -y
+        run: |
+          python assets/make_version_info.py
+          pyinstaller --noconsole --onedir --name ghmanage `
+            --icon assets/ghmanage.ico `
+            --version-file build/version_info.txt `
+            --hidden-import velopack ghviewer.py -y
 
       - name: Install vpk
         if: startsWith(github.ref, 'refs/tags/v')
@@ -135,6 +138,7 @@ jobs:
           vpk pack --packId GHManage --packVersion $version `
             --packDir dist/ghmanage --mainExe ghmanage.exe `
             --packTitle "GHManage" --packAuthors "Kelly Ford" `
+            --icon assets/ghmanage.ico `
             --outputDir installer/Releases `
             --instLocation PerUser --shortcuts StartMenuRoot `
             --releaseNotes docs/release-notes-${{ github.ref_name }}.md `
