@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghviewer"
-version = "0.2.1"
+# Read from version.py so the app, the installer and CI share one version.
+dynamic = ["version"]
 description = "A wxPython GUI viewer and manager for GitHub issues and pull requests"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,6 +13,7 @@ license = { text = "MIT" }
 authors = [{ name = "Kelly Ford" }]
 dependencies = [
     "wxPython>=4.2.0",
+    "velopack",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +26,10 @@ dev = [
 ghviewer = "ghviewer:main"
 
 [tool.setuptools]
-py-modules = ["ghviewer", "gh_data"]
+py-modules = ["ghviewer", "gh_data", "updater", "version"]
+
+[tool.setuptools.dynamic]
+version = { attr = "version.__version__" }
 
 [tool.pyinstaller]
 # Build a standalone .exe with:  pyinstaller --noconsole --name ghviewer ghviewer.py

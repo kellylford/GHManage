@@ -8,11 +8,29 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write   # create the GitHub release
+  id-token: write   # OIDC token azure/login exchanges for Azure creds (signing)
+
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write
+
+    # NOTE: when code signing is enabled (see issue #1), this job must also
+    # declare `environment: azure-signing`. That pins the OIDC token subject to
+    # repo:kellylford/GHManage:environment:azure-signing, which is the string
+    # the Azure federated credential has to trust — the tenant does not support
+    # wildcard tag subjects. It is ONLY a claim-matching mechanism, not a
+    # deployment gate; the environment must stay unprotected or every build,
+    # including PRs, will wait for approval.
+    #
+    # It is left out until then so that referencing a not-yet-created
+    # environment cannot break an unsigned release.
+
+    # Surfaced as an env var so steps can test whether signing is configured.
+    # Secrets cannot be referenced directly in an `if:` expression.
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
 
     steps:
       - uses: actions/checkout@v7
@@ -28,26 +46,131 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build executable
-        run: pyinstaller --noconsole --name ghmanage --onefile ghviewer.py
+      # The release tag is the source of truth, but the app reports version.py.
+      # If they disagree the updater compares against a lie, so fail early.
+      - name: Verify tag matches version.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $app = python -c "from version import __version__; print(__version__)"
+          Write-Host "tag=$tag version.py=$app"
+          if ($tag -ne $app) {
+            Write-Error "Tag v$tag does not match version.py ($app). Bump version.py and re-tag."
+            exit 1
+          }
+
+      # --onedir, not --onefile: Velopack swaps an app folder in place. A
+      # onefile exe re-extracts ~17MB on every launch, which overruns
+      # Velopack's 15s update-hook timeout and makes deltas worthless.
+      # --hidden-import velopack: updater.py imports it lazily inside
+      # functions, so PyInstaller's static analysis cannot see it.
+      - name: Build application
+        run: >
+          pyinstaller --noconsole --onedir --name ghmanage
+          --hidden-import velopack ghviewer.py -y
+
+      - name: Install vpk
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: dotnet tool install -g vpk
+
+      # Fetch the previous release's packages so vpk can build a delta against
+      # them. Expected to fail on the very first Velopack release.
+      - name: Download previous release packages
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        shell: pwsh
+        run: >
+          vpk download github
+          --repoUrl https://github.com/kellylford/GHManage
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --outputDir installer/Releases
+
+      # --- Code signing (Azure Trusted Signing via GitHub OIDC) --------------
+      # azure/login exchanges the workflow OIDC token for Azure credentials;
+      # Velopack's bundled signtool then authenticates through that `az` session
+      # (DefaultAzureCredential). No certificate or long-lived secret is stored.
+      #
+      # Signing is skipped when AZURE_CLIENT_ID is unset, so releases keep
+      # working unsigned until the Azure federated credential for this repo
+      # exists. Unsigned builds update fine; signing only removes the
+      # SmartScreen "unknown publisher" warning.
+      - name: Azure login (code signing)
+        if: startsWith(github.ref, 'refs/tags/v') && env.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # UTF-8 without BOM is required by Velopack's --azureTrustedSignFile
+      # reader; [IO.File]::WriteAllText writes exactly that.
+      - name: Write signing metadata
+        if: startsWith(github.ref, 'refs/tags/v') && env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          $json = @{
+            Endpoint               = 'https://eus.codesigning.azure.net/'
+            CodeSigningAccountName = 'kellylford'
+            CertificateProfileName = 'kellyford-public'
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE\signing-metadata.json", $json)
+
+      # --azureTrustedSignFile signs the packaged app binaries and Velopack's
+      # own Update.exe / Setup.exe, so the portable zip and the installer are
+      # both signed from this one invocation.
+      - name: Pack Velopack installer and update feed
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $signArgs = @()
+          $meta = "$env:GITHUB_WORKSPACE\signing-metadata.json"
+          if (Test-Path $meta) {
+            Write-Host "Signing with Azure Trusted Signing."
+            $signArgs = @('--azureTrustedSignFile', $meta)
+          } else {
+            Write-Host "::warning::AZURE_CLIENT_ID not set - producing UNSIGNED build."
+          }
+          vpk pack --packId GHManage --packVersion $version `
+            --packDir dist/ghmanage --mainExe ghmanage.exe `
+            --packTitle "GHManage" --packAuthors "Kelly Ford" `
+            --outputDir installer/Releases `
+            --instLocation PerUser --shortcuts StartMenuRoot `
+            --releaseNotes docs/release-notes-${{ github.ref_name }}.md `
+            @signArgs
+          # Drop the previous version's packages pulled in for delta generation
+          # so only this release's assets are uploaded.
+          Get-ChildItem installer/Releases/*.nupkg |
+            Where-Object { $_.Name -notlike "*-$version-*" } |
+            Remove-Item -Force
+          Get-ChildItem installer/Releases | Select-Object Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ghmanage-win-x64
-          path: dist/ghmanage.exe
+          path: dist/ghmanage/**
           if-no-files-found: error
           retention-days: 7
 
-      # Create a GitHub Release when a version tag is pushed (e.g. v0.1.0)
-      # Release notes are read from docs/release-notes-<tag>.md if present,
-      # otherwise GitHub auto-generates notes from commits.
+      # Release notes come from docs/release-notes-<tag>.md.
+      #
+      # RELEASES, releases.win.json and assets.win.json are the update feed —
+      # the in-app updater reads them to discover new versions. A release
+      # missing them strands every installed client silently, so they are
+      # required assets, not extras.
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           name: GHManage ${{ github.ref_name }}
           files: |
-            dist/ghmanage.exe
+            installer/Releases/GHManage-win-Setup.exe
+            installer/Releases/GHManage-win-Portable.zip
+            installer/Releases/*.nupkg
+            installer/Releases/RELEASES
+            installer/Releases/releases.win.json
+            installer/Releases/assets.win.json
           fail_on_unmatched_files: true
           body_path: docs/release-notes-${{ github.ref_name }}.md

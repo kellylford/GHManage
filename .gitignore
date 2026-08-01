@@ -8,3 +8,4 @@ build/
 *.spec
 /.venv
 build.log
+installer/Releases/

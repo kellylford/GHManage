@@ -31,6 +31,22 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 
 ## Install
 
+### Windows
+
+Download **GHManage-win-Setup.exe** from the
+[latest release](https://github.com/kellylford/GHManage/releases) and run it. It
+installs per-user, with no administrator prompt, and keeps itself up to date:
+new versions download in the background and install the next time you start
+GHManage. Help ▸ Check for Updates checks on demand.
+
+**GHManage-win-Portable.zip** is also published for anyone who would rather not
+install. It does not update itself.
+
+Windows may show a SmartScreen "unknown publisher" warning until code signing is
+switched on. See [docs/INSTALLER.md](docs/INSTALLER.md).
+
+### From source
+
 ```bash
 pip install -r requirements.txt
 ```

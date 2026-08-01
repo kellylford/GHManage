@@ -1,0 +1,163 @@
+# Installer & Automatic Updates
+
+GHManage is packaged with [Velopack](https://velopack.io/). `build.bat installer`
+runs PyInstaller then `vpk pack`, emitting `installer/Releases/` (gitignored):
+
+- `GHManage-win-Setup.exe` — the installer users download
+- `GHManage-win-Portable.zip` — the portable app folder, for users who do not
+  want an install. It cannot self-update.
+- `GHManage-<version>-full.nupkg` — the update package the in-app updater consumes
+- `GHManage-<version>-delta.nupkg` — binary delta from the previous release
+  (only generated when the previous release's packages are present; CI fetches
+  them with `vpk download github` before packing, local builds usually produce
+  full packages only)
+- `RELEASES`, `releases.win.json`, `assets.win.json` — the release feed metadata
+  the updater reads
+
+`vpk` is a .NET global tool, **not** a Python package: `dotnet tool install -g vpk`.
+The `velopack` PyPI package is only the in-app client library.
+
+## Key facts
+
+- **The build must be `--onedir`, not `--onefile`.** Velopack replaces an app
+  *folder* in place. A onefile exe re-extracts the whole ~17 MB bundle on every
+  launch — including the short-lived hook processes Velopack runs during an
+  update, which overran Velopack's 15-second hook timeout and got killed in
+  testing. Onefile also destroys delta efficiency: the app is one opaque blob,
+  so a delta rewrites all of it. Measured on the same change, onedir produced a
+  delta of 3 patched files out of 34; onefile patched the entire binary.
+- **`--hidden-import velopack` is required.** `updater.py` imports velopack
+  lazily inside functions so the app still runs from a source checkout without
+  it. That hides the import from PyInstaller's static analysis, and without the
+  flag the module is silently missing from the build — the updater then logs
+  "velopack not installed; updates disabled" and never updates anything.
+- **Per-user install.** `--instLocation PerUser` installs to
+  `%LocalAppData%\GHManage\current\`, with no elevation prompt. Background
+  updates into Program Files from a non-elevated process are not verified, so
+  the machine-wide option stays off.
+- **Automatic updates.** The startup check runs 2 seconds after the main window
+  appears, in a background thread. A found update is downloaded silently and
+  **applied on the next launch** by `updater.bootstrap()`
+  (`set_auto_apply_on_startup(True)`), before any window is shown. The user
+  never has to act. Help ▸ Check for Updates offers an immediate restart.
+- **The startup check never shows a dialog.** It announces in the status bar
+  ("… will be installed next time you start GHManage"). Only the user-initiated
+  Help menu check prompts. This is deliberate: a modal raised at startup steals
+  focus, and an app that restarts itself mid-session is hostile — especially
+  with a screen reader.
+  Note the ordering constraint in `ghviewer.py`: the check is scheduled *after*
+  `self.Show()`. A `wx.MessageDialog.ShowModal()` raised against a frame that
+  has not been shown returns immediately with the affirmative ID instead of
+  waiting for input — during development that silently auto-confirmed "Restart
+  Now" and restarted the app with no user involvement.
+- **Version string must be SemVer.** `vpk pack --packVersion` rejects 4-part
+  versions. `version.py` is the single source of truth; CI fails the release if
+  the tag and `version.py` disagree.
+- **Update logging** goes to `%APPDATA%\GHManage\ghmanage-update.log` (and
+  Velopack's own log to `%LocalAppData%\velopack\velopack_GHManage.log`). Note
+  this is `%APPDATA%`, not `%LocalAppData%` — the latter is the Velopack-managed
+  install directory, and a log file held open in there blocks uninstall cleanup.
+- **Code signing is not wired up.** See below.
+
+## Release flow (CI)
+
+On a `v*` tag, `.github/workflows/ghmanage.yml`:
+
+1. Verifies the tag matches `version.py`.
+2. Builds with PyInstaller (`--onedir --hidden-import velopack`).
+3. `vpk download github` — fetches the previous release's packages so a delta
+   can be built. Allowed to fail (the first Velopack release has no prior).
+4. `vpk pack` — builds the setup exe, full/delta packages, and feed metadata,
+   then deletes the downloaded previous-version `.nupkg`s.
+5. Uploads Setup.exe, the portable zip, the packages, and the three feed files.
+
+The feed files are required assets, not extras. A release missing `RELEASES`,
+`releases.win.json` or `assets.win.json` strands every installed client
+*silently* — and a broken updater cannot fix itself in the field.
+
+## Testing updates locally (no GitHub release needed)
+
+`--update-feed <path>` points the update check at a local folder of `vpk pack`
+output instead of GitHub Releases, so the whole cycle can be verified offline.
+Everything except the GitHub fetch itself runs the production code path.
+
+1. Set `version.py` to `0.2.1`, run `build.bat installer`.
+2. **Copy `installer\Releases\GHManage-win-Setup.exe` aside** — `vpk pack`
+   overwrites it on every pack, so the next step would otherwise leave you
+   installing the *new* version and testing nothing.
+3. Run the copied Setup.exe. It installs to `%LocalAppData%\GHManage`.
+4. Bump `version.py` to `0.2.2` and run `build.bat installer` again **without
+   deleting `installer\Releases`** — the previous full package being present is
+   what lets the delta be generated.
+5. Launch the installed copy against the local feed:
+   `%LocalAppData%\GHManage\current\ghmanage.exe --update-feed <repo>\installer\Releases`
+   The status bar announces the update; the log records "update 0.2.2
+   downloaded". The app keeps running on 0.2.1 — this is correct.
+6. Quit, then launch again from the Start Menu. The update is applied before the
+   window appears; Help ▸ About reads 0.2.2.
+
+Add `--debug` for verbose update logging.
+
+## Testing the live GitHub path (one-time, two real releases)
+
+The local cycle proves everything except Velopack's `GithubSource` resolving and
+downloading real release assets. That link cannot be tested until **two**
+published releases exist. Do it once, on your own machine, before relying on
+updates to ship an urgent fix:
+
+1. Tag and publish a baseline release.
+2. **Check the release page by eye** for `RELEASES`, `releases.win.json`,
+   `assets.win.json` and the `-full.nupkg`. A missing feed is the most likely
+   failure and the one that strands clients silently.
+3. Install from that release's Setup.exe — not a local build.
+4. Bump `version.py`, add `docs/release-notes-vX.Y.Z.md`, tag, and publish. It
+   must be a **normal published release, not a draft or prerelease** — the
+   client uses `GithubSource(..., prerelease=False)` and will not see one.
+5. Launch the installed baseline, wait for the status bar announcement, quit,
+   relaunch, and confirm the new version.
+6. If nothing happens, read `%APPDATA%\GHManage\ghmanage-update.log`, then
+   recheck step 2.
+
+Do not delete or reuse the test release — a machine that already updated to it
+would point at missing assets, and reusing the number muddles the delta chain.
+
+## Code signing
+
+The workflow is wired for **Azure Trusted Signing**, reusing the same account
+QuickMail signs with — signing account `kellylford`, certificate profile
+`kellyford-public`, endpoint `https://eus.codesigning.azure.net/`. Nothing new
+needs to be purchased. `azure/login@v3` exchanges the workflow's OIDC token for
+Azure credentials and Velopack's bundled signtool authenticates through that
+session, so no certificate or long-lived secret is ever stored in the repo.
+
+**Signing is off until the Azure side is configured.** Every signing step is
+gated on `AZURE_CLIENT_ID` being set; with no secret the release still builds
+and publishes, unsigned, and the pack step emits a workflow warning. Unsigned
+builds install and auto-update perfectly well — signing only removes the
+SmartScreen "unknown publisher" warning on first run. This gating is deliberate:
+a half-configured signing setup should not be able to block a release.
+
+Turning it on is tracked in
+[issue #1](https://github.com/kellylford/GHManage/issues/1) and needs four
+things:
+
+1. **An Azure federated credential** on the existing app registration, trusting
+   the subject `repo:kellylford/GHManage:environment:azure-signing`. The tenant
+   does not support wildcard tag subjects, which is the whole reason an
+   environment is involved — it pins the OIDC subject to a fixed string.
+2. **The `azure-signing` environment** on `kellylford/GHManage`. It must stay
+   **unprotected**; protection rules would make every build, including PRs, wait
+   for approval.
+3. **Repo secrets** `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+   `AZURE_SUBSCRIPTION_ID` — the same values as on `kellylford/QuickMail`, where
+   they are repo-level (not environment-level) secrets.
+4. **Adding `environment: azure-signing`** back to the `build` job. It is
+   deliberately absent so that referencing a not-yet-created environment cannot
+   break an unsigned release; there is a comment at that spot in the workflow.
+
+Once those exist, the next `v*` tag signs automatically. Confirm it worked by
+checking Properties ▸ Digital Signatures on the downloaded
+`GHManage-win-Setup.exe`.
+
+`.github/workflows/quickmail.yml` in the QuickMail repo is the reference
+implementation for all of this.

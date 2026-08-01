@@ -7,12 +7,15 @@ Requires the `gh` CLI (https://cli.github.com/) and wxPython.
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import webbrowser
 from typing import Optional
 
 import wx
 
+import updater
+from version import __version__ as APP_VERSION
 from pinned_repos import add_pinned, load_pinned, remove_pinned
 from favorites import FavoriteEntry, load_favorites, save_favorites, is_favorite, toggle_favorite
 
@@ -147,6 +150,7 @@ ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
 ID_RUN_WORKFLOW = wx.NewIdRef()
 ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
+ID_CHECK_UPDATES = wx.NewIdRef()
 
 
 # View modes
@@ -195,12 +199,17 @@ VIEW_COLUMNS = {
 class GhViewerFrame(wx.Frame):
     """Main application window."""
 
-    def __init__(self, repo: str | None = None) -> None:
+    def __init__(
+        self,
+        repo: str | None = None,
+        update_service: "updater.UpdateService | None" = None,
+    ) -> None:
         super().__init__(
             None,
             title="ghviewer — GitHub Issues & PRs",
             size=(1000, 700),
         )
+        self.updater = update_service
         self.repo: str | None = None
         self.items: list[Item] = []
         self._all_repos: list[dict] = []
@@ -233,6 +242,12 @@ class GhViewerFrame(wx.Frame):
             self._load_repos()
 
         self.Show()
+
+        # Check for updates in the background so startup is never blocked.
+        # Must come after Show(): a modal raised against an unshown frame
+        # returns immediately instead of waiting for the user.
+        if self.updater:
+            wx.CallLater(2000, self._start_update_check)
 
     # ── UI construction ─────────────────────────────────────────────────
 
@@ -430,7 +445,16 @@ class GhViewerFrame(wx.Frame):
 
         menu_bar.Append(view_menu, "View")
 
+        # Help menu
+        help_menu = wx.Menu()
+        help_menu.Append(ID_CHECK_UPDATES, "Check for Updates…")
+        help_menu.Append(wx.ID_ABOUT, "About GHManage")
+        menu_bar.Append(help_menu, "Help")
+
         self.SetMenuBar(menu_bar)
+
+        self.Bind(wx.EVT_MENU, self.on_check_updates, id=ID_CHECK_UPDATES)
+        self.Bind(wx.EVT_MENU, self.on_about, id=wx.ID_ABOUT)
 
         # Bind mode/state/tab menu items
         self.Bind(wx.EVT_MENU, self.on_quick_mode, id=ID_QUICK_MODE)
@@ -449,6 +473,98 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_workflows, id=ID_VIEW_WORKFLOWS)
         self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
         self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
+
+    # ── Updates ─────────────────────────────────────────────────────────
+
+    def _start_update_check(self) -> None:
+        """Background check run once at startup."""
+        threading.Thread(
+            target=self._check_for_updates, args=(True,), daemon=True
+        ).start()
+
+    def on_check_updates(self, event) -> None:
+        """Help ▸ Check for Updates — reports the result either way."""
+        self._announce("Checking for updates…")
+        threading.Thread(
+            target=self._check_for_updates, args=(False,), daemon=True
+        ).start()
+
+    def _check_for_updates(self, silent: bool = True) -> None:
+        """Worker thread. `silent` = the startup check, which never interrupts.
+
+        On startup a found update is only announced in the status bar; it
+        installs itself the next time GHManage starts. Stealing focus with a
+        modal at launch — and restarting out from under the user — is worse
+        than waiting. The Help menu check is user-initiated, so it may prompt.
+        """
+        if not self.updater:
+            if not silent:
+                wx.CallAfter(self._show_no_update, portable=True)
+            return
+
+        info = self.updater.check_for_update()
+        if not info:
+            if not silent:
+                wx.CallAfter(self._show_no_update, portable=False)
+            return
+
+        if silent:
+            wx.CallAfter(
+                self._announce,
+                f"GHManage {info.version} downloaded — "
+                "it will be installed next time you start GHManage.",
+            )
+        else:
+            wx.CallAfter(self._show_update_dialog, info.version, info.whats_new_url)
+
+    def _show_no_update(self, portable: bool) -> None:
+        if portable:
+            msg = (
+                f"GHManage {APP_VERSION} is running as a portable copy, "
+                "which cannot update itself.\n\n"
+                "Install GHManage to receive automatic updates."
+            )
+        else:
+            msg = f"GHManage {APP_VERSION} is up to date."
+        wx.MessageBox(msg, "Check for Updates", wx.OK | wx.ICON_INFORMATION, self)
+
+    def _show_update_dialog(self, version: str, url: str) -> None:
+        msg = (
+            f"GHManage {version} is available. You are running {APP_VERSION}.\n\n"
+            "It is downloading in the background. Choose Restart Now to "
+            "install it immediately, or Later to install it the next time "
+            "you start GHManage."
+        )
+        dlg = wx.MessageDialog(
+            self, msg, "Update Available", wx.YES_NO | wx.ICON_INFORMATION
+        )
+        dlg.SetYesNoLabels("&Restart Now", "&Later")
+        try:
+            restart_now = dlg.ShowModal() == wx.ID_YES
+        finally:
+            dlg.Destroy()
+
+        if not restart_now:
+            return  # already downloaded; bootstrap() applies it on next launch
+
+        if not self.updater.apply_update_and_restart(sys.argv[1:]):
+            wx.MessageBox(
+                "The update could not be applied. It will be retried the next "
+                f"time GHManage starts.\n\nRelease notes: {url}",
+                "Update Failed",
+                wx.OK | wx.ICON_WARNING,
+                self,
+            )
+
+    def on_about(self, event) -> None:
+        wx.MessageBox(
+            f"GHManage {APP_VERSION}\n\n"
+            "A GUI viewer and manager for GitHub issues and pull requests.\n\n"
+            f"{updater.REPO_URL}",
+            "About GHManage",
+            wx.OK | wx.ICON_INFORMATION,
+            self,
+        )
 
     def _update_menu_checks(self) -> None:
         """Update checkmarks/radio selections to match current settings."""
@@ -1965,6 +2081,9 @@ class GhViewerFrame(wx.Frame):
         dlg.Destroy()
 
     def on_quit(self, event: wx.CommandEvent) -> None:
+        # A downloaded update is left staged: updater.bootstrap() applies it on
+        # the next launch, before any window appears. Applying here instead
+        # would mean racing our own shutdown for a lock on the install dir.
         self.Destroy()
 
     # ── View menu actions ───────────────────────────────────────────────
@@ -2200,6 +2319,10 @@ class GhViewerFrame(wx.Frame):
 
 
 def main() -> None:
+    # Must run before argparse: Velopack relaunches the app with its own hook
+    # arguments during install/update/uninstall, and this handles and exits.
+    updater.bootstrap()
+
     parser = argparse.ArgumentParser(
         description="GUI viewer and manager for GitHub issues and pull requests."
     )
@@ -2209,9 +2332,30 @@ def main() -> None:
         default=None,
         help="GitHub repository (owner/name). Skips the repo chooser.",
     )
+    parser.add_argument(
+        "--update-feed",
+        metavar="DIR",
+        default=None,
+        help="Check this local folder of vpk output for updates instead of "
+             "GitHub Releases (for testing the update cycle offline).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"GHManage {APP_VERSION}",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Write verbose update logging to the update log.",
+    )
     args = parser.parse_args()
+
+    updater.configure_logging(debug=args.debug)
+    service = updater.UpdateService(APP_VERSION, feed=args.update_feed)
+
     app = wx.App(False)
-    GhViewerFrame(repo=args.repo)
+    GhViewerFrame(repo=args.repo, update_service=service)
     app.MainLoop()
 
 
