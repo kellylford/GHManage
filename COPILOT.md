@@ -174,6 +174,8 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - v0.1.2 — git views: branches, commits, tags, releases, workflow runs
 - v0.1.3 — branch-specific commits: Enter on a branch switches to its commits, Ctrl+B branch picker
 - v0.1.4 — open repos by URL, pinned repos, fork-aware issue fetching, informative window title, default load 100
+- *(v0.1.5–v0.3.0 not recorded here — see `docs/release-notes-v*.md` for each)*
+- v0.4.0 — Run Workflow collects `workflow_dispatch` inputs
 
 ## Roadmap
 
