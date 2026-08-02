@@ -498,16 +498,18 @@ class GhViewerFrame(wx.Frame):
         # View menu
         view_menu = wx.Menu()
 
-        # View Mode submenu — switch between Issues/PRs and Git views
+        # View Mode submenu — switch between Issues/PRs and Git views.
+        # Ctrl+1..Ctrl+8 jump straight to a view; the numbers follow the order
+        # of this menu, so the shortcut is readable off the menu itself.
         show_menu = wx.Menu()
-        show_menu.AppendRadioItem(ID_VIEW_ISSUES, "Issues & PRs")
-        show_menu.AppendRadioItem(ID_VIEW_BRANCHES, "Branches")
-        show_menu.AppendRadioItem(ID_VIEW_COMMITS, "Commits")
-        show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags")
-        show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases")
-        show_menu.AppendRadioItem(ID_VIEW_WORKFLOWS, "Workflows")
-        show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs")
-        show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites")
+        show_menu.AppendRadioItem(ID_VIEW_ISSUES, "Issues & PRs\tCtrl+1")
+        show_menu.AppendRadioItem(ID_VIEW_BRANCHES, "Branches\tCtrl+2")
+        show_menu.AppendRadioItem(ID_VIEW_COMMITS, "Commits\tCtrl+3")
+        show_menu.AppendRadioItem(ID_VIEW_TAGS, "Tags\tCtrl+4")
+        show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases\tCtrl+5")
+        show_menu.AppendRadioItem(ID_VIEW_WORKFLOWS, "Workflows\tCtrl+6")
+        show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs\tCtrl+7")
+        show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+8")
         view_menu.AppendSubMenu(show_menu, "View Mode")
 
         view_menu.AppendSeparator()
@@ -726,6 +728,13 @@ class GhViewerFrame(wx.Frame):
         """Switch to a different view mode (issues, branches, commits, etc.)."""
         if self.view_mode == mode:
             return
+        # Every view but Favorites is a view *of a repo*. Refuse rather than
+        # switch to an empty list, and put the radio check back where it was —
+        # the menu item has already toggled itself by the time we get here.
+        if mode != VIEW_FAVORITES and not self.repo:
+            self._update_menu_checks()
+            self._announce("Select a repository first.")
+            return
         self.view_mode = mode
         # Reset per-view drill-down context and filter when leaving a view
         if mode != VIEW_COMMITS:
@@ -899,7 +908,10 @@ class GhViewerFrame(wx.Frame):
             wx.CallLater(100, self._focus_list)
 
     def _load_items(self) -> None:
-        self.SetStatusText(f"Loading {self.repo}…")
+        # Name the view as well as the repo: after a Ctrl+<n> switch this is the
+        # first confirmation of where you landed.
+        view_label = self._VIEW_LABELS.get(self.view_mode, self.view_mode)
+        self.SetStatusText(f"Loading {view_label} for {self.repo}…")
         self.list_ctrl.DeleteAllItems()
         self.details_text.Clear()
 

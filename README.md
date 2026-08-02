@@ -80,10 +80,32 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+O` | Open the selected item on GitHub in your browser |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
+| `Ctrl+1` … `Ctrl+8` | Switch view — see below |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
 | `Ctrl+Q` | Quit |
+
+### Switching views
+
+Once a repository is loaded, `Ctrl+<number>` jumps straight to a view — the
+numbers follow the order of the View ▸ View Mode menu, so you can read them off
+the menu. They work from anywhere in the window (repo list, item list, or
+details panel).
+
+| Key | View |
+|-----|------|
+| `Ctrl+1` | Issues & PRs |
+| `Ctrl+2` | Branches |
+| `Ctrl+3` | Commits |
+| `Ctrl+4` | Tags |
+| `Ctrl+5` | Releases |
+| `Ctrl+6` | Workflows |
+| `Ctrl+7` | Workflow Runs |
+| `Ctrl+8` | ★ Favorites |
+
+Every view except Favorites needs a repository, so with none selected the status
+bar says "Select a repository first" and the view is left alone.
 
 ### In the issue/PR list only
 
