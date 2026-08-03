@@ -131,40 +131,62 @@ would point at missing assets, and reusing the number muddles the delta chain.
 ## Code signing
 
 The workflow is wired for **Azure Trusted Signing**, reusing the same account
-QuickMail signs with — signing account `kellylford`, certificate profile
-`kellyford-public`, endpoint `https://eus.codesigning.azure.net/`. Nothing new
-needs to be purchased. `azure/login@v3` exchanges the workflow's OIDC token for
-Azure credentials and Velopack's bundled signtool authenticates through that
-session, so no certificate or long-lived secret is ever stored in the repo.
+QuickMail signs with — signing account `kellylford` (resource group `IdeaPlace`,
+eastus), certificate profile `kellyford-public`, endpoint
+`https://eus.codesigning.azure.net/`. Nothing new needs to be purchased.
+`azure/login@v3` exchanges the workflow's OIDC token for Azure credentials and
+Velopack's bundled signtool authenticates through that session, so no
+certificate or long-lived secret is ever stored in the repo.
 
-**Signing is off until the Azure side is configured.** Every signing step is
-gated on `AZURE_CLIENT_ID` being set; with no secret the release still builds
-and publishes, unsigned, and the pack step emits a workflow warning. Unsigned
-builds install and auto-update perfectly well — signing only removes the
-SmartScreen "unknown publisher" warning on first run. This gating is deliberate:
-a half-configured signing setup should not be able to block a release.
+**Signing is off until `AZURE_CLIENT_ID` is set.** Every signing step is gated on
+it; with no secret the release still builds and publishes, unsigned, and the pack
+step emits a workflow warning. Unsigned builds install and auto-update perfectly
+well — signing only removes the SmartScreen "unknown publisher" warning on first
+run. This gating is deliberate: a half-configured signing setup should not be
+able to block a release.
 
-Turning it on is tracked in
-[issue #1](https://github.com/kellylford/GHManage/issues/1) and needs four
-things:
+### The signing identity
 
-1. **An Azure federated credential** on the existing app registration, trusting
-   the subject `repo:kellylford/GHManage:environment:azure-signing`. The tenant
-   does not support wildcard tag subjects, which is the whole reason an
-   environment is involved — it pins the OIDC subject to a fixed string.
-2. **The `azure-signing` environment** on `kellylford/GHManage`. It must stay
-   **unprotected**; protection rules would make every build, including PRs, wait
-   for approval.
-3. **Repo secrets** `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-   `AZURE_SUBSCRIPTION_ID` — the same values as on `kellylford/QuickMail`, where
-   they are repo-level (not environment-level) secrets.
-4. **Adding `environment: azure-signing`** back to the `build` job. It is
-   deliberately absent so that referencing a not-yet-created environment cannot
-   break an unsigned release; there is a comment at that spot in the workflow.
+The app registration that signs is **`github-artifact-signing`**, app ID
+`da30172c-ceb4-412c-b1fa-3c3a3808c631`. It is the principal holding *Artifact
+Signing Certificate Profile Signer* on the `kellylford` account.
 
-Once those exist, the next `v*` tag signs automatically. Confirm it worked by
-checking Properties ▸ Digital Signatures on the downloaded
-`GHManage-win-Setup.exe`.
+There is a separate app registration literally named `QuickMail`
+(`bcdc84f1-…`) — it is **not** the signing identity and has no rights on the
+signing account. Putting its ID in `AZURE_CLIENT_ID` authenticates fine and then
+fails at pack time with an authorization error, which is a slow way to discover
+the mistake.
+
+### Current state
+
+Done:
+
+- The **`azure-signing` environment** exists on `kellylford/GHManage`, with no
+  protection rules. It must stay unprotected; protection rules would make every
+  build, including PRs, wait for approval.
+- **`environment: azure-signing`** is declared on the `build` job. This is what
+  pins the OIDC subject to a fixed string — the tenant does not support wildcard
+  tag subjects, which is the whole reason an environment is involved.
+- Repo secrets **`AZURE_TENANT_ID`** (`793722c2-ea04-49a3-8183-af139211b24f`)
+  and **`AZURE_SUBSCRIPTION_ID`** (`566d6139-16a2-48b7-8aa5-fa5ebe17b28f`).
+
+Remaining, in this order — the order matters:
+
+1. **The Azure federated credential** on `github-artifact-signing`, trusting
+   subject `repo:kellylford/GHManage:environment:azure-signing`, issuer
+   `https://token.actions.githubusercontent.com`, audience
+   `api://AzureADTokenExchange`.
+2. **Then** set `AZURE_CLIENT_ID` to `da30172c-ceb4-412c-b1fa-3c3a3808c631`.
+
+Setting the secret first breaks releases outright: it switches on the
+`azure/login` step, which has no `continue-on-error`, so with no matching
+federated credential the login fails, the build job fails, and the tag publishes
+**nothing at all**. Leaving `AZURE_CLIENT_ID` unset until last keeps every
+intermediate state shipping a working unsigned release.
+
+Once both exist, the next `v*` tag signs automatically. Confirm by checking the
+pack step printed `Signing with Azure Trusted Signing.` rather than the warning,
+and Properties ▸ Digital Signatures on the downloaded `GHManage-win-Setup.exe`.
 
 `.github/workflows/quickmail.yml` in the QuickMail repo is the reference
 implementation for all of this.

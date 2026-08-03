@@ -16,16 +16,13 @@ jobs:
   build:
     runs-on: windows-latest
 
-    # NOTE: when code signing is enabled (see issue #1), this job must also
-    # declare `environment: azure-signing`. That pins the OIDC token subject to
+    # This pins the OIDC token subject to
     # repo:kellylford/GHManage:environment:azure-signing, which is the string
     # the Azure federated credential has to trust — the tenant does not support
     # wildcard tag subjects. It is ONLY a claim-matching mechanism, not a
     # deployment gate; the environment must stay unprotected or every build,
     # including PRs, will wait for approval.
-    #
-    # It is left out until then so that referencing a not-yet-created
-    # environment cannot break an unsigned release.
+    environment: azure-signing
 
     # Surfaced as an env var so steps can test whether signing is configured.
     # Secrets cannot be referenced directly in an `if:` expression.
