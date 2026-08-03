@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Versions of the actions used in .github/workflows/*.yml.
+  #
+  # Grouped deliberately: a runtime-wide move like the Node 20 -> 24
+  # migration touches every action at once, and ungrouped that arrives as
+  # one PR per action. As a single PR it is one review and one merge, and
+  # the workflows never sit half-migrated between merges.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
