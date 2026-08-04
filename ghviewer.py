@@ -447,6 +447,10 @@ class GhViewerFrame(wx.Frame):
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
         self.assets_release: Release | None = None  # release whose assets are shown
         self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
+        # Every list fetch carries a token. Results whose token is no longer the
+        # current one are dropped, because by then they belong to a view or a
+        # repo the user has already left. See `_begin_fetch`.
+        self._fetch_token: int = 0
         # Label the Issues view is restricted to ("" = no restriction). Set by
         # pressing Enter on a label; unlike the quick filter this is applied by
         # `gh`, so it reaches issues past the current page.
@@ -1076,8 +1080,28 @@ class GhViewerFrame(wx.Frame):
 
     # ── Item loading ───────────────────────────────────────────────────
 
+    def _begin_fetch(self) -> int:
+        """Claim the list for a new load and invalidate any still in flight.
+
+        Fetches run on background threads and come back through `wx.CallAfter`,
+        so a slow one can land long after the user has moved on — the issues of
+        a big repo arriving into the Labels view, filling it with blank rows
+        under the wrong columns and a status bar describing a different view.
+        Nothing cancels a `gh` call, so instead every load takes a token and the
+        handlers ignore results that are no longer the current one.
+        """
+        self._fetch_token += 1
+        return self._fetch_token
+
+    def _fetch_is_current(self, token: int) -> bool:
+        """True if `token` is still the load whose results the list wants."""
+        return token == self._fetch_token
+
     def _load_favorites_view(self) -> None:
         """Populate the list with all favorited items (mixed types, cross-repo)."""
+        # Favorites load synchronously from disk, but still take a token — an
+        # in-flight repo fetch must not land on top of them.
+        self._begin_fetch()
         self.SetStatusText("Loading favorites…")
         self.details_text.Clear()
         self.favorites = load_favorites()
@@ -1102,10 +1126,14 @@ class GhViewerFrame(wx.Frame):
         self.SetStatusText(f"Loading {view_label} for {self.repo}…")
         self.list_ctrl.DeleteAllItems()
         self.details_text.Clear()
+        # Read the view and repo once, here on the UI thread, so the worker
+        # cannot see them change halfway through and dispatch on a mix of both.
+        token = self._begin_fetch()
+        view = self.view_mode
 
         def worker() -> None:
             try:
-                if self.view_mode == VIEW_ISSUES:
+                if view == VIEW_ISSUES:
                     issues = []
                     prs = []
                     if self.tab_filter in ("issues", "both"):
@@ -1119,37 +1147,39 @@ class GhViewerFrame(wx.Frame):
                             self.label_filter,
                         )
                     combined = sort_items(issues + prs, self.sort_order)
-                    wx.CallAfter(self._on_items_loaded, combined, len(issues), len(prs))
-                elif self.view_mode == VIEW_BRANCHES:
+                    wx.CallAfter(
+                        self._on_items_loaded, token, combined, len(issues), len(prs)
+                    )
+                elif view == VIEW_BRANCHES:
                     branches = fetch_branches(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, branches, "branches")
-                elif self.view_mode == VIEW_COMMITS:
+                    wx.CallAfter(self._on_git_items_loaded, token, branches, "branches")
+                elif view == VIEW_COMMITS:
                     commits = fetch_commits(self.repo, self.commit_branch, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, commits, "commits")
-                elif self.view_mode == VIEW_TAGS:
+                    wx.CallAfter(self._on_git_items_loaded, token, commits, "commits")
+                elif view == VIEW_TAGS:
                     tags = fetch_tags(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, tags, "tags")
-                elif self.view_mode == VIEW_RELEASES:
+                    wx.CallAfter(self._on_git_items_loaded, token, tags, "tags")
+                elif view == VIEW_RELEASES:
                     releases = fetch_releases(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, releases, "releases")
-                elif self.view_mode == VIEW_WORKFLOWS:
+                    wx.CallAfter(self._on_git_items_loaded, token, releases, "releases")
+                elif view == VIEW_WORKFLOWS:
                     workflows = fetch_workflows(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, workflows, "workflows")
-                elif self.view_mode == VIEW_LABELS:
+                    wx.CallAfter(self._on_git_items_loaded, token, workflows, "workflows")
+                elif view == VIEW_LABELS:
                     labels = fetch_labels(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, labels, "labels")
-                elif self.view_mode == VIEW_WORKFLOW:
+                    wx.CallAfter(self._on_git_items_loaded, token, labels, "labels")
+                elif view == VIEW_WORKFLOW:
                     runs = fetch_workflow_runs(self.repo, self.current_limit)
-                    wx.CallAfter(self._on_git_items_loaded, runs, "workflow runs")
-                elif self.view_mode == VIEW_ARTIFACTS:
+                    wx.CallAfter(self._on_git_items_loaded, token, runs, "workflow runs")
+                elif view == VIEW_ARTIFACTS:
                     if self.artifacts_run:
                         arts = fetch_run_artifacts(
                             self.repo, self.artifacts_run.run_id, self.current_limit
                         )
-                        wx.CallAfter(self._on_git_items_loaded, arts, "artifacts")
+                        wx.CallAfter(self._on_git_items_loaded, token, arts, "artifacts")
                     else:
-                        wx.CallAfter(self._on_git_items_loaded, [], "artifacts")
-                elif self.view_mode == VIEW_ASSETS:
+                        wx.CallAfter(self._on_git_items_loaded, token, [], "artifacts")
+                elif view == VIEW_ASSETS:
                     if self.assets_release:
                         assets = fetch_release_assets(
                             self.repo,
@@ -1157,11 +1187,11 @@ class GhViewerFrame(wx.Frame):
                             self.assets_release.tag,
                             self.current_limit,
                         )
-                        wx.CallAfter(self._on_git_items_loaded, assets, "assets")
+                        wx.CallAfter(self._on_git_items_loaded, token, assets, "assets")
                     else:
-                        wx.CallAfter(self._on_git_items_loaded, [], "assets")
+                        wx.CallAfter(self._on_git_items_loaded, token, [], "assets")
             except GhError as exc:
-                wx.CallAfter(self._on_items_error, str(exc))
+                wx.CallAfter(self._on_fetch_error, token, str(exc))
                 return
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1250,7 +1280,11 @@ class GhViewerFrame(wx.Frame):
                         self.list_ctrl.SetItem(i, j, label)
         return filtered
 
-    def _on_items_loaded(self, items: list[Item], n_issues: int, n_prs: int) -> None:
+    def _on_items_loaded(
+        self, token: int, items: list[Item], n_issues: int, n_prs: int
+    ) -> None:
+        if not self._fetch_is_current(token):
+            return  # the user has moved on; these belong to a view they left
         self.items = items
         self.git_items = []
         filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
@@ -1271,8 +1305,10 @@ class GhViewerFrame(wx.Frame):
         if filtered:
             wx.CallLater(100, self._focus_list)
 
-    def _on_git_items_loaded(self, items: list, kind: str) -> None:
+    def _on_git_items_loaded(self, token: int, items: list, kind: str) -> None:
         """Handle loaded git items (branches, commits, tags, releases, workflow runs)."""
+        if not self._fetch_is_current(token):
+            return  # the user has moved on; these belong to a view they left
         self.git_items = items
         self.items = []  # clear issues/PRs
         filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
@@ -1329,6 +1365,16 @@ class GhViewerFrame(wx.Frame):
     def _on_items_error(self, msg: str) -> None:
         self.SetStatusText(f"Error: {msg}")
         self._update_title()
+
+    def _on_fetch_error(self, token: int, msg: str) -> None:
+        """Error from a list load — swallowed if that load is no longer current.
+
+        A failure in a view you have already left is not worth replacing the
+        status of the view you are now looking at.
+        """
+        if not self._fetch_is_current(token):
+            return
+        self._on_items_error(msg)
 
     # ── Details panel ──────────────────────────────────────────────────
 
@@ -2273,6 +2319,11 @@ class GhViewerFrame(wx.Frame):
 
     def _on_goto_fetched(self, item: Optional[Item], number: int) -> None:
         """Called when an on-demand fetch for Go To completes."""
+        # Go To inserts into the issues list. If the view moved on while the
+        # fetch was running, that list is not what is on screen any more.
+        if self.view_mode != VIEW_ISSUES:
+            self._announce(f"Left the issues list before #{number} arrived.")
+            return
         if item is None:
             self._announce(f"#{number} not found in {self.repo}.")
             wx.MessageBox(

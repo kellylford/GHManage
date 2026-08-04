@@ -92,6 +92,15 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   `view_mode`, `commit_branch`, `label_filter`.
 - `_build_ui` / `_build_menu` / `_bind_events` — construction.
 - `_load_items` — background fetch + populate list (dispatches by `view_mode`).
+- **Every list load carries a token** from `_begin_fetch`, and the `wx.CallAfter`
+  handlers drop results when `_fetch_is_current` says otherwise. Nothing cancels a
+  `gh` call, so a slow fetch will still come back after the user has switched views —
+  without the token, a big repo's issues land in whatever view is now on screen, filling
+  it with blank rows under the wrong columns and a status bar describing a view you left.
+  `_load_items` also snapshots `view_mode` on the UI thread and dispatches on that copy,
+  so a switch mid-fetch cannot make the worker choose one branch and report another.
+  **Any new async path that writes to the list needs the same treatment**;
+  `_on_goto_fetched` is the other one, guarded on the view instead.
 - `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases,
   Workflow, Labels. Each drill-down view clears its context here when you leave it
   (`commit_branch`, `artifacts_run`, `assets_release`, `label_filter`) — add a reset for
@@ -226,6 +235,7 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - v0.6.1 — Actions menu gathers every item action; Ctrl+I / Ctrl+D alongside
   Insert/Delete; bare Insert/Delete work from the details panel too.
 - v0.6.2 — first signed release (Azure Trusted Signing). No code changes.
+- v0.6.3 — a slow fetch can no longer land in a view you have already left.
 
 ## Roadmap
 
