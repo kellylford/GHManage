@@ -155,6 +155,13 @@ ID_VIEW_FAVORITES = wx.NewIdRef()
 ID_NEW_LABEL = wx.NewIdRef()
 ID_DELETE_LABEL = wx.NewIdRef()
 ID_BROWSE_LABEL = wx.NewIdRef()
+# Actions menu. ID_DELETE_ITEM is one item that deletes whatever the current
+# view can delete, so a single Ctrl+D covers labels and workflow runs alike.
+# The Run Workflow / Download Artifact entries get their own ids because the
+# right-click menus bind ID_RUN_WORKFLOW and ID_DOWNLOAD_ARTIFACT on the popup.
+ID_DELETE_ITEM = wx.NewIdRef()
+ID_ACT_RUN_WORKFLOW = wx.NewIdRef()
+ID_ACT_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_FILTER = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
@@ -576,35 +583,55 @@ class GhViewerFrame(wx.Frame):
     def _build_menu(self) -> None:
         menu_bar = wx.MenuBar()
 
-        # File menu
+        # File menu — the repository and the list itself
         file_menu = wx.Menu()
         file_menu.Append(ID_OPEN_REPO, "Open Repository…\tCtrl+Shift+O")
         file_menu.Append(ID_REMOVE_REPO, "Remove from List…")
         file_menu.AppendSeparator()
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
+        file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
-        file_menu.Append(ID_OPEN_BROWSER, "Open in Browser\tCtrl+O")
-        file_menu.Append(ID_CLOSE_ITEM, "Close\tCtrl+W")
-        file_menu.Append(ID_REOPEN, "Reopen\tCtrl+Shift+W")
-        file_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
         file_menu.Append(ID_FILTER, "Quick Filter…\tCtrl+F")
-        file_menu.Append(ID_SELECT_BRANCH, "Select Branch…\tCtrl+B")
-        file_menu.Append(ID_COMPARE_BRANCHES, "Compare Branches…\tCtrl+Shift+B")
-        file_menu.AppendSeparator()
-        # Insert and Delete do the same from the Labels list. They are spelled
-        # out here rather than bound as accelerators: a global Delete accelerator
-        # would swallow the Delete key the Workflow Runs view uses.
-        file_menu.Append(ID_NEW_LABEL, "New Label… (Insert in Labels view)")
-        file_menu.Append(ID_DELETE_LABEL, "Delete Label… (Delete in Labels view)")
-        file_menu.AppendSeparator()
-        file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
         file_menu.Append(ID_NEXT_COMMENT, "Next Comment\tAlt+N")
         file_menu.Append(ID_PREV_COMMENT, "Previous Comment\tAlt+P")
         file_menu.AppendSeparator()
         file_menu.Append(wx.ID_EXIT, "Quit\tCtrl+Q")
         menu_bar.Append(file_menu, "File")
+
+        # Actions menu — everything that acts on what the list is showing.
+        # One home for them, whichever view they belong to. Items are re-labelled
+        # and enabled per view in `_update_actions_menu`, so the menu is a
+        # reliable answer to "what can I do here?" rather than a list to sift.
+        actions_menu = wx.Menu()
+        actions_menu.Append(ID_OPEN_BROWSER, "Open in Browser\tCtrl+O")
+        actions_menu.AppendSeparator()
+        self._act_close = actions_menu.Append(ID_CLOSE_ITEM, "Close Issue/PR\tCtrl+W")
+        self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
+        self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
+        actions_menu.AppendSeparator()
+        # Ctrl+I and Ctrl+D are safe as accelerators; a bare Delete accelerator
+        # would not be, since it would swallow the Delete key inside the list.
+        # The bare Insert and Delete keys are handled in `on_char_hook`.
+        self._act_new = actions_menu.Append(ID_NEW_LABEL, "New Label…\tCtrl+I")
+        self._act_delete = actions_menu.Append(ID_DELETE_ITEM, "Delete\tCtrl+D")
+        actions_menu.AppendSeparator()
+        self._act_run_workflow = actions_menu.Append(
+            ID_ACT_RUN_WORKFLOW, "Run Workflow on Branch…"
+        )
+        self._act_download = actions_menu.Append(
+            ID_ACT_DOWNLOAD_ARTIFACT, "Download Artifact…"
+        )
+        actions_menu.AppendSeparator()
+        self._act_select_branch = actions_menu.Append(
+            ID_SELECT_BRANCH, "Select Branch…\tCtrl+B"
+        )
+        self._act_compare = actions_menu.Append(
+            ID_COMPARE_BRANCHES, "Compare Branches…\tCtrl+Shift+B"
+        )
+        menu_bar.Append(actions_menu, "Actions")
+        self._actions_menu = actions_menu
 
         # View menu
         view_menu = wx.Menu()
@@ -822,6 +849,38 @@ class GhViewerFrame(wx.Frame):
         # Sort order
         for item_id, order in self._sort_menu_items.items():
             menu_bar.Check(item_id, order == self.sort_order)
+        self._update_actions_menu()
+
+    def _update_actions_menu(self) -> None:
+        """Label and enable the Actions items for the current view.
+
+        The Delete entry names what it would delete, so the menu never offers a
+        bare "Delete" whose object you have to guess, and is disabled where
+        nothing can be deleted — which also parks its Ctrl+D accelerator.
+        """
+        if not hasattr(self, "_act_delete"):
+            return  # called before the menu exists
+        issues = self.view_mode == VIEW_ISSUES
+        self._act_close.Enable(issues)
+        self._act_reopen.Enable(issues)
+        self._act_comment.Enable(issues)
+
+        self._act_new.Enable(bool(self.repo))
+
+        if self.view_mode == VIEW_LABELS:
+            self._act_delete.SetItemLabel("Delete Label…\tCtrl+D")
+            self._act_delete.Enable(True)
+        elif self.view_mode == VIEW_WORKFLOW:
+            self._act_delete.SetItemLabel("Delete Workflow Run…\tCtrl+D")
+            self._act_delete.Enable(True)
+        else:
+            self._act_delete.SetItemLabel("Delete\tCtrl+D")
+            self._act_delete.Enable(False)
+
+        self._act_run_workflow.Enable(self.view_mode == VIEW_WORKFLOWS)
+        self._act_download.Enable(self.view_mode == VIEW_ARTIFACTS)
+        self._act_select_branch.Enable(self.view_mode == VIEW_COMMITS)
+        self._act_compare.Enable(self.view_mode == VIEW_BRANCHES)
 
     def _rebuild_columns_menu(self) -> None:
         """Rebuild the Columns submenu for the current view mode."""
@@ -898,6 +957,9 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
         self.Bind(wx.EVT_MENU, self.on_delete_label, id=ID_DELETE_LABEL)
+        self.Bind(wx.EVT_MENU, self.on_delete_item, id=ID_DELETE_ITEM)
+        self.Bind(wx.EVT_MENU, self.on_act_run_workflow, id=ID_ACT_RUN_WORKFLOW)
+        self.Bind(wx.EVT_MENU, self.on_act_download_artifact, id=ID_ACT_DOWNLOAD_ARTIFACT)
         self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
         self.Bind(wx.EVT_MENU, self.on_compare_branches, id=ID_COMPARE_BRANCHES)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
@@ -994,6 +1056,7 @@ class GhViewerFrame(wx.Frame):
         self.current_limit = self.page_size  # reset to first page
         self.filter_text = ""  # clear filter on repo switch
         self.label_filter = ""  # a label of the old repo means nothing here
+        self._update_actions_menu()  # repo-dependent items (New Label…)
         self._update_title()
         # Reset to issues view when switching repos
         if self.view_mode != VIEW_ISSUES:
@@ -1005,6 +1068,7 @@ class GhViewerFrame(wx.Frame):
         """Switch to the Favorites view — shows all favorited items across repos."""
         self.repo = None
         self._update_title()
+        self._update_actions_menu()
         if self.view_mode != VIEW_FAVORITES:
             self._switch_view(VIEW_FAVORITES)
         else:
@@ -1220,7 +1284,7 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_WORKFLOWS:
             compare_hint = "  Enter=run on branch"
         elif self.view_mode == VIEW_WORKFLOW:
-            compare_hint = "  Enter=list artifacts"
+            compare_hint = "  Enter=list artifacts  Delete/Ctrl+D=delete run"
         elif self.view_mode == VIEW_ARTIFACTS:
             compare_hint = "  Enter=download  Backspace=back to runs"
         elif self.view_mode == VIEW_RELEASES:
@@ -1230,7 +1294,10 @@ class GhViewerFrame(wx.Frame):
         elif self.view_mode == VIEW_COMMITS:
             compare_hint = "  Backspace=back to branches"
         elif self.view_mode == VIEW_LABELS:
-            compare_hint = "  Enter=browse issues & PRs with it  Insert=new  Delete=remove"
+            compare_hint = (
+                "  Enter=browse issues & PRs with it"
+                "  Insert/Ctrl+I=new  Delete/Ctrl+D=remove"
+            )
         # Download totals lead the status line where they are the point of the view
         totals = ""
         if self.view_mode == VIEW_RELEASES:
@@ -1407,9 +1474,11 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("Keys, from the list or from here:")
             lines.append("")
-            lines.append("  Enter   list the issues and PRs carrying this label")
-            lines.append("  Insert  create a new label")
-            lines.append(f"  Delete  delete '{item.name}' — GHManage asks first")
+            lines.append("  Enter             list the issues and PRs with this label")
+            lines.append("  Insert or Ctrl+I  create a new label")
+            lines.append(f"  Delete or Ctrl+D  delete '{item.name}' — GHManage asks first")
+            lines.append("")
+            lines.append("The Actions menu has all three.")
             lines.append("")
             lines.append("Deleting a label strips it from every issue and PR that")
             lines.append("has it, and GitHub offers no way to undo that.")
@@ -1460,6 +1529,7 @@ class GhViewerFrame(wx.Frame):
             lines.append("─" * 60)
             lines.append("")
             lines.append("Press Enter to list this run's artifacts.")
+            lines.append("Delete or Ctrl+D deletes this run — GHManage asks first.")
         elif isinstance(item, Artifact):
             lines.append(f"Artifact: {item.name}")
             lines.append(f"Size: {item.size_human()}")
@@ -1794,24 +1864,28 @@ class GhViewerFrame(wx.Frame):
     def on_char_hook(self, event: wx.KeyEvent) -> None:
         """Frame-wide keys that must not depend on which pane has focus.
 
-        Insert and Delete in the Labels view are handled here rather than in
-        ``on_list_key_down`` so they work from the details panel too. They are
-        deliberately not menu accelerators: a global Delete accelerator would
-        swallow the Delete key the Workflow Runs view uses to delete a run.
+        The bare Insert and Delete keys are handled here rather than in
+        ``on_list_key_down`` so they work from the details panel too — that panel
+        is where the text describing them is read. They cannot be menu
+        accelerators: a bare Delete accelerator would swallow the Delete key
+        everywhere in the window. Their Ctrl+I / Ctrl+D twins in the Actions menu
+        are ordinary accelerators, which is why those need nothing here.
 
         Everything else is skipped, so the focused control keeps first claim on
         its own keys.
         """
         # Not from the repository list: Delete there reads as "remove this
-        # repo", and acting on the label list from another pane is a surprise.
-        if self.view_mode == VIEW_LABELS and self.FindFocus() is not self.repo_list:
-            key = event.GetKeyCode()
-            if key == wx.WXK_INSERT:
-                self._do_new_label()
-                return
-            if key == wx.WXK_DELETE:
-                self._do_delete_label()
-                return
+        # repo", and acting on the item list from another pane is a surprise.
+        if self.FindFocus() is self.repo_list:
+            event.Skip()
+            return
+        key = event.GetKeyCode()
+        if key == wx.WXK_INSERT and self.view_mode == VIEW_LABELS:
+            self._do_new_label()
+            return
+        if key == wx.WXK_DELETE and self.view_mode in (VIEW_LABELS, VIEW_WORKFLOW):
+            self._delete_focused_item()
+            return
         event.Skip()
 
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
@@ -1845,8 +1919,6 @@ class GhViewerFrame(wx.Frame):
                 self._do_comment()
             else:
                 event.Skip()
-        elif self.view_mode == VIEW_WORKFLOW and key == wx.WXK_DELETE:
-            self._do_delete_run()
         else:
             event.Skip()
 
@@ -2701,6 +2773,39 @@ class GhViewerFrame(wx.Frame):
 
     def on_delete_label(self, event: wx.CommandEvent) -> None:
         self._do_delete_label()
+
+    def on_delete_item(self, event: wx.CommandEvent) -> None:
+        """Actions ▸ Delete (Ctrl+D) — deletes whatever this view can delete."""
+        self._delete_focused_item()
+
+    def on_act_run_workflow(self, event: wx.CommandEvent) -> None:
+        item = self._focused_item()
+        if isinstance(item, Workflow):
+            self._run_workflow_flow(item)
+        else:
+            self._announce("Select a workflow first.")
+
+    def on_act_download_artifact(self, event: wx.CommandEvent) -> None:
+        item = self._focused_item()
+        if isinstance(item, Artifact):
+            self._download_artifact_flow(item)
+        else:
+            self._announce("Select an artifact first.")
+
+    def _delete_focused_item(self) -> None:
+        """Route Delete/Ctrl+D to the deletion this view supports.
+
+        One entry point for the key and the menu item, so the two can never
+        disagree about what Delete means in a given view.
+        """
+        if self.view_mode == VIEW_LABELS:
+            self._do_delete_label()
+        elif self.view_mode == VIEW_WORKFLOW:
+            self._do_delete_run()
+        else:
+            self._announce(
+                "Nothing here can be deleted. Labels and workflow runs can."
+            )
 
     def _do_new_label(self) -> None:
         """Create a label (Insert in the Labels view, or the File menu)."""

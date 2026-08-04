@@ -116,12 +116,21 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `_on_label_action_done` — refresh after a label create/delete. Separate from
   `_on_action_done` because a label can be created from any view via the File menu, and
   refreshing the current view would hide the label just made.
-- Insert/Delete in the Labels view are handled in `on_char_hook` — a frame-level
-  `EVT_CHAR_HOOK` — **not** in `on_list_key_down` and **not** as menu accelerators.
-  `EVT_LIST_KEY_DOWN` only fires while the list has focus, which made the keys unusable
-  from the details panel, and that panel is where the text describing them is read. A
-  global Delete accelerator is not an option either: it would swallow the Delete key the
-  Workflow Runs view uses to delete a run. The hook skips everything else, so focused
+- **The Actions menu is the home for anything that acts on the listed item**, whichever
+  view it belongs to. `_update_actions_menu` re-labels and enables its entries for the
+  current view and is called from `_update_menu_checks` (so every `_switch_view` covers
+  it) plus `_select_repo` / `_select_favorites`, where the repo changes without the view
+  doing so. A new action belongs there, with an entry in that method.
+- `_delete_focused_item` is the single dispatcher behind Delete, Ctrl+D, and the Actions
+  menu entry, so the key and the menu cannot disagree about what Delete means in a view.
+  Add new deletable views there and in `_update_actions_menu`.
+- **Bare Insert/Delete are handled in `on_char_hook`** — a frame-level `EVT_CHAR_HOOK` —
+  **not** in `on_list_key_down` and **not** as accelerators. `EVT_LIST_KEY_DOWN` only
+  fires while the list has focus, which made the keys unusable from the details panel,
+  and that panel is where the text describing them is read. A bare Delete *accelerator*
+  is not an option either: it would swallow the Delete key everywhere in the window.
+  Their Ctrl+I / Ctrl+D twins are ordinary accelerators on the Actions menu items, which
+  is why those need nothing in the hook. The hook skips everything else, so focused
   controls keep first claim on their own keys, and it ignores the repo list, where
   Delete reads as "remove this repo".
 - Status-bar hints are per-view for a reason: a key named in the status bar has to work
@@ -214,6 +223,8 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - v0.5.0 — Ctrl+1..Ctrl+8 switch views
 - v0.6.0 — Labels view (Ctrl+8): browse by label, create and delete labels.
   Favorites moved to Ctrl+9 to keep the numbers matching the menu order.
+- v0.6.1 — Actions menu gathers every item action; Ctrl+I / Ctrl+D alongside
+  Insert/Delete; bare Insert/Delete work from the details panel too.
 
 ## Roadmap
 

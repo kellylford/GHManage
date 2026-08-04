@@ -10,7 +10,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
 - **Release download counts** — the Releases view shows how many times each release was downloaded, with a repo total in the status bar; press Enter on a release for a per-file breakdown
-- **Labels view** — browse the repo's labels, press Enter on one to list the issues and PRs carrying it, and create or delete labels with Insert and Delete
+- **Labels view** — browse the repo's labels, press Enter on one to list the issues and PRs carrying it, and create or delete labels with Ctrl+I / Ctrl+D (or Insert / Delete)
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
@@ -22,7 +22,11 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
   - **Column selection** — toggle columns on/off (columns change per view mode)
   - **State filter** — open, closed, or all (issues/PRs view)
   - **Show filter** — issues only, PRs only, or both (issues/PRs view)
-- **Actions** — close, reopen, add comment, create/delete labels, open in browser
+- **Actions menu** — one home for everything that acts on what the list is
+  showing: close, reopen, comment, create and delete labels, delete a workflow
+  run, run a workflow, download an artifact, open in browser. Each item names
+  what it would act on in the current view and is greyed out where it does not
+  apply, so the menu answers "what can I do here?" without trial and error
 
 ## Prerequisites
 
@@ -81,6 +85,8 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+O` | Open the selected item on GitHub in your browser |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
+| `Ctrl+I` | Create — a new label (Labels view) |
+| `Ctrl+D` | Delete — the selected label or workflow run |
 | `Ctrl+1` … `Ctrl+9` | Switch view — see below |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
@@ -165,6 +171,7 @@ After a run starts, switch to **Workflow Runs** and refresh to watch it.
 | Key | Action |
 |-----|--------|
 | `Enter` | Drill into the selected run's artifacts (shown in the same list) |
+| `Ctrl+D` or `Delete` | Delete the selected run (asks first) |
 
 From a run's **Artifacts** list, press `Enter` (or right-click → Download…) on an
 artifact to download it into a folder you choose, and `Backspace` to return to the
@@ -175,13 +182,13 @@ runs list. Expired artifacts can't be downloaded and are marked as such.
 | Key | Action |
 |-----|--------|
 | `Enter` | List the issues and PRs carrying the selected label |
-| `Insert` | Create a label |
-| `Delete` | Delete the selected label (asks first) |
+| `Ctrl+I` or `Insert` | Create a label |
+| `Ctrl+D` or `Delete` | Delete the selected label (asks first) |
 
 These keys work from the labels list *and* from the details panel below it, so
 you can read what a label is and act on it without moving focus back. Right-click
-offers the same three actions, and File ▸ New Label… / Delete Label… reach them
-from the menu bar.
+offers the same three actions, and so does the **Actions** menu — where the
+Delete entry names the label it would delete.
 
 `Enter` reloads the **Issues & PRs** view restricted to that label, so the state
 filter, columns, sorting, and every issue action still work there — the window
@@ -195,6 +202,18 @@ every issue and pull request that carries it, and GitHub offers no undo**, so th
 app confirms first.
 
 On a fork, labels come from the same upstream repo the issues do.
+
+### Actions menu
+
+Everything that acts on what the list is showing lives in one menu, whichever
+view it belongs to: open in browser, close/reopen/comment on an issue, create
+and delete labels, delete a workflow run, run a workflow, download an artifact,
+pick or compare branches.
+
+Items are re-labelled and enabled for the current view, so **Delete** reads
+"Delete Label…" in the Labels view and "Delete Workflow Run…" in Workflow Runs,
+and is greyed out where nothing can be deleted. `Ctrl+D` follows the same rule;
+so does the bare `Delete` key, which additionally works from the details panel.
 
 ### View menu → Show
 
