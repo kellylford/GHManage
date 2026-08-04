@@ -251,27 +251,39 @@ def _parse_prs(raw: str) -> list[Item]:
     return items
 
 
-def fetch_issues(repo: Optional[str], state: str = "open", limit: int = 30) -> list[Item]:
+def fetch_issues(
+    repo: Optional[str], state: str = "open", limit: int = 30, label: str = ""
+) -> list[Item]:
     """Fetch issues (excluding PRs) for the repo.
 
     ``gh issue list`` defaults to only 30 items and returns newest first.
     Pass ``limit`` to control how many are fetched.
+
+    ``label`` restricts the list to issues carrying that label — this is what
+    the Labels view drills into. Filtering server-side rather than in the app
+    matters: an unfiltered page of 100 may not contain a single issue with the
+    label you picked.
 
     If ``repo`` is a fork, issues are fetched from its upstream parent,
     since forks have issues disabled on GitHub.
     """
     effective = resolve_issue_repo(repo)
     args = ["issue", "list", "--state", state, "--limit", str(limit), "--json", ISSUE_FIELDS]
+    if label:
+        args += ["--label", label]
     if effective:
         args += ["--repo", effective]
     return _parse_issues(_run_gh(args))
 
 
-def fetch_prs(repo: Optional[str], state: str = "open", limit: int = 30) -> list[Item]:
+def fetch_prs(
+    repo: Optional[str], state: str = "open", limit: int = 30, label: str = ""
+) -> list[Item]:
     """Fetch pull requests for the repo.
 
     ``gh pr list`` defaults to only 30 items and returns newest first.
-    Pass ``limit`` to control how many are fetched.
+    Pass ``limit`` to control how many are fetched. ``label`` restricts the
+    list to PRs carrying that label.
 
     If ``repo`` is a fork, PRs are fetched from its upstream parent so that
     PRs opened against the upstream repo are visible. Fork-local PRs are not
@@ -279,6 +291,8 @@ def fetch_prs(repo: Optional[str], state: str = "open", limit: int = 30) -> list
     """
     effective = resolve_issue_repo(repo)
     args = ["pr", "list", "--state", state, "--limit", str(limit), "--json", PR_FIELDS]
+    if label:
+        args += ["--label", label]
     if effective:
         args += ["--repo", effective]
     return _parse_prs(_run_gh(args))
@@ -329,6 +343,110 @@ def fetch_item_by_number(number: int, repo: Optional[str]) -> Optional[Item]:
         if items:
             return items[0]
     return None
+
+
+# ── Labels ─────────────────────────────────────────────────────────────
+#
+# Labels belong to whichever repo owns the issues, so every function here
+# resolves through ``resolve_issue_repo``: on a fork you browse the upstream
+# issues, and a label list from the fork itself would not match them.
+
+
+@dataclass
+class Label:
+    """An issue/PR label."""
+    name: str
+    color: str = ""
+    description: str = ""
+    url: str = ""
+    is_default: bool = False
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "label": self.name,
+            "description": self.description,
+            "color": f"#{self.color}" if self.color else "",
+            "default": "Yes" if self.is_default else "No",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+LABEL_COLUMNS = ["label", "description", "color", "default"]
+LABEL_DEFAULT_COLUMNS = ["label", "description", "color"]
+
+LABEL_FIELDS = "name,color,description,url,isDefault"
+
+
+def _parse_labels(raw: str) -> list[Label]:
+    if not raw.strip():
+        return []
+    rows = json.loads(raw)
+    if not isinstance(rows, list):
+        return []
+    return [
+        Label(
+            name=row.get("name", ""),
+            color=(row.get("color") or "").lstrip("#"),
+            description=row.get("description") or "",
+            url=row.get("url", ""),
+            is_default=bool(row.get("isDefault")),
+        )
+        for row in rows
+    ]
+
+
+def fetch_labels(repo: Optional[str], limit: int = 100) -> list[Label]:
+    """Fetch the repo's labels, sorted by name.
+
+    Name order is the useful one here — a label list is something you scan for
+    a name, not a feed. (``gh`` sorts by creation date by default.)
+    """
+    effective = resolve_issue_repo(repo)
+    args = ["label", "list", "--limit", str(limit), "--sort", "name",
+            "--json", LABEL_FIELDS]
+    if effective:
+        args += ["--repo", effective]
+    try:
+        return _parse_labels(_run_gh(args))
+    except GhError as exc:
+        # A repo with no labels at all is not an error worth surfacing —
+        # `gh` exits non-zero for it, so translate that into an empty list.
+        if "no labels found" in str(exc).lower():
+            return []
+        raise
+
+
+def create_label(
+    repo: Optional[str], name: str, color: str = "", description: str = ""
+) -> None:
+    """Create a label. An empty ``color`` lets GitHub pick one."""
+    effective = resolve_issue_repo(repo)
+    args = ["label", "create", name]
+    if color:
+        args += ["--color", color.lstrip("#")]
+    if description:
+        args += ["--description", description]
+    if effective:
+        args += ["--repo", effective]
+    _run_gh(args)
+
+
+def delete_label(repo: Optional[str], name: str) -> None:
+    """Delete a label. ``--yes`` because the caller has already confirmed.
+
+    Deleting a label removes it from every issue and PR that carries it, and
+    GitHub offers no undo — confirm in the UI before calling this.
+    """
+    effective = resolve_issue_repo(repo)
+    args = ["label", "delete", name, "--yes"]
+    if effective:
+        args += ["--repo", effective]
+    _run_gh(args)
 
 
 # ── Actions ────────────────────────────────────────────────────────────

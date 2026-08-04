@@ -10,18 +10,19 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
 - **Release download counts** — the Releases view shows how many times each release was downloaded, with a repo total in the status bar; press Enter on a release for a per-file breakdown
+- **Labels view** — browse the repo's labels, press Enter on one to list the issues and PRs carrying it, and create or delete labels with Insert and Delete
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (30 at a time)
 - **View menu** with:
-  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, and Workflow Runs
+  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, and Labels
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
   - **State filter** — open, closed, or all (issues/PRs view)
   - **Show filter** — issues only, PRs only, or both (issues/PRs view)
-- **Actions** — close, reopen, add comment, open in browser
+- **Actions** — close, reopen, add comment, create/delete labels, open in browser
 
 ## Prerequisites
 
@@ -80,7 +81,7 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+O` | Open the selected item on GitHub in your browser |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
-| `Ctrl+1` … `Ctrl+8` | Switch view — see below |
+| `Ctrl+1` … `Ctrl+9` | Switch view — see below |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
@@ -102,7 +103,8 @@ details panel).
 | `Ctrl+5` | Releases |
 | `Ctrl+6` | Workflows |
 | `Ctrl+7` | Workflow Runs |
-| `Ctrl+8` | ★ Favorites |
+| `Ctrl+8` | Labels |
+| `Ctrl+9` | ★ Favorites |
 
 Every view except Favorites needs a repository, so with none selected the status
 bar says "Select a repository first" and the view is left alone.
@@ -115,6 +117,7 @@ bar says "Select a repository first" and the view is left alone.
 | `C` | Close the selected issue/PR |
 | `O` | Reopen the selected issue/PR |
 | `M` or `Ctrl+M` | Add a comment to the selected item |
+| `Backspace` | Return to the labels list (only when the list is restricted to a label) |
 
 ### In the branches view
 
@@ -167,11 +170,35 @@ From a run's **Artifacts** list, press `Enter` (or right-click → Download…) 
 artifact to download it into a folder you choose, and `Backspace` to return to the
 runs list. Expired artifacts can't be downloaded and are marked as such.
 
+### In the labels view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | List the issues and PRs carrying the selected label |
+| `Insert` | Create a label |
+| `Delete` | Delete the selected label (asks first) |
+
+Right-click offers the same three actions, and File ▸ New Label… / Delete Label…
+reach them from the menu bar.
+
+`Enter` reloads the **Issues & PRs** view restricted to that label, so the state
+filter, columns, sorting, and every issue action still work there — the window
+title and status bar name the label, and `Backspace` returns to the labels list.
+The restriction is applied by `gh`, not by the quick filter, so it finds items
+that were never on the current page. `Ctrl+1` clears it and shows everything again.
+
+A new label needs a name; the description and colour are optional, and GitHub
+picks a colour when the field is left blank. **Deleting a label strips it from
+every issue and pull request that carries it, and GitHub offers no undo**, so the
+app confirms first.
+
+On a fork, labels come from the same upstream repo the issues do.
+
 ### View menu → Show
 
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
 (with download counts), **Workflows** (the workflow definitions, which you can run
-on a branch), and **Workflow Runs** (recent run history).
+on a branch), **Workflow Runs** (recent run history), and **Labels**.
 Each view has its own set of columns and detail formatting.
 
 ## Building

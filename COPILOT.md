@@ -54,6 +54,16 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `ReleaseAsset` — dataclass for a release file. `Release.downloads` is a computed property
   summing its assets. **Download counts are lifetime running totals** — GitHub exposes no
   date breakdown, so any over-time view would require snapshotting and diffing ourselves.
+- `fetch_labels(repo, limit)` / `create_label(repo, name, color, description)` /
+  `delete_label(repo, name)` — the Labels view. All three go through
+  `resolve_issue_repo`, like the issue calls do: on a fork you browse the upstream
+  issues, so a label list from the fork itself would not match them. `gh label list`
+  exits non-zero on a repo with no labels at all; `fetch_labels` translates that
+  into an empty list rather than an error.
+- `Label` — dataclass for a label: name, color, description, url, is_default.
+- `fetch_issues` / `fetch_prs` take an optional `label` and pass it to `gh` as
+  `--label`. Filtering server-side is the point — an unfiltered page of 100 may
+  not contain a single issue with the label you picked.
 - `fetch_compare(repo, base, head)` — compare two refs.
 - `fetch_item_detail(item, repo)` — re-fetch a single issue/PR with full detail.
 - `close_item` / `reopen_item` / `add_comment` — actions on issues/PRs.
@@ -79,12 +89,13 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 - `GhViewerFrame` — main window. Owns all state: `repo`, `items`, `git_items`, `columns`,
   `sort_order`, `list_mode`, `state_filter`, `tab_filter`, `page_size`, `current_limit`,
-  `view_mode`, `commit_branch`.
+  `view_mode`, `commit_branch`, `label_filter`.
 - `_build_ui` / `_build_menu` / `_bind_events` — construction.
 - `_load_items` — background fetch + populate list (dispatches by `view_mode`).
-- `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases, Workflow.
-  Each drill-down view clears its context here when you leave it (`commit_branch`,
-  `artifacts_run`, `assets_release`) — add a reset for any new one.
+- `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases,
+  Workflow, Labels. Each drill-down view clears its context here when you leave it
+  (`commit_branch`, `artifacts_run`, `assets_release`, `label_filter`) — add a reset for
+  any new one.
 - Drill-down views are registered in `PARENT_VIEW`, which is what makes Backspace step back up.
   A new drill-down needs an entry there, in `VIEW_COLUMNS`, and in `_VIEW_LABELS`.
 - `_show_details(idx)` — dispatches to `_show_issue_details` or `_show_git_details`.
@@ -92,6 +103,23 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `_refresh_list_display` — re-populate list from `self.items` or `self.git_items` without re-fetching.
 - `on_item_activated` — context-dependent: in Branches view, Enter switches to Commits for that branch; otherwise opens in browser.
 - `on_select_branch` — Ctrl+B branch picker dialog for Commits view.
+- **The Labels view is a view of the Issues view, not a drill-down.** Enter on a label
+  sets `label_filter` and loads Issues & PRs restricted to it, which keeps the state
+  filter, columns, sorting, and every issue action working. It is deliberately *not* in
+  `PARENT_VIEW` — the parent map is keyed by view mode and the drilled-into view here is
+  `VIEW_ISSUES`, which has no single parent. Backspace is handled as its own case in
+  `on_list_key_down`, guarded on `label_filter` being set, and `on_view_issues` clears
+  the filter when you ask for Issues & PRs by name (Ctrl+1) even though the mode does
+  not change.
+- `NewLabelDialog` — name/description/colour form. Colour is validated as 6 hex digits
+  before `gh` is called, and may be left blank for GitHub to choose.
+- `_on_label_action_done` — refresh after a label create/delete. Separate from
+  `_on_action_done` because a label can be created from any view via the File menu, and
+  refreshing the current view would hide the label just made.
+- Insert/Delete in the Labels view are handled in `on_list_key_down`, **not** as menu
+  accelerators. A global Delete accelerator would swallow the Delete key the Workflow
+  Runs view uses to delete a run, so the File menu spells the keys out in the item label
+  instead.
 - `WorkflowInputsDialog` — the "Run workflow" form, generated at runtime from a
   `DispatchSpec`. choice/environment → `wx.Choice`, boolean → `wx.CheckBox`, everything else
   → `wx.TextCtrl`. Because it is generated rather than hand-written, **labelling is manual**:
@@ -176,6 +204,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - v0.1.4 — open repos by URL, pinned repos, fork-aware issue fetching, informative window title, default load 100
 - *(v0.1.5–v0.3.0 not recorded here — see `docs/release-notes-v*.md` for each)*
 - v0.4.0 — Run Workflow collects `workflow_dispatch` inputs
+- v0.5.0 — Ctrl+1..Ctrl+8 switch views
+- v0.6.0 — Labels view (Ctrl+8): browse by label, create and delete labels.
+  Favorites moved to Ctrl+9 to keep the numbers matching the menu order.
 
 ## Roadmap
 

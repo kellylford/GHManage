@@ -28,6 +28,8 @@ from gh_data import (
     DEFAULT_COLUMNS,
     GhError,
     Item,
+    LABEL_COLUMNS,
+    LABEL_DEFAULT_COLUMNS,
     RELEASE_COLUMNS,
     RELEASE_DEFAULT_COLUMNS,
     SORT_ORDERS,
@@ -44,6 +46,7 @@ from gh_data import (
     Artifact,
     Branch,
     Commit,
+    Label,
     Release,
     ReleaseAsset,
     Tag,
@@ -54,7 +57,9 @@ from gh_data import (
     WorkflowInput,
     add_comment,
     close_item,
+    create_label,
     detect_repo,
+    delete_label,
     delete_workflow_run,
     dispatch_workflow,
     download_artifact,
@@ -67,6 +72,7 @@ from gh_data import (
     fetch_issues,
     fetch_item_by_number,
     fetch_item_detail,
+    fetch_labels,
     fetch_prs,
     fetch_release_assets,
     fetch_releases,
@@ -144,7 +150,11 @@ ID_VIEW_TAGS = wx.NewIdRef()
 ID_VIEW_RELEASES = wx.NewIdRef()
 ID_VIEW_WORKFLOWS = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
+ID_VIEW_LABELS = wx.NewIdRef()
 ID_VIEW_FAVORITES = wx.NewIdRef()
+ID_NEW_LABEL = wx.NewIdRef()
+ID_DELETE_LABEL = wx.NewIdRef()
+ID_BROWSE_LABEL = wx.NewIdRef()
 ID_FILTER = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
@@ -165,6 +175,7 @@ VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
 VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
 VIEW_ASSETS = "assets"         # files attached to a single release (drill-down)
+VIEW_LABELS = "labels"
 VIEW_FAVORITES = "favorites"
 
 # Drill-down views: pressing Backspace in the key view returns to its parent.
@@ -191,6 +202,7 @@ VIEW_COLUMNS = {
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
     VIEW_ARTIFACTS: (ARTIFACT_DEFAULT_COLUMNS, ARTIFACT_COLUMNS),
     VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
+    VIEW_LABELS: (LABEL_DEFAULT_COLUMNS, LABEL_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
 }
 
@@ -304,6 +316,93 @@ class WorkflowInputsDialog(wx.Dialog):
         return out
 
 
+# ── New label dialog ────────────────────────────────────────────────────
+
+
+class NewLabelDialog(wx.Dialog):
+    """Collects the name, description, and colour for a new label.
+
+    Same labelling discipline as WorkflowInputsDialog: every field gets a
+    StaticText immediately before it *and* a matching SetName, so the
+    accessible name is right whichever the screen reader picks up. Tab order
+    is declaration order: name, description, colour.
+
+    Colour is optional — GitHub picks one when it is left blank, which is the
+    fastest path and the reason the field comes last.
+    """
+
+    def __init__(self, parent: wx.Window, repo: str) -> None:
+        super().__init__(
+            parent,
+            title="New Label",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(
+            wx.StaticText(self, label=f"Create a label in {repo}"),
+            0, wx.ALL, 10,
+        )
+
+        fields = wx.BoxSizer(wx.VERTICAL)
+
+        def add_field(label: str, hint: str = "") -> wx.TextCtrl:
+            text = wx.StaticText(self, label=label)
+            fields.Add(text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+            ctrl = wx.TextCtrl(self)
+            ctrl.SetName(label)
+            if hint:
+                ctrl.SetHint(hint)
+            fields.Add(ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+            return ctrl
+
+        self.name_ctrl = add_field("Name (required)")
+        self.desc_ctrl = add_field("Description")
+        self.color_ctrl = add_field(
+            "Colour, 6-digit hex (optional — GitHub picks one if blank)",
+            "e.g. d73a4a",
+        )
+
+        outer.Add(fields, 1, wx.EXPAND)
+        outer.Add(
+            self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL),
+            0, wx.ALIGN_RIGHT | wx.ALL, 10,
+        )
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((460, -1))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        self.name_ctrl.SetFocus()
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        """Validate before closing so `gh` never fails on something we can see."""
+        if not self.name_ctrl.GetValue().strip():
+            wx.MessageBox(
+                "A label needs a name.", "New Label",
+                wx.OK | wx.ICON_INFORMATION, self,
+            )
+            self.name_ctrl.SetFocus()
+            return
+        color = self.color_ctrl.GetValue().strip().lstrip("#")
+        if color and (len(color) != 6 or any(c not in "0123456789abcdefABCDEF" for c in color)):
+            wx.MessageBox(
+                f"'{color}' is not a colour. Give 6 hex digits, such as d73a4a, "
+                "or leave the field blank to let GitHub choose.",
+                "New Label",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            self.color_ctrl.SetFocus()
+            return
+        event.Skip()
+
+    def values(self) -> tuple[str, str, str]:
+        """(name, colour, description) — colour without its leading #."""
+        return (
+            self.name_ctrl.GetValue().strip(),
+            self.color_ctrl.GetValue().strip().lstrip("#"),
+            self.desc_ctrl.GetValue().strip(),
+        )
+
+
 # ── Main frame ──────────────────────────────────────────────────────────
 
 
@@ -341,6 +440,10 @@ class GhViewerFrame(wx.Frame):
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
         self.assets_release: Release | None = None  # release whose assets are shown
         self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
+        # Label the Issues view is restricted to ("" = no restriction). Set by
+        # pressing Enter on a label; unlike the quick filter this is applied by
+        # `gh`, so it reaches issues past the current page.
+        self.label_filter: str = ""
 
         self._build_ui()
         self._bind_events()
@@ -460,6 +563,8 @@ class GhViewerFrame(wx.Frame):
             # Workflow (runs + definitions) + artifacts
             "name": 150, "status": 100, "result": 100, "event": 100, "#": 50,
             "state": 90, "path": 320, "size": 90, "expired": 70,
+            # Labels
+            "label": 180, "description": 340, "color": 80, "default": 70,
             # Favorites
             "repo": 180, "subtitle": 250,
         }
@@ -487,6 +592,12 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_SELECT_BRANCH, "Select Branch…\tCtrl+B")
         file_menu.Append(ID_COMPARE_BRANCHES, "Compare Branches…\tCtrl+Shift+B")
         file_menu.AppendSeparator()
+        # Insert and Delete do the same from the Labels list. They are spelled
+        # out here rather than bound as accelerators: a global Delete accelerator
+        # would swallow the Delete key the Workflow Runs view uses.
+        file_menu.Append(ID_NEW_LABEL, "New Label… (Insert in Labels view)")
+        file_menu.Append(ID_DELETE_LABEL, "Delete Label… (Delete in Labels view)")
+        file_menu.AppendSeparator()
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
         file_menu.Append(ID_NEXT_COMMENT, "Next Comment\tAlt+N")
@@ -509,7 +620,8 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_RELEASES, "Releases\tCtrl+5")
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOWS, "Workflows\tCtrl+6")
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs\tCtrl+7")
-        show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+8")
+        show_menu.AppendRadioItem(ID_VIEW_LABELS, "Labels\tCtrl+8")
+        show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+9")
         view_menu.AppendSubMenu(show_menu, "View Mode")
 
         view_menu.AppendSeparator()
@@ -585,6 +697,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_releases, id=ID_VIEW_RELEASES)
         self.Bind(wx.EVT_MENU, self.on_view_workflows, id=ID_VIEW_WORKFLOWS)
         self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
+        self.Bind(wx.EVT_MENU, self.on_view_labels, id=ID_VIEW_LABELS)
         self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
 
     # ── Updates ─────────────────────────────────────────────────────────
@@ -693,6 +806,7 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_RELEASES, self.view_mode == VIEW_RELEASES)
         menu_bar.Check(ID_VIEW_WORKFLOWS, self.view_mode == VIEW_WORKFLOWS)
         menu_bar.Check(ID_VIEW_WORKFLOW, self.view_mode == VIEW_WORKFLOW)
+        menu_bar.Check(ID_VIEW_LABELS, self.view_mode == VIEW_LABELS)
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
@@ -743,6 +857,8 @@ class GhViewerFrame(wx.Frame):
             self.artifacts_run = None
         if mode != VIEW_ASSETS:
             self.assets_release = None
+        if mode != VIEW_ISSUES:
+            self.label_filter = ""
         self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
@@ -775,6 +891,8 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
+        self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
+        self.Bind(wx.EVT_MENU, self.on_delete_label, id=ID_DELETE_LABEL)
         self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
         self.Bind(wx.EVT_MENU, self.on_compare_branches, id=ID_COMPARE_BRANCHES)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
@@ -870,6 +988,7 @@ class GhViewerFrame(wx.Frame):
         self.repo = repo
         self.current_limit = self.page_size  # reset to first page
         self.filter_text = ""  # clear filter on repo switch
+        self.label_filter = ""  # a label of the old repo means nothing here
         self._update_title()
         # Reset to issues view when switching repos
         if self.view_mode != VIEW_ISSUES:
@@ -921,9 +1040,15 @@ class GhViewerFrame(wx.Frame):
                     issues = []
                     prs = []
                     if self.tab_filter in ("issues", "both"):
-                        issues = fetch_issues(self.repo, self.state_filter, self.current_limit)
+                        issues = fetch_issues(
+                            self.repo, self.state_filter, self.current_limit,
+                            self.label_filter,
+                        )
                     if self.tab_filter in ("prs", "both"):
-                        prs = fetch_prs(self.repo, self.state_filter, self.current_limit)
+                        prs = fetch_prs(
+                            self.repo, self.state_filter, self.current_limit,
+                            self.label_filter,
+                        )
                     combined = sort_items(issues + prs, self.sort_order)
                     wx.CallAfter(self._on_items_loaded, combined, len(issues), len(prs))
                 elif self.view_mode == VIEW_BRANCHES:
@@ -941,6 +1066,9 @@ class GhViewerFrame(wx.Frame):
                 elif self.view_mode == VIEW_WORKFLOWS:
                     workflows = fetch_workflows(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, workflows, "workflows")
+                elif self.view_mode == VIEW_LABELS:
+                    labels = fetch_labels(self.repo, self.current_limit)
+                    wx.CallAfter(self._on_git_items_loaded, labels, "labels")
                 elif self.view_mode == VIEW_WORKFLOW:
                     runs = fetch_workflow_runs(self.repo, self.current_limit)
                     wx.CallAfter(self._on_git_items_loaded, runs, "workflow runs")
@@ -994,6 +1122,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOW: "Workflow Runs",
         VIEW_ARTIFACTS: "Artifacts",
         VIEW_ASSETS: "Release Assets",
+        VIEW_LABELS: "Labels",
         VIEW_FAVORITES: "Favorites",
     }
 
@@ -1010,6 +1139,9 @@ class GhViewerFrame(wx.Frame):
         # Include the release being drilled into (assets view)
         if self.view_mode == VIEW_ASSETS and self.assets_release:
             parts.append(self.assets_release.tag or self.assets_release.name)
+        # Include the label the issues list is restricted to
+        if self.view_mode == VIEW_ISSUES and self.label_filter:
+            parts.append(f"label: {self.label_filter}")
         if self.repo:
             parts.append(self.repo)
         parts.append("ghviewer")
@@ -1056,10 +1188,13 @@ class GhViewerFrame(wx.Frame):
         # Note fork→parent redirection in the status bar
         upstream = parent_repo(self.repo)
         source = f"{self.repo} (issues from upstream {upstream})" if upstream else self.repo
+        label_info = f" labelled '{self.label_filter}'" if self.label_filter else ""
+        label_hint = "  Backspace=back to labels" if self.label_filter else ""
         self.SetStatusText(
-            f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}). "
+            f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}){label_info}. "
             f"Showing up to {self.current_limit} newest. "
-            f"Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter  "
+            f"Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter"
+            f"{label_hint}  "
             f"Mode={self.list_mode}"
             + self._filter_status_suffix()
         )
@@ -1089,6 +1224,8 @@ class GhViewerFrame(wx.Frame):
             compare_hint = "  Enter=download in browser  Backspace=back to releases"
         elif self.view_mode == VIEW_COMMITS:
             compare_hint = "  Backspace=back to branches"
+        elif self.view_mode == VIEW_LABELS:
+            compare_hint = "  Enter=browse issues & PRs with it  Insert=new  Delete=remove"
         # Download totals lead the status line where they are the point of the view
         totals = ""
         if self.view_mode == VIEW_RELEASES:
@@ -1250,6 +1387,19 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Tag: {item.name}")
             lines.append(f"Commit: {item.commit_sha}")
             lines.append(f"URL: {item.url}")
+        elif isinstance(item, Label):
+            lines.append(f"Label: {item.name}")
+            lines.append(f"Description: {item.description or '(none)'}")
+            lines.append(f"Colour: {'#' + item.color if item.color else '(none)'}")
+            lines.append(f"Default label: {'Yes' if item.is_default else 'No'}")
+            lines.append(f"URL: {item.url}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append("Press Enter to list the issues and PRs carrying this label.")
+            lines.append("Press Insert to create a label, Delete to remove this one.")
+            lines.append("Deleting a label strips it from every issue and PR that")
+            lines.append("has it, and GitHub offers no way to undo that.")
         elif isinstance(item, Release):
             lines.append(f"Release: {item.name}")
             lines.append(f"Tag: {item.tag}")
@@ -1381,6 +1531,10 @@ class GhViewerFrame(wx.Frame):
             self._switch_view(VIEW_COMMITS)
             self._announce(f"Showing commits on branch {item.name}")
             return
+        # In Labels view, Enter shows the issues and PRs carrying that label
+        if self.view_mode == VIEW_LABELS and isinstance(item, Label):
+            self._browse_label(item)
+            return
         # In Workflows view, Enter offers to run the workflow on a branch
         if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):
             self._run_workflow_flow(item)
@@ -1435,6 +1589,22 @@ class GhViewerFrame(wx.Frame):
                 lambda evt, wf=item: self._run_workflow_flow(wf),
                 id=ID_RUN_WORKFLOW,
             )
+            self.list_ctrl.PopupMenu(menu)
+            menu.Destroy()
+        elif self.view_mode == VIEW_LABELS:
+            menu = wx.Menu()
+            if isinstance(item, Label):
+                menu.Append(ID_BROWSE_LABEL, "Browse issues && PRs with this label")
+                menu.Bind(
+                    wx.EVT_MENU,
+                    lambda evt, lb=item: self._browse_label(lb),
+                    id=ID_BROWSE_LABEL,
+                )
+            menu.Append(ID_NEW_LABEL, "New label…")
+            menu.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
+            if isinstance(item, Label):
+                menu.Append(ID_DELETE_LABEL, "Delete label…")
+                menu.Bind(wx.EVT_MENU, self.on_delete_label, id=ID_DELETE_LABEL)
             self.list_ctrl.PopupMenu(menu)
             menu.Destroy()
         elif self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
@@ -1624,6 +1794,15 @@ class GhViewerFrame(wx.Frame):
             parent = PARENT_VIEW[self.view_mode]
             self._switch_view(parent)
             self._announce(f"Back to {self._VIEW_LABELS.get(parent, parent).lower()}")
+        elif key == wx.WXK_BACK and self.view_mode == VIEW_ISSUES and self.label_filter:
+            # Issues restricted to a label is a drill-down too, even though the
+            # view mode is the same one you reach with Ctrl+1.
+            self._switch_view(VIEW_LABELS)
+            self._announce("Back to labels")
+        elif self.view_mode == VIEW_LABELS and key == wx.WXK_INSERT:
+            self._do_new_label()
+        elif self.view_mode == VIEW_LABELS and key == wx.WXK_DELETE:
+            self._do_delete_label()
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):
@@ -1692,6 +1871,10 @@ class GhViewerFrame(wx.Frame):
             item_type = "tag"
             title = item.name
             subtitle = item.commit_sha
+        elif isinstance(item, Label):
+            item_type = "label"
+            title = item.name
+            subtitle = item.description[:60] if item.description else ""
         elif isinstance(item, Release):
             item_type = "release"
             title = item.tag
@@ -2328,6 +2511,16 @@ class GhViewerFrame(wx.Frame):
     # ── View mode switching (Show submenu) ──────────────────────────────
 
     def on_view_issues(self, event: wx.CommandEvent) -> None:
+        # Asking for Issues & PRs by name means all of them: drop any label
+        # drill-down, including when that leaves the view mode unchanged.
+        if self.view_mode == VIEW_ISSUES:
+            if self.label_filter:
+                self.label_filter = ""
+                self.current_limit = self.page_size
+                self._load_items()
+                self._announce("Showing all issues and PRs")
+            return
+        self.label_filter = ""
         self._switch_view(VIEW_ISSUES)
 
     def on_view_branches(self, event: wx.CommandEvent) -> None:
@@ -2347,6 +2540,9 @@ class GhViewerFrame(wx.Frame):
 
     def on_view_workflow(self, event: wx.CommandEvent) -> None:
         self._switch_view(VIEW_WORKFLOW)
+
+    def on_view_labels(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_LABELS)
 
     def on_view_favorites(self, event: wx.CommandEvent) -> None:
         self._select_favorites()
@@ -2446,6 +2642,106 @@ class GhViewerFrame(wx.Frame):
 
     def _on_action_error(self, msg: str) -> None:
         self._announce(msg)
+
+    # ── Labels ──────────────────────────────────────────────────────────
+
+    def _browse_label(self, label: "Label") -> None:
+        """Show the issues and PRs carrying ``label``.
+
+        This reuses the Issues & PRs view rather than inventing a new one, so
+        the state filter, columns, sorting, and every issue action still work.
+        The restriction is applied by `gh`, not by the quick filter, so it
+        finds items that were never on the current page.
+        """
+        self.label_filter = label.name
+        self.current_limit = self.page_size
+        if self.view_mode == VIEW_ISSUES:
+            self._load_items()
+        else:
+            self._switch_view(VIEW_ISSUES)
+        self._announce(
+            f"Showing issues and PRs labelled '{label.name}'. "
+            "Backspace returns to the labels."
+        )
+
+    def on_new_label(self, event: wx.CommandEvent) -> None:
+        self._do_new_label()
+
+    def on_delete_label(self, event: wx.CommandEvent) -> None:
+        self._do_delete_label()
+
+    def _do_new_label(self) -> None:
+        """Create a label (Insert in the Labels view, or the File menu)."""
+        if not self.repo:
+            self._announce("Select a repository first.")
+            return
+        dlg = NewLabelDialog(self, self.repo)
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            self._announce("New label cancelled.")
+            return
+        name, color, description = dlg.values()
+        dlg.Destroy()
+        self._announce(f"Creating label '{name}'…")
+
+        def worker() -> None:
+            try:
+                create_label(self.repo, name, color, description)
+                wx.CallAfter(self._on_label_action_done, f"Created label '{name}'")
+            except GhError as exc:
+                wx.CallAfter(
+                    self._on_action_error, f"Error creating label '{name}': {exc}"
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _do_delete_label(self) -> None:
+        """Delete the focused label (Delete in the Labels view, or the File menu)."""
+        if self.view_mode != VIEW_LABELS:
+            self._announce("Switch to the Labels view to delete a label (Ctrl+8).")
+            return
+        item = self._focused_item()
+        if not isinstance(item, Label):
+            self._announce("Select a label first.")
+            return
+        confirm = wx.MessageBox(
+            f"Delete the label '{item.name}'?\n\n"
+            f"{item.description or '(no description)'}\n\n"
+            "It will be removed from every issue and pull request that carries "
+            "it. This cannot be undone.",
+            "Confirm Delete Label",
+            wx.YES_NO | wx.ICON_WARNING,
+            self,
+        )
+        if confirm != wx.YES:
+            return
+        name = item.name
+        self._announce(f"Deleting label '{name}'…")
+
+        def worker() -> None:
+            try:
+                delete_label(self.repo, name)
+                wx.CallAfter(self._on_label_action_done, f"Deleted label '{name}'")
+            except GhError as exc:
+                wx.CallAfter(
+                    self._on_action_error, f"Error deleting label '{name}': {exc}"
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_label_action_done(self, msg: str) -> None:
+        """Refresh the labels list after a create/delete.
+
+        Separate from ``_on_action_done`` because that one refreshes whatever
+        view is current, and a label can be created from anywhere via the File
+        menu — refreshing the Releases list after creating a label would be a
+        surprise, and would hide the label that was just made.
+        """
+        self._announce(f"{msg}. Refreshing labels…")
+        if self.view_mode == VIEW_LABELS:
+            self._load_items()
+        else:
+            self._switch_view(VIEW_LABELS)
 
     def _do_delete_run(self) -> None:
         """Delete the focused workflow run (Delete key in Workflow view)."""
