@@ -116,10 +116,17 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `_on_label_action_done` — refresh after a label create/delete. Separate from
   `_on_action_done` because a label can be created from any view via the File menu, and
   refreshing the current view would hide the label just made.
-- Insert/Delete in the Labels view are handled in `on_list_key_down`, **not** as menu
-  accelerators. A global Delete accelerator would swallow the Delete key the Workflow
-  Runs view uses to delete a run, so the File menu spells the keys out in the item label
-  instead.
+- Insert/Delete in the Labels view are handled in `on_char_hook` — a frame-level
+  `EVT_CHAR_HOOK` — **not** in `on_list_key_down` and **not** as menu accelerators.
+  `EVT_LIST_KEY_DOWN` only fires while the list has focus, which made the keys unusable
+  from the details panel, and that panel is where the text describing them is read. A
+  global Delete accelerator is not an option either: it would swallow the Delete key the
+  Workflow Runs view uses to delete a run. The hook skips everything else, so focused
+  controls keep first claim on their own keys, and it ignores the repo list, where
+  Delete reads as "remove this repo".
+- Status-bar hints are per-view for a reason: a key named in the status bar has to work
+  in that view. `Ctrl+B=select branch` is Commits-only — `on_select_branch` refuses
+  everywhere else.
 - `WorkflowInputsDialog` — the "Run workflow" form, generated at runtime from a
   `DispatchSpec`. choice/environment → `wx.Choice`, boolean → `wx.CheckBox`, everything else
   → `wx.TextCtrl`. Because it is generated rather than hand-written, **labelling is manual**:

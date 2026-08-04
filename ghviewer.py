@@ -882,6 +882,11 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self.on_item_context_menu, self.list_ctrl)
         self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
         self.details_text.Bind(wx.EVT_CHAR_HOOK, self.on_details_key_down)
+        # Frame-level, so Insert/Delete in the Labels view work wherever focus
+        # is — including the details panel, which is where the text describing
+        # them is read. EVT_LIST_KEY_DOWN only fires for the list itself, which
+        # made that text an instruction you could read but not follow.
+        self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
         self.Bind(wx.EVT_MENU, self.on_refresh, id=ID_REFRESH)
         self.Bind(wx.EVT_MENU, self.on_open_repo, id=ID_OPEN_REPO)
         self.Bind(wx.EVT_MENU, self.on_remove_repo, id=ID_REMOVE_REPO)
@@ -1232,10 +1237,14 @@ class GhViewerFrame(wx.Frame):
             totals = f" {total_downloads(items):,} downloads across them."
         elif self.view_mode == VIEW_ASSETS:
             totals = f" {sum(a.download_count for a in items):,} downloads in total."
+        # Ctrl+B only picks a branch in the Commits view — offering it in the
+        # tags, releases, or labels list is advertising a key that answers
+        # "Select Branch is only available in Commits view."
+        branch_hint = "  Ctrl+B=select branch" if self.view_mode == VIEW_COMMITS else ""
         self.SetStatusText(
             f"{self.repo} — {len(items)} {kind}{branch_info}.{totals} "
             f"Showing up to {self.current_limit}. "
-            f"Ctrl++=view more  R=refresh  Ctrl+B=select branch  Ctrl+F=filter{compare_hint}  "
+            f"Ctrl++=view more  R=refresh{branch_hint}  Ctrl+F=filter{compare_hint}  "
             f"Mode={self.list_mode}"
             + self._filter_status_suffix()
         )
@@ -1396,8 +1405,12 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
-            lines.append("Press Enter to list the issues and PRs carrying this label.")
-            lines.append("Press Insert to create a label, Delete to remove this one.")
+            lines.append("Keys, from the list or from here:")
+            lines.append("")
+            lines.append("  Enter   list the issues and PRs carrying this label")
+            lines.append("  Insert  create a new label")
+            lines.append(f"  Delete  delete '{item.name}' — GHManage asks first")
+            lines.append("")
             lines.append("Deleting a label strips it from every issue and PR that")
             lines.append("has it, and GitHub offers no way to undo that.")
         elif isinstance(item, Release):
@@ -1778,6 +1791,29 @@ class GhViewerFrame(wx.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def on_char_hook(self, event: wx.KeyEvent) -> None:
+        """Frame-wide keys that must not depend on which pane has focus.
+
+        Insert and Delete in the Labels view are handled here rather than in
+        ``on_list_key_down`` so they work from the details panel too. They are
+        deliberately not menu accelerators: a global Delete accelerator would
+        swallow the Delete key the Workflow Runs view uses to delete a run.
+
+        Everything else is skipped, so the focused control keeps first claim on
+        its own keys.
+        """
+        # Not from the repository list: Delete there reads as "remove this
+        # repo", and acting on the label list from another pane is a surprise.
+        if self.view_mode == VIEW_LABELS and self.FindFocus() is not self.repo_list:
+            key = event.GetKeyCode()
+            if key == wx.WXK_INSERT:
+                self._do_new_label()
+                return
+            if key == wx.WXK_DELETE:
+                self._do_delete_label()
+                return
+        event.Skip()
+
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
         if key == wx.WXK_ESCAPE:
@@ -1799,10 +1835,6 @@ class GhViewerFrame(wx.Frame):
             # view mode is the same one you reach with Ctrl+1.
             self._switch_view(VIEW_LABELS)
             self._announce("Back to labels")
-        elif self.view_mode == VIEW_LABELS and key == wx.WXK_INSERT:
-            self._do_new_label()
-        elif self.view_mode == VIEW_LABELS and key == wx.WXK_DELETE:
-            self._do_delete_label()
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):

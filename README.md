@@ -178,8 +178,10 @@ runs list. Expired artifacts can't be downloaded and are marked as such.
 | `Insert` | Create a label |
 | `Delete` | Delete the selected label (asks first) |
 
-Right-click offers the same three actions, and File ▸ New Label… / Delete Label…
-reach them from the menu bar.
+These keys work from the labels list *and* from the details panel below it, so
+you can read what a label is and act on it without moving focus back. Right-click
+offers the same three actions, and File ▸ New Label… / Delete Label… reach them
+from the menu bar.
 
 `Enter` reloads the **Issues & PRs** view restricted to that label, so the state
 filter, columns, sorting, and every issue action still work there — the window
