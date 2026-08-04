@@ -225,6 +225,7 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   Favorites moved to Ctrl+9 to keep the numbers matching the menu order.
 - v0.6.1 — Actions menu gathers every item action; Ctrl+I / Ctrl+D alongside
   Insert/Delete; bare Insert/Delete work from the details panel too.
+- v0.6.2 — first signed release (Azure Trusted Signing). No code changes.
 
 ## Roadmap
 

@@ -57,7 +57,8 @@ The `velopack` PyPI package is only the in-app client library.
   Velopack's own log to `%LocalAppData%\velopack\velopack_GHManage.log`). Note
   this is `%APPDATA%`, not `%LocalAppData%` — the latter is the Velopack-managed
   install directory, and a log file held open in there blocks uninstall cleanup.
-- **Code signing is not wired up.** See below.
+- **Code signing** is wired to Azure Trusted Signing and switches on with the
+  `AZURE_CLIENT_ID` secret. See below.
 
 ## Release flow (CI)
 
@@ -169,24 +170,44 @@ Done:
   tag subjects, which is the whole reason an environment is involved.
 - Repo secrets **`AZURE_TENANT_ID`** (`793722c2-ea04-49a3-8183-af139211b24f`)
   and **`AZURE_SUBSCRIPTION_ID`** (`566d6139-16a2-48b7-8aa5-fa5ebe17b28f`).
+- **The role assignment**: `github-artifact-signing` holds *Artifact Signing
+  Certificate Profile Signer* on
+  `/subscriptions/566d6139-…/resourceGroups/IdeaPlace/providers/Microsoft.CodeSigning/codeSigningAccounts/kellylford`.
+- **Both federated credentials** on `github-artifact-signing`, issuer
+  `https://token.actions.githubusercontent.com`, audience
+  `api://AzureADTokenExchange`:
 
-Remaining, in this order — the order matters:
+  | Name | Subject |
+  |------|---------|
+  | `gh-ghmanage-signing` | `repo:kellylford/GHManage:environment:azure-signing` |
+  | `gh-ghmanage-immutable` | `repo:kellylford@44002405/GHManage@1295265237:environment:azure-signing` |
 
-1. **The Azure federated credential** on `github-artifact-signing`, trusting
-   subject `repo:kellylford/GHManage:environment:azure-signing`, issuer
-   `https://token.actions.githubusercontent.com`, audience
-   `api://AzureADTokenExchange`.
-2. **Then** set `AZURE_CLIENT_ID` to `da30172c-ceb4-412c-b1fa-3c3a3808c631`.
+  Two are needed because GitHub may issue either the plain subject or the
+  immutable one built from the numeric owner and repo IDs. Every other signed
+  repo in this tenant (QuickMail, WeatherFast, LiveCaptions, Image-Description-
+  Toolkit) carries the same pair; matching only one leaves signing working until
+  the day the other form is issued. The numeric IDs come from
+  `gh api repos/kellylford/GHManage --jq '{id, owner_id: .owner.id}'`.
 
-Setting the secret first breaks releases outright: it switches on the
-`azure/login` step, which has no `continue-on-error`, so with no matching
-federated credential the login fails, the build job fails, and the tag publishes
-**nothing at all**. Leaving `AZURE_CLIENT_ID` unset until last keeps every
-intermediate state shipping a working unsigned release.
+- Repo secret **`AZURE_CLIENT_ID`** = `da30172c-ceb4-412c-b1fa-3c3a3808c631`, the
+  `github-artifact-signing` app ID. Set last, on purpose: it is the switch that
+  turns the signing steps on, and switching them on before the federated
+  credentials existed would have failed `azure/login` — which has no
+  `continue-on-error` — taking the whole build job with it and publishing nothing
+  at all for that tag. With the secret unset, every intermediate state shipped a
+  working unsigned release.
 
-Once both exist, the next `v*` tag signs automatically. Confirm by checking the
-pack step printed `Signing with Azure Trusted Signing.` rather than the warning,
-and Properties ▸ Digital Signatures on the downloaded `GHManage-win-Setup.exe`.
+Signing has been live since **v0.6.2**. Every `v*` tag signs automatically.
+
+To confirm a release signed, check the pack step logged `Signing with Azure
+Trusted Signing.` rather than the `AZURE_CLIENT_ID not set` warning, and:
+
+```powershell
+(Get-AuthenticodeSignature .\GHManage-win-Setup.exe) | Format-List Status, SignerCertificate
+```
+
+Signing applies to what a tag builds; it does not reach back. **v0.6.1 and
+earlier remain unsigned**, so anyone downloading those still meets SmartScreen.
 
 `.github/workflows/quickmail.yml` in the QuickMail repo is the reference
 implementation for all of this.
