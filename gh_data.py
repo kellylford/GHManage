@@ -1376,3 +1376,365 @@ def fetch_compare(repo: Optional[str], base: str, head: str) -> CompareResult:
         commits=row.get("commits", []),
         files=row.get("files", []),
     )
+
+
+# ── GitHub Pages ───────────────────────────────────────────────────────
+#
+# Three things are wanted here and only the first has a straightforward
+# endpoint: the site's configuration, its publish history, and the pages it
+# actually serves.
+#
+# **Publish history depends on how the site is built.** A classic site
+# (``build_type: legacy``) is built by GitHub and its history lives on
+# ``pages/builds``. A site published by Actions (``build_type: workflow``)
+# never appears there — that endpoint returns an empty list for it — and its
+# history has to be read from the ``github-pages`` deployments instead.
+# Legacy sites have deployments *as well*, so the two lists cannot simply be
+# merged without showing every publish twice. ``fetch_pages_builds`` falls
+# back rather than merging.
+#
+# **The list of served pages has no endpoint at all.** It is derived from the
+# git tree of the branch Pages publishes from — see ``fetch_pages_files``.
+
+
+def _is_not_found(exc: GhError) -> bool:
+    """True when a `gh api` failure was a 404 rather than a real error.
+
+    Used where "the thing isn't there" is a normal answer: a repo with Pages
+    switched off 404s on every Pages endpoint, and that is information, not a
+    failure to report to the user.
+    """
+    return "404" in str(exc)
+
+
+@dataclass
+class PagesSite:
+    """The Pages configuration for a repo, from ``repos/{owner}/{repo}/pages``."""
+    url: str                       # html_url — the live site root
+    status: str = ""               # built / building / errored; null for Actions-built sites
+    source_branch: str = ""
+    source_path: str = "/"         # "/" or "/docs" — the published subtree
+    build_type: str = "legacy"     # legacy (built by GitHub) | workflow (built by Actions)
+    https_enforced: bool = False
+    cname: str = ""                # custom domain, if one is set
+    public: bool = True
+    custom_404: bool = False
+
+    @property
+    def built_by_actions(self) -> bool:
+        return self.build_type == "workflow"
+
+    @property
+    def status_display(self) -> str:
+        # An Actions-built site reports no status of its own — its state is
+        # whatever its last deployment did.
+        if self.status:
+            return self.status
+        return "built by Actions" if self.built_by_actions else "unknown"
+
+
+def fetch_pages_site(repo: Optional[str]) -> Optional[PagesSite]:
+    """Fetch the repo's Pages configuration, or None if Pages is not enabled."""
+    try:
+        row = _api_json(["repos/{owner}/{repo}/pages"], repo)
+    except GhError as exc:
+        if _is_not_found(exc):
+            return None
+        raise
+    if not isinstance(row, dict):
+        return None
+    source = row.get("source") or {}
+    return PagesSite(
+        url=row.get("html_url", "") or "",
+        status=row.get("status") or "",
+        source_branch=source.get("branch", "") or "",
+        source_path=source.get("path", "/") or "/",
+        build_type=row.get("build_type") or "legacy",
+        https_enforced=bool(row.get("https_enforced")),
+        cname=row.get("cname") or "",
+        public=bool(row.get("public", True)),
+        custom_404=bool(row.get("custom_404")),
+    )
+
+
+@dataclass
+class PagesBuild:
+    """One publish of the site.
+
+    ``kind`` records which endpoint the row came from — ``build`` for a site
+    GitHub builds itself, ``deployment`` for one published by Actions. The two
+    carry different detail: builds report how long they took and why they
+    failed, deployments report only a state.
+    """
+    id: int
+    status: str
+    commit: str
+    pusher: str
+    created_at: str
+    duration_ms: int = 0
+    error: str = ""
+    kind: str = "build"            # build | deployment
+    url: str = ""                  # the commit this publish came from
+
+    @property
+    def short_commit(self) -> str:
+        return self.commit[:8]
+
+    def duration_human(self) -> str:
+        # Deployments carry no duration, so this is blank for them rather than "0s".
+        if not self.duration_ms:
+            return ""
+        return f"{self.duration_ms / 1000:.0f}s"
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "status": self.status,
+            "commit": self.short_commit,
+            "pusher": self.pusher,
+            # Sites often publish several times a day, so date alone would make
+            # consecutive rows indistinguishable. Minute precision is enough.
+            "date": self.created_at[:16].replace("T", " ") if self.created_at else "",
+            "duration": self.duration_human(),
+            "kind": self.kind,
+            "error": self.error,
+            "#": str(self.id),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+PAGES_COLUMNS = ["status", "commit", "pusher", "date", "duration", "kind", "error", "#"]
+PAGES_DEFAULT_COLUMNS = ["status", "commit", "pusher", "date", "duration"]
+
+
+def _build_id_from_url(url: str) -> int:
+    """A build's id, which the payload carries only inside its API URL.
+
+    ``pages/builds`` rows have no ``id`` field — unlike every other list
+    endpoint used here — so it has to be read off the end of ``.url``.
+    """
+    tail = (url or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _fetch_pages_builds_legacy(repo: Optional[str], limit: int) -> list[PagesBuild]:
+    """Publish history from ``pages/builds`` — empty for Actions-built sites."""
+    try:
+        rows = _api_json(
+            [f"repos/{{owner}}/{{repo}}/pages/builds?per_page={limit}",
+             "-q", "[.[] | {url, status, commit, pusher: .pusher.login, "
+                   "created: .created_at, duration, error: .error.message}]"],
+            repo,
+        )
+    except GhError as exc:
+        if _is_not_found(exc):
+            return []
+        raise
+    if not isinstance(rows, list):
+        return []
+    return [
+        PagesBuild(
+            id=_build_id_from_url(row.get("url", "") or ""),
+            status=row.get("status", "") or "",
+            commit=row.get("commit", "") or "",
+            pusher=row.get("pusher", "") or "",
+            created_at=row.get("created", "") or "",
+            duration_ms=row.get("duration", 0) or 0,
+            error=row.get("error", "") or "",
+            kind="build",
+            url=f"https://github.com/{repo}/commit/{row.get('commit', '')}" if repo else "",
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _deployment_state(repo: Optional[str], deployment_id: int) -> str:
+    """Latest state of one deployment (success / failure / in_progress / …)."""
+    try:
+        rows = _api_json(
+            [f"repos/{{owner}}/{{repo}}/deployments/{deployment_id}/statuses?per_page=1",
+             "-q", "[.[] | .state]"],
+            repo,
+        )
+    except GhError:
+        return ""
+    if isinstance(rows, list) and rows:
+        return str(rows[0])
+    return ""
+
+
+def _fetch_pages_deployments(repo: Optional[str], limit: int) -> list[PagesBuild]:
+    """Publish history for an Actions-built site, from its github-pages deployments.
+
+    The deployments list carries no state — that lives on a separate endpoint,
+    one call per deployment — so the states are fetched concurrently, the same
+    way branch commit info is.
+    """
+    try:
+        rows = _api_json(
+            [f"repos/{{owner}}/{{repo}}/deployments?environment=github-pages&per_page={limit}",
+             "-q", "[.[] | {id, sha, creator: .creator.login, created: .created_at}]"],
+            repo,
+        )
+    except GhError as exc:
+        if _is_not_found(exc):
+            return []
+        raise
+    if not isinstance(rows, list):
+        return []
+    rows = [row for row in rows if isinstance(row, dict)]
+    states = [""] * len(rows)
+    if rows:
+        with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+            futures = {
+                pool.submit(_deployment_state, repo, row.get("id", 0) or 0): i
+                for i, row in enumerate(rows)
+            }
+            for fut in as_completed(futures):
+                states[futures[fut]] = fut.result()
+    return [
+        PagesBuild(
+            id=row.get("id", 0) or 0,
+            status=state or "unknown",
+            commit=row.get("sha", "") or "",
+            pusher=row.get("creator", "") or "",
+            created_at=row.get("created", "") or "",
+            kind="deployment",
+            url=f"https://github.com/{repo}/commit/{row.get('sha', '')}" if repo else "",
+        )
+        for row, state in zip(rows, states)
+    ]
+
+
+def fetch_pages_builds(repo: Optional[str], limit: int = 30) -> list[PagesBuild]:
+    """Publish history for the repo's Pages site, newest first.
+
+    Falls back to the github-pages deployments when ``pages/builds`` is empty,
+    which is how an Actions-built site always reports. The two are never
+    merged — legacy sites have deployments as well, and merging would list
+    every publish twice.
+    """
+    builds = _fetch_pages_builds_legacy(repo, limit)
+    if builds:
+        return builds
+    return _fetch_pages_deployments(repo, limit)
+
+
+@dataclass
+class PagesFile:
+    """A file the site serves, paired with the URL it is served from."""
+    path: str                # path inside the published subtree, e.g. "guide/setup.md"
+    url: str                 # the live URL that file is reachable at
+    size_bytes: int = 0
+
+    def size_human(self) -> str:
+        return _size_human(self.size_bytes)
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "page": self.path,
+            "url": self.url,
+            "size": self.size_human(),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        parts = [f"{col}: {val}" for col, val in row.items() if val]
+        return ", ".join(parts)
+
+
+PAGEFILE_COLUMNS = ["page", "url", "size"]
+PAGEFILE_DEFAULT_COLUMNS = ["page", "url"]
+
+# Files Jekyll reads rather than publishes. Only relevant when Jekyll is
+# actually running — a .nojekyll marker turns it off, and everything is then
+# served exactly as committed.
+_JEKYLL_SOURCE_ONLY = ("_config.yml", "_config.yaml", "Gemfile", "Gemfile.lock")
+_MARKDOWN_SUFFIXES = (".md", ".markdown")
+
+
+def _jekyll_hides(rel_path: str) -> bool:
+    """True if Jekyll consumes this file instead of publishing it."""
+    segments = rel_path.split("/")
+    if any(seg.startswith("_") for seg in segments):
+        return True
+    return segments[-1] in _JEKYLL_SOURCE_ONLY
+
+
+def _served_as(rel_path: str, jekyll: bool) -> str:
+    """The path a file is served at, which is not the path it is stored at.
+
+    Jekyll renders Markdown to HTML, so ``guide/setup.md`` in the repo is
+    ``guide/setup.html`` on the site. Without Jekyll the two are the same.
+    """
+    if not jekyll:
+        return rel_path
+    for suffix in _MARKDOWN_SUFFIXES:
+        if rel_path.endswith(suffix):
+            return rel_path[: -len(suffix)] + ".html"
+    return rel_path
+
+
+def fetch_pages_files(
+    repo: Optional[str], site: Optional[PagesSite], limit: int = 1000
+) -> list[PagesFile]:
+    """List the files the site serves, each with the URL it is served from.
+
+    There is no API for "what does this site publish", so this reads the git
+    tree of the branch Pages builds from and maps each file onto its live URL.
+    Three things make that more than string concatenation:
+
+    * A source path other than ``/`` (typically ``/docs``) publishes only that
+      subtree, and the prefix is stripped from the URL.
+    * Without a ``.nojekyll`` marker a legacy site runs through Jekyll, which
+      renders Markdown to HTML and keeps its own ``_``-prefixed directories out
+      of the output. A custom Jekyll config can do more than that, and none of
+      it is visible from the tree.
+    * For an **Actions-built site the tree is the source, not the output.**
+      The workflow decides what actually ships, so treat the list as the
+      files that went in rather than the pages that came out.
+
+    Callers that need those caveats stated to the user should read
+    ``site.built_by_actions`` — this returns a best-effort list either way.
+    """
+    if site is None or not site.source_branch:
+        return []
+    row = _api_json(
+        [f"repos/{{owner}}/{{repo}}/git/trees/{site.source_branch}?recursive=1",
+         "-q", '[.tree[] | select(.type == "blob") | {path, size}]'],
+        repo,
+    )
+    # A tree over ~100k entries comes back truncated. No Pages site is that
+    # large in practice, and the API offers no continuation for it.
+    entries = [e for e in row if isinstance(e, dict)] if isinstance(row, list) else []
+    prefix = site.source_path.strip("/")
+    root = site.url.rstrip("/") + "/"
+    nojekyll = f"{prefix}/.nojekyll".lstrip("/")
+    jekyll = not site.built_by_actions and not any(
+        e.get("path") == nojekyll for e in entries
+    )
+
+    files: list[PagesFile] = []
+    for entry in entries:
+        path = entry.get("path", "") or ""
+        if prefix:
+            if not path.startswith(prefix + "/"):
+                continue
+            rel = path[len(prefix) + 1:]
+        else:
+            rel = path
+        if not rel or (jekyll and _jekyll_hides(rel)):
+            continue
+        files.append(PagesFile(
+            path=rel,
+            url=root + _served_as(rel, jekyll),
+            size_bytes=entry.get("size", 0) or 0,
+        ))
+    files.sort(key=lambda f: f.path.lower())
+    return files[:limit]

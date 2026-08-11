@@ -9,6 +9,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
+- **GitHub Pages** — if a repo publishes a site, see every publish and whether it worked, then browse the pages it serves and open any of them in your browser
 - **Release download counts** — the Releases view shows how many times each release was downloaded, with a repo total in the status bar; press Enter on a release for a per-file breakdown
 - **Labels view** — browse the repo's labels, press Enter on one to list the issues and PRs carrying it, and create or delete labels with Ctrl+I / Ctrl+D (or Insert / Delete)
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
@@ -16,7 +17,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (30 at a time)
 - **View menu** with:
-  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, and Labels
+  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, and GitHub Pages
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
@@ -87,7 +88,7 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
 | `Ctrl+I` | Create — a new label (Labels view) |
 | `Ctrl+D` | Delete — the selected label or workflow run |
-| `Ctrl+1` … `Ctrl+9` | Switch view — see below |
+| `Ctrl+1` … `Ctrl+0` | Switch view — see below |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
@@ -111,6 +112,7 @@ details panel).
 | `Ctrl+7` | Workflow Runs |
 | `Ctrl+8` | Labels |
 | `Ctrl+9` | ★ Favorites |
+| `Ctrl+0` | GitHub Pages |
 
 Every view except Favorites needs a repository, so with none selected the status
 bar says "Select a repository first" and the view is left alone.
@@ -203,12 +205,52 @@ app confirms first.
 
 On a fork, labels come from the same upstream repo the issues do.
 
+### In the GitHub Pages view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Browse the pages the site serves |
+| `S` | Open the site itself in your browser |
+
+`Ctrl+0` shows the publish history of a repository's Pages site — one row per
+publish, with whether it succeeded, the commit it came from, who pushed it, and
+how long it took. The status bar carries the site's address, its state, and the
+branch and folder it publishes from; the details panel adds the rest of the
+configuration, including any custom domain.
+
+If the repository has no site, the app says so plainly rather than showing you an
+empty list.
+
+From there, `Enter` opens the site's **Published Pages** — every file the site
+serves, each with the address it is served at. `Enter` on one opens it in your
+default browser, `S` opens the site's home page, and `Backspace` returns to the
+publish history. The **Actions** menu carries Open Published Site too, enabled
+once a site is found. `F` favorites a page like anything else, so a page you
+check often is one keystroke away from any repository.
+
+Two things are worth knowing about that list, and the details panel says so on
+the pages it applies to:
+
+- **Jekyll sites serve Markdown as HTML.** A file stored as `guide/setup.md` is
+  served at `guide/setup.html`. The listed address is the one that works. A site
+  with a `.nojekyll` file skips this and is served exactly as committed.
+- **A site built by Actions is listed from its source, not its output.** GitHub
+  publishes those through a workflow, and the workflow decides what actually
+  ships — possibly a subset of these files, possibly something it generated that
+  is not in the repository at all. For sites GitHub builds itself, the list is
+  what is served.
+
+The publish history has the same split. Sites GitHub builds report a full build
+log with durations and error messages; sites built by Actions have no build log
+at all, so their history is read from their deployments instead, which record a
+state but not a duration.
+
 ### Actions menu
 
 Everything that acts on what the list is showing lives in one menu, whichever
 view it belongs to: open in browser, close/reopen/comment on an issue, create
 and delete labels, delete a workflow run, run a workflow, download an artifact,
-pick or compare branches.
+open a published Pages site, pick or compare branches.
 
 Items are re-labelled and enabled for the current view, so **Delete** reads
 "Delete Label…" in the Labels view and "Delete Workflow Run…" in Workflow Runs,
@@ -219,7 +261,8 @@ so does the bare `Delete` key, which additionally works from the details panel.
 
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
 (with download counts), **Workflows** (the workflow definitions, which you can run
-on a branch), **Workflow Runs** (recent run history), and **Labels**.
+on a branch), **Workflow Runs** (recent run history), **Labels**, and
+**GitHub Pages** (a published site and the pages it serves).
 Each view has its own set of columns and detail formatting.
 
 ## Building

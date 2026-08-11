@@ -67,6 +67,26 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - `fetch_compare(repo, base, head)` — compare two refs.
 - `fetch_item_detail(item, repo)` — re-fetch a single issue/PR with full detail.
 - `close_item` / `reopen_item` / `add_comment` — actions on issues/PRs.
+- `fetch_pages_site(repo)` → `PagesSite | None` — the repo's Pages config. **None means Pages
+  is off**, not that the call failed: every Pages endpoint 404s on a repo without a site, and
+  `_is_not_found` turns that into a normal answer.
+- `fetch_pages_builds(repo, limit)` — publish history. Two endpoints hide behind this. A site
+  GitHub builds itself (`build_type: legacy`) reports on `pages/builds`; a site published by
+  Actions (`build_type: workflow`) returns an **empty list** there and its history lives in the
+  `github-pages` deployments instead. Legacy sites have deployments *as well*, so the two are
+  never merged — it falls back rather than combining, or every publish would appear twice.
+- `PagesBuild.kind` says which endpoint a row came from. Builds carry a duration and an error
+  message; deployments carry only a state, and their state costs one extra call each (fetched
+  concurrently, same as branch commit info).
+- `_build_id_from_url(url)` — `pages/builds` rows have **no `id` field**, unlike every other
+  list endpoint here. The id has to be read off the end of `.url`.
+- `fetch_pages_files(repo, site, limit)` → `list[PagesFile]` — the pages a site serves.
+  **There is no API for this.** It reads the git tree of the source branch and maps each file
+  onto its live URL, which is more than concatenation: a source path of `/docs` publishes only
+  that subtree with the prefix stripped, and without a `.nojekyll` marker a legacy site runs
+  through Jekyll, which renders `.md` to `.html` and withholds its `_`-prefixed directories.
+  For an **Actions-built site the tree is the source, not the output** — the workflow decides
+  what ships. The UI states that caveat; don't drop it.
 - `list_repos(limit)` — list user's GitHub repos.
 - `detect_repo()` — detect repo from current git directory.
 - `sort_items(items, sort_order)` — sort by named order string.
@@ -102,9 +122,10 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   **Any new async path that writes to the list needs the same treatment**;
   `_on_goto_fetched` is the other one, guarded on the view instead.
 - `_switch_view(mode)` — switch between Issues/PRs, Branches, Commits, Tags, Releases,
-  Workflow, Labels. Each drill-down view clears its context here when you leave it
+  Workflow, Labels, Pages. Each drill-down view clears its context here when you leave it
   (`commit_branch`, `artifacts_run`, `assets_release`, `label_filter`) — add a reset for
-  any new one.
+  any new one. `pages_site` is the exception: it is shared by *both* Pages views, so it
+  survives the move between them and clears only on the way out to anything else.
 - Drill-down views are registered in `PARENT_VIEW`, which is what makes Backspace step back up.
   A new drill-down needs an entry there, in `VIEW_COLUMNS`, and in `_VIEW_LABELS`.
 - `_show_details(idx)` — dispatches to `_show_issue_details` or `_show_git_details`.
@@ -145,6 +166,18 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - Status-bar hints are per-view for a reason: a key named in the status bar has to work
   in that view. `Ctrl+B=select branch` is Commits-only — `on_select_branch` refuses
   everywhere else.
+- **Pages views** (Ctrl+0 → `VIEW_PAGES`, Enter → `VIEW_PAGEFILES`). Pages lists publishes,
+  Enter drills into the pages the site serves, Enter there opens one in the default browser,
+  `S` opens the site root from either. Enter in the Pages view ignores which publish is
+  selected — the file list is the site as it stands now, and GitHub keeps no per-publish
+  snapshot to browse. Pages sits at Ctrl+0 on the end of the menu rather than beside the
+  other repo views: inserting it mid-menu would renumber every shortcut below it, which
+  is what happened to Favorites when Labels took Ctrl+8.
+- `_show_pages_disabled` — Pages off is a real answer, so it says so in the details panel.
+  An empty list alone reads the same as a site that has never published.
+- `_on_pages_loaded` / `_on_pagefiles_loaded` call `_update_actions_menu` themselves.
+  Whether there is a site to open is only known after the fetch, and by then the
+  `_switch_view` that would normally refresh the menu has long since run.
 - `WorkflowInputsDialog` — the "Run workflow" form, generated at runtime from a
   `DispatchSpec`. choice/environment → `wx.Choice`, boolean → `wx.CheckBox`, everything else
   → `wx.TextCtrl`. Because it is generated rather than hand-written, **labelling is manual**:
@@ -200,6 +233,11 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Workflow file (for inputs) | `repos/{owner}/{repo}/contents/{path}?ref={ref}` |
 | Environments | `repos/{owner}/{repo}/environments` |
 | Manual run | `POST repos/{owner}/{repo}/actions/workflows/{id}/dispatches` |
+| Pages config | `repos/{owner}/{repo}/pages` (404 = Pages off) |
+| Pages builds (legacy sites) | `repos/{owner}/{repo}/pages/builds` |
+| Pages deployments (Actions sites) | `repos/{owner}/{repo}/deployments?environment=github-pages` |
+| Deployment state | `repos/{owner}/{repo}/deployments/{id}/statuses` |
+| Published file list | `repos/{owner}/{repo}/git/trees/{branch}?recursive=1` |
 
 ## CI/CD
 
@@ -236,6 +274,7 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   Insert/Delete; bare Insert/Delete work from the details panel too.
 - v0.6.2 — first signed release (Azure Trusted Signing). No code changes.
 - v0.6.3 — a slow fetch can no longer land in a view you have already left.
+- v0.7.0 — GitHub Pages view (Ctrl+0): publish history and the pages a site serves
 
 ## Roadmap
 

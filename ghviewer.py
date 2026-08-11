@@ -43,10 +43,17 @@ from gh_data import (
     ARTIFACT_DEFAULT_COLUMNS,
     ASSET_COLUMNS,
     ASSET_DEFAULT_COLUMNS,
+    PAGES_COLUMNS,
+    PAGES_DEFAULT_COLUMNS,
+    PAGEFILE_COLUMNS,
+    PAGEFILE_DEFAULT_COLUMNS,
     Artifact,
     Branch,
     Commit,
     Label,
+    PagesBuild,
+    PagesFile,
+    PagesSite,
     Release,
     ReleaseAsset,
     Tag,
@@ -73,6 +80,9 @@ from gh_data import (
     fetch_item_by_number,
     fetch_item_detail,
     fetch_labels,
+    fetch_pages_builds,
+    fetch_pages_files,
+    fetch_pages_site,
     fetch_prs,
     fetch_release_assets,
     fetch_releases,
@@ -152,6 +162,7 @@ ID_VIEW_WORKFLOWS = wx.NewIdRef()
 ID_VIEW_WORKFLOW = wx.NewIdRef()
 ID_VIEW_LABELS = wx.NewIdRef()
 ID_VIEW_FAVORITES = wx.NewIdRef()
+ID_VIEW_PAGES = wx.NewIdRef()
 ID_NEW_LABEL = wx.NewIdRef()
 ID_DELETE_LABEL = wx.NewIdRef()
 ID_BROWSE_LABEL = wx.NewIdRef()
@@ -162,6 +173,7 @@ ID_BROWSE_LABEL = wx.NewIdRef()
 ID_DELETE_ITEM = wx.NewIdRef()
 ID_ACT_RUN_WORKFLOW = wx.NewIdRef()
 ID_ACT_DOWNLOAD_ARTIFACT = wx.NewIdRef()
+ID_OPEN_PAGES_SITE = wx.NewIdRef()
 ID_FILTER = wx.NewIdRef()
 ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
@@ -184,6 +196,8 @@ VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
 VIEW_ASSETS = "assets"         # files attached to a single release (drill-down)
 VIEW_LABELS = "labels"
 VIEW_FAVORITES = "favorites"
+VIEW_PAGES = "pages"           # GitHub Pages: site config + publish history
+VIEW_PAGEFILES = "pagefiles"   # the pages that site serves (drill-down)
 
 # Drill-down views: pressing Backspace in the key view returns to its parent.
 # These are the views you reach by activating an item in another view
@@ -192,6 +206,7 @@ PARENT_VIEW = {
     VIEW_COMMITS: VIEW_BRANCHES,
     VIEW_ARTIFACTS: VIEW_WORKFLOW,
     VIEW_ASSETS: VIEW_RELEASES,
+    VIEW_PAGEFILES: VIEW_PAGES,
 }
 
 # Columns for the favorites view (mixed item types)
@@ -211,6 +226,8 @@ VIEW_COLUMNS = {
     VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
     VIEW_LABELS: (LABEL_DEFAULT_COLUMNS, LABEL_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
+    VIEW_PAGES: (PAGES_DEFAULT_COLUMNS, PAGES_COLUMNS),
+    VIEW_PAGEFILES: (PAGEFILE_DEFAULT_COLUMNS, PAGEFILE_COLUMNS),
 }
 
 
@@ -446,6 +463,10 @@ class GhViewerFrame(wx.Frame):
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
         self.assets_release: Release | None = None  # release whose assets are shown
+        # Pages config for the current repo. Shared by both Pages views — the
+        # published-file list is derived from it — so it survives the move
+        # between them and is cleared on the way out to anything else.
+        self.pages_site: PagesSite | None = None
         self.filter_text: str = ""  # quick filter text (Ctrl+F, empty = no filter)
         # Every list fetch carries a token. Results whose token is no longer the
         # current one are dropped, because by then they belong to a view or a
@@ -627,6 +648,9 @@ class GhViewerFrame(wx.Frame):
         self._act_download = actions_menu.Append(
             ID_ACT_DOWNLOAD_ARTIFACT, "Download Artifact…"
         )
+        self._act_open_site = actions_menu.Append(
+            ID_OPEN_PAGES_SITE, "Open Published Site"
+        )
         actions_menu.AppendSeparator()
         self._act_select_branch = actions_menu.Append(
             ID_SELECT_BRANCH, "Select Branch…\tCtrl+B"
@@ -641,8 +665,11 @@ class GhViewerFrame(wx.Frame):
         view_menu = wx.Menu()
 
         # View Mode submenu — switch between Issues/PRs and Git views.
-        # Ctrl+1..Ctrl+8 jump straight to a view; the numbers follow the order
+        # Ctrl+1..Ctrl+0 jump straight to a view; the numbers follow the order
         # of this menu, so the shortcut is readable off the menu itself.
+        # Pages goes on the end rather than beside the other repo views, and
+        # takes Ctrl+0 as the tenth: inserting it in the middle would renumber
+        # every shortcut below it and break the ones already in people's hands.
         show_menu = wx.Menu()
         show_menu.AppendRadioItem(ID_VIEW_ISSUES, "Issues & PRs\tCtrl+1")
         show_menu.AppendRadioItem(ID_VIEW_BRANCHES, "Branches\tCtrl+2")
@@ -653,6 +680,7 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_WORKFLOW, "Workflow Runs\tCtrl+7")
         show_menu.AppendRadioItem(ID_VIEW_LABELS, "Labels\tCtrl+8")
         show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+9")
+        show_menu.AppendRadioItem(ID_VIEW_PAGES, "GitHub Pages\tCtrl+0")
         view_menu.AppendSubMenu(show_menu, "View Mode")
 
         view_menu.AppendSeparator()
@@ -730,6 +758,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_workflow, id=ID_VIEW_WORKFLOW)
         self.Bind(wx.EVT_MENU, self.on_view_labels, id=ID_VIEW_LABELS)
         self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
+        self.Bind(wx.EVT_MENU, self.on_view_pages, id=ID_VIEW_PAGES)
 
     # ── Updates ─────────────────────────────────────────────────────────
 
@@ -839,6 +868,7 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_WORKFLOW, self.view_mode == VIEW_WORKFLOW)
         menu_bar.Check(ID_VIEW_LABELS, self.view_mode == VIEW_LABELS)
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
+        menu_bar.Check(ID_VIEW_PAGES, self.view_mode == VIEW_PAGES)
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
         menu_bar.Check(ID_STATE_CLOSED, self.state_filter == "closed")
@@ -883,6 +913,11 @@ class GhViewerFrame(wx.Frame):
 
         self._act_run_workflow.Enable(self.view_mode == VIEW_WORKFLOWS)
         self._act_download.Enable(self.view_mode == VIEW_ARTIFACTS)
+        # Only offer the site once we know there is one — the Pages views are
+        # reachable on a repo that publishes nothing.
+        self._act_open_site.Enable(
+            self.view_mode in (VIEW_PAGES, VIEW_PAGEFILES) and self.pages_site is not None
+        )
         self._act_select_branch.Enable(self.view_mode == VIEW_COMMITS)
         self._act_compare.Enable(self.view_mode == VIEW_BRANCHES)
 
@@ -922,6 +957,8 @@ class GhViewerFrame(wx.Frame):
             self.assets_release = None
         if mode != VIEW_ISSUES:
             self.label_filter = ""
+        if mode not in (VIEW_PAGES, VIEW_PAGEFILES):
+            self.pages_site = None
         self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
@@ -964,6 +1001,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_delete_item, id=ID_DELETE_ITEM)
         self.Bind(wx.EVT_MENU, self.on_act_run_workflow, id=ID_ACT_RUN_WORKFLOW)
         self.Bind(wx.EVT_MENU, self.on_act_download_artifact, id=ID_ACT_DOWNLOAD_ARTIFACT)
+        self.Bind(wx.EVT_MENU, self.on_open_pages_site, id=ID_OPEN_PAGES_SITE)
         self.Bind(wx.EVT_MENU, self.on_select_branch, id=ID_SELECT_BRANCH)
         self.Bind(wx.EVT_MENU, self.on_compare_branches, id=ID_COMPARE_BRANCHES)
         self.Bind(wx.EVT_MENU, self.on_view_more, id=ID_VIEW_MORE)
@@ -1190,6 +1228,18 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, token, assets, "assets")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, token, [], "assets")
+                elif view == VIEW_PAGES:
+                    # The config comes first: with Pages off it is the whole
+                    # answer, and when it is on it says where to read the rest.
+                    site = fetch_pages_site(self.repo)
+                    builds = fetch_pages_builds(self.repo, self.current_limit) if site else []
+                    wx.CallAfter(self._on_pages_loaded, token, site, builds)
+                elif view == VIEW_PAGEFILES:
+                    # Normally arrived at from the Pages view, which has already
+                    # fetched the config; re-fetch only when it hasn't.
+                    site = self.pages_site or fetch_pages_site(self.repo)
+                    files = fetch_pages_files(self.repo, site, self.current_limit) if site else []
+                    wx.CallAfter(self._on_pagefiles_loaded, token, site, files)
             except GhError as exc:
                 wx.CallAfter(self._on_fetch_error, token, str(exc))
                 return
@@ -1223,6 +1273,8 @@ class GhViewerFrame(wx.Frame):
         VIEW_ASSETS: "Release Assets",
         VIEW_LABELS: "Labels",
         VIEW_FAVORITES: "Favorites",
+        VIEW_PAGES: "GitHub Pages",
+        VIEW_PAGEFILES: "Published Pages",
     }
 
     def _update_title(self) -> None:
@@ -1305,6 +1357,47 @@ class GhViewerFrame(wx.Frame):
         if filtered:
             wx.CallLater(100, self._focus_list)
 
+    def _on_pages_loaded(self, token: int, site: "PagesSite | None", builds: list) -> None:
+        """Pages view: keep the site config, list its publish history."""
+        if not self._fetch_is_current(token):
+            return  # the user has moved on; these belong to a view they left
+        # Whether there is a site to open is only known now, after the fetch —
+        # the Actions entry was disabled when the view switched.
+        self.pages_site = site
+        self._update_actions_menu()
+        if site is None:
+            self._show_pages_disabled()
+            return
+        self._on_git_items_loaded(token, builds, "publishes")
+
+    def _on_pagefiles_loaded(self, token: int, site: "PagesSite | None", files: list) -> None:
+        """Published-pages view: one row per file the site serves."""
+        if not self._fetch_is_current(token):
+            return
+        self.pages_site = site
+        self._update_actions_menu()
+        if site is None:
+            self._show_pages_disabled()
+            return
+        self._on_git_items_loaded(token, files, "published files")
+
+    def _show_pages_disabled(self) -> None:
+        """Pages is switched off for this repo — say so instead of showing nothing.
+
+        An empty list would read the same as a site that has never published,
+        so the details panel carries the explanation.
+        """
+        self.git_items = []
+        self.items = []
+        self.list_ctrl.DeleteAllItems()
+        self.details_text.SetValue(
+            "GitHub Pages is not enabled for this repository.\n\n"
+            "Turn it on under Settings → Pages on github.com, then press R "
+            "here to refresh."
+        )
+        self._announce(f"{self.repo} — GitHub Pages is not enabled.")
+        self._update_title()
+
     def _on_git_items_loaded(self, token: int, items: list, kind: str) -> None:
         """Handle loaded git items (branches, commits, tags, releases, workflow runs)."""
         if not self._fetch_is_current(token):
@@ -1334,12 +1427,24 @@ class GhViewerFrame(wx.Frame):
                 "  Enter=browse issues & PRs with it"
                 "  Insert/Ctrl+I=new  Delete/Ctrl+D=remove"
             )
+        elif self.view_mode == VIEW_PAGES:
+            compare_hint = "  Enter=browse published pages  S=open site"
+        elif self.view_mode == VIEW_PAGEFILES:
+            compare_hint = "  Enter=open page  S=open site  Backspace=back to Pages"
         # Download totals lead the status line where they are the point of the view
         totals = ""
         if self.view_mode == VIEW_RELEASES:
             totals = f" {total_downloads(items):,} downloads across them."
         elif self.view_mode == VIEW_ASSETS:
             totals = f" {sum(a.download_count for a in items):,} downloads in total."
+        elif self.view_mode in (VIEW_PAGES, VIEW_PAGEFILES) and self.pages_site:
+            # Where the site lives and what it is built from is the thing you
+            # came to check, so it leads rather than sitting in the details pane.
+            site = self.pages_site
+            totals = (
+                f" Live at {site.url} — {site.status_display}, "
+                f"published from {site.source_branch}{site.source_path}."
+            )
         # Ctrl+B only picks a branch in the Commits view — offering it in the
         # tags, releases, or labels list is advertising a key that answers
         # "Select Branch is only available in Commits view."
@@ -1609,6 +1714,60 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("Press Enter to download this file in your browser.")
             lines.append("Press Backspace to return to the releases.")
+        elif isinstance(item, PagesBuild):
+            site = self.pages_site
+            lines.append(f"Publish: {item.status}")
+            lines.append(f"Commit: {item.commit}")
+            lines.append(f"By: {item.pusher}")
+            lines.append(f"Date: {item.created_at}")
+            if item.duration_human():
+                lines.append(f"Duration: {item.duration_human()}")
+            if item.error:
+                lines.append(f"Error: {item.error}")
+            lines.append(f"ID: {item.id}")
+            if site:
+                lines.append("")
+                lines.append(f"Site: {site.url}")
+                lines.append(f"Source: {site.source_branch}{site.source_path}")
+                lines.append(f"Built by: {'Actions' if site.built_by_actions else 'GitHub'}")
+                lines.append(f"HTTPS enforced: {'Yes' if site.https_enforced else 'No'}")
+                if site.cname:
+                    lines.append(f"Custom domain: {site.cname}")
+                lines.append(f"Visibility: {'public' if site.public else 'private'}")
+                lines.append(f"Custom 404: {'Yes' if site.custom_404 else 'No'}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            if item.kind == "deployment":
+                # Worth saying: this row did not come from where the reader
+                # probably assumes, and it carries less than a build does.
+                lines.append("This site is published by Actions, so its history comes from")
+                lines.append("the github-pages deployments rather than the Pages build log.")
+                lines.append("Deployments record a state but not a build duration.")
+                lines.append("")
+            lines.append("Press Enter to browse the pages this site serves.")
+            lines.append("Press S to open the site itself in your browser.")
+        elif isinstance(item, PagesFile):
+            site = self.pages_site
+            lines.append(f"Page: {item.path}")
+            lines.append(f"URL: {item.url}")
+            lines.append(f"Size: {item.size_human()}")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            if site and site.built_by_actions:
+                # The distinction matters: a workflow can publish a subset of
+                # the branch, or something it generated that is not in it at all.
+                lines.append("This site is built by Actions, so this list is the source")
+                lines.append("branch, not the output. What the workflow actually ships")
+                lines.append("may be a subset of these files — or files it generated")
+                lines.append("that never appear here.")
+            elif item.path.endswith((".md", ".markdown")) and item.url.endswith(".html"):
+                lines.append("Jekyll renders Markdown to HTML, so this file is stored as")
+                lines.append(f"{item.path} but served at the .html URL above.")
+            lines.append("")
+            lines.append("Press Enter to open this page in your browser.")
+            lines.append("Press Backspace to return to the publish history.")
         self.details_text.SetValue("\n".join(lines))
 
     # ── Helpers ─────────────────────────────────────────────────────────
@@ -1689,6 +1848,21 @@ class GhViewerFrame(wx.Frame):
                 f"Showing {len(item.assets)} assets for {item.tag}, "
                 f"{item.downloads:,} downloads in total"
             )
+            return
+        # In Pages view, Enter drills into the pages the site serves. Which
+        # publish is selected doesn't change that: the file list is the site as
+        # it stands now, and GitHub keeps no per-publish snapshot to browse.
+        if self.view_mode == VIEW_PAGES and isinstance(item, PagesBuild):
+            if not self.pages_site:
+                self._announce("No Pages site for this repository")
+                return
+            self._switch_view(VIEW_PAGEFILES)
+            self._announce(f"Browsing the pages published at {self.pages_site.url}")
+            return
+        # In Published Pages view, Enter opens that page in the browser
+        if self.view_mode == VIEW_PAGEFILES and isinstance(item, PagesFile):
+            webbrowser.open(item.url)
+            self._announce(f"Opened {item.path} in browser")
             return
         # In Favorites view, Enter opens in browser
         if self.view_mode == VIEW_FAVORITES and isinstance(item, FavoriteEntry):
@@ -1955,6 +2129,8 @@ class GhViewerFrame(wx.Frame):
             # view mode is the same one you reach with Ctrl+1.
             self._switch_view(VIEW_LABELS)
             self._announce("Back to labels")
+        elif key == ord("S") and self.view_mode in (VIEW_PAGES, VIEW_PAGEFILES):
+            self._open_pages_site()
         elif self.view_mode == VIEW_ISSUES:
             # Issue/PR-specific keys
             if key == ord("C"):
@@ -1967,6 +2143,17 @@ class GhViewerFrame(wx.Frame):
                 event.Skip()
         else:
             event.Skip()
+
+    def on_open_pages_site(self, event: wx.CommandEvent) -> None:
+        self._open_pages_site()
+
+    def _open_pages_site(self) -> None:
+        """Open the site's home page (S key, or Actions ▸ Open Published Site)."""
+        if not self.pages_site or not self.pages_site.url:
+            self._announce("No Pages site for this repository")
+            return
+        webbrowser.open(self.pages_site.url)
+        self._announce(f"Opened {self.pages_site.url} in browser")
 
     def _toggle_favorite(self) -> None:
         """Toggle favorite status on the currently focused item (F key)."""
@@ -2037,6 +2224,10 @@ class GhViewerFrame(wx.Frame):
             item_type = "workflow run"
             title = f"#{item.run_number} {item.name}"
             subtitle = f"{item.conclusion or item.status} on {item.branch}"
+        elif isinstance(item, PagesFile):
+            item_type = "page"
+            title = item.path
+            subtitle = item.url
         else:
             return None
 
@@ -2701,6 +2892,9 @@ class GhViewerFrame(wx.Frame):
 
     def on_view_favorites(self, event: wx.CommandEvent) -> None:
         self._select_favorites()
+
+    def on_view_pages(self, event: wx.CommandEvent) -> None:
+        self._switch_view(VIEW_PAGES)
 
     # ── List display refresh ───────────────────────────────────────────
 
