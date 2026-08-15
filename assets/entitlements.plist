@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Hardened runtime entitlements for the PyInstaller-built GHManage.app.
+
+    Apple requires the hardened runtime (codesign's "options runtime") before
+    notarization will accept a submission, and the hardened runtime breaks
+    CPython unless the exceptions below are granted. Each one is load-bearing;
+    do not trim this list without launching a notarized build on a Mac that has
+    never run GHManage before. The failure mode for a missing entitlement is an
+    app that dies before it can draw a window, with nothing in the UI to say
+    why — you have to go read Console.app to find out.
+
+    allow-unsigned-executable-memory
+        CPython and several C extensions allocate writable-executable pages.
+        Without this the interpreter dies at startup.
+
+    disable-library-validation
+        Library validation refuses to load any nested library not signed by the
+        same Team ID. build.sh re-signs every .so and .dylib in the bundle, so
+        in principle this is redundant — but wxPython alone contributes dozens
+        of libraries, Velopack injects its own UpdateMac binary after we sign,
+        and a single file missed anywhere in that set turns into a launch
+        failure with no visible error. The exemption costs nothing here: the
+        app loads no plugins and executes no third-party code at runtime.
+
+    allow-dyld-environment-variables
+        The PyInstaller bootloader sets DYLD_LIBRARY_PATH so the bundled
+        libraries in Contents/Frameworks can be found.
+
+    allow-jit
+        Some bundled dependencies map JIT pages. Harmless when unused, and
+        cheaper to include than to diagnose its absence.
+
+    Deliberately NOT included: com.apple.security.cs.disable-executable-page-protection.
+    It is a far broader exemption, Apple discourages it, and nothing here needs it.
+
+    This app is not sandboxed, so file and network access need no entitlement.
+    Sandboxing is in fact incompatible with Velopack, whose updater has to write
+    outside the sandbox and request elevation — both forbidden under App Sandbox.
+    GHManage also shells out to the `gh` CLI, which a sandbox would block.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

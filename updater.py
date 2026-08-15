@@ -7,8 +7,10 @@ Two things have to happen for updates to work:
    hook arguments (install, update, uninstall, first-run); `bootstrap()` handles
    those and exits the process. Skip it and installs/updates silently misbehave.
 2. `UpdateService` checks GitHub Releases, downloads in the background, and
-   applies on restart — but only when running from a Velopack-installed copy.
-   A portable ghmanage.exe has nothing to update and is left alone.
+   applies on restart. On Windows that happens only from a Velopack-installed
+   copy — a portable ghmanage.exe has nothing to update and is left alone. On
+   macOS every GHManage.app can update itself, whether it came from the .pkg,
+   the DMG, or the portable zip, because the bundle carries its own updater.
 
 Local testing without publishing a release: pass `--update-feed <dir>` pointing
 at a `vpk pack` output folder. See docs/INSTALLER.md.
@@ -30,6 +32,15 @@ RELEASES_URL = f"{REPO_URL}/releases"
 
 
 def _log_path() -> str:
+    if sys.platform == "darwin":
+        # ~/Library/Logs is where macOS expects an app's logs, and it is what
+        # Console.app shows under "Log Reports" — the equivalent of telling a
+        # Windows user to open %APPDATA%.
+        return os.path.join(
+            os.path.expanduser("~"), "Library", "Logs", "GHManage",
+            "ghmanage-update.log",
+        )
+
     # %APPDATA%, not %LOCALAPPDATA% — the latter is where Velopack installs the
     # app and manages its contents; nothing of ours belongs in there.
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -37,7 +48,10 @@ def _log_path() -> str:
 
 
 def configure_logging(debug: bool = False) -> None:
-    """Log update activity to %APPDATA%\\GHManage\\ghmanage-update.log.
+    """Log update activity to the platform's per-user log location.
+
+    %APPDATA%\\GHManage\\ghmanage-update.log on Windows,
+    ~/Library/Logs/GHManage/ghmanage-update.log on macOS.
 
     A silently broken updater cannot fix itself in the field — every failure
     path below logs, so a stranded install can be diagnosed from this file.
@@ -120,7 +134,17 @@ class UpdateService:
 
             # Velopack only manages copies it installed. A portable exe (or a
             # `python ghviewer.py` run) reports portable and is left alone.
-            if mgr.get_is_portable():
+            #
+            # Windows only. Velopack's macOS locator hardcodes IsPortable: true
+            # for every .app it can locate — a Mac bundle carries its own
+            # UpdateMac and update feed wherever it sits, so Velopack draws no
+            # installed/portable distinction there. Applying this guard on macOS
+            # would therefore disable updates for every Mac user, including
+            # .pkg installs, and do it silently: the log line below is the only
+            # symptom, and "no update available" never appears because the
+            # check returns before it. The .app is updatable from /Applications,
+            # ~/Applications, or wherever the user dragged it.
+            if sys.platform == "win32" and mgr.get_is_portable():
                 logger.info("running portable; updates disabled")
                 return None
 

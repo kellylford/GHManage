@@ -231,6 +231,105 @@ VIEW_COLUMNS = {
 }
 
 
+# ── The item list ───────────────────────────────────────────────────────
+#
+# On Windows wx.ListCtrl is a native list view and screen readers read it
+# properly, so nothing here changes for Windows.
+#
+# On macOS wx.ListCtrl is *not* native. wxWidgets falls back to its generic
+# custom-drawn implementation, whose backing view is a plain wxNSView that
+# paints its own rows:
+#
+#     wx.ListBox          -> NSScrollView          (native, VoiceOver reads it)
+#     wx.TextCtrl         -> wxNSTextScrollView    (native, VoiceOver reads it)
+#     wx.ListCtrl         -> wxNSView              (custom-drawn, invisible)
+#     wx.DataViewListCtrl -> NSScrollView          (native, VoiceOver reads it)
+#
+# Nothing is exposed to the accessibility layer, so VoiceOver finds no table,
+# no rows and no cells — the control reads as though it is not there at all,
+# which is exactly how it was reported. This is not a labelling or a focus
+# problem and cannot be fixed by naming the control or changing tab order; the
+# widget has to be a real NSTableView. wx.dataview.DataViewListCtrl is one.
+#
+# So on macOS the list is a DataViewListCtrl wearing enough of wx.ListCtrl's
+# interface that the ~800 lines of calling code do not care which one they got.
+IS_MAC = sys.platform == "darwin"
+
+if IS_MAC:
+    import wx.dataview
+
+    class ItemList(wx.dataview.DataViewListCtrl):
+        """A native macOS table with the slice of wx.ListCtrl's API this app uses.
+
+        Only what ghviewer actually calls is implemented. Rows are appended in
+        order by _populate_filtered_list (InsertItem for column 0, then SetItem
+        for the rest), which is why InsertItem can simply append a blank row and
+        let SetItem fill it in.
+        """
+
+        def __init__(self, parent, name="", **kwargs):
+            super().__init__(parent, style=wx.dataview.DV_ROW_LINES | wx.BORDER_SUNKEN)
+            self.SetName(name)
+            self._ncols = 0
+
+        # ── columns ──────────────────────────────────────────────────────
+        def InsertColumn(self, col, heading, width=-1):
+            self.AppendTextColumn(heading, width=width if width > 0 else -1)
+            self._ncols = self.GetColumnCount()
+
+        def DeleteAllColumns(self):
+            self.ClearColumns()
+            self._ncols = 0
+
+        # ── rows ─────────────────────────────────────────────────────────
+        def InsertItem(self, row, text):
+            # Callers always append in order, so `row` is the row about to be
+            # created. Guard anyway: a mismatch here would silently misalign
+            # every column against its item.
+            if row != self.GetItemCount():
+                raise RuntimeError(
+                    f"ItemList.InsertItem expects sequential appends "
+                    f"(got row {row}, have {self.GetItemCount()})"
+                )
+            self.AppendItem([text] + [""] * max(0, self._ncols - 1))
+            return row
+
+        def SetItem(self, row, col, text):
+            self.SetTextValue(text, row, col)
+
+        # ── selection ────────────────────────────────────────────────────
+        def GetFirstSelected(self):
+            row = self.GetSelectedRow()
+            # DataViewCtrl reports wx.NOT_FOUND as an unsigned sentinel in some
+            # builds; normalise anything out of range to "nothing selected".
+            if row is None or row < 0 or row >= self.GetItemCount():
+                return -1
+            return row
+
+        def Select(self, idx, on=True):
+            if 0 <= idx < self.GetItemCount():
+                if on:
+                    self.SelectRow(idx)
+                else:
+                    self.UnselectRow(idx)
+
+        def Focus(self, idx):
+            if 0 <= idx < self.GetItemCount():
+                self.EnsureVisible(self.RowToItem(idx))
+
+else:
+    class ItemList(wx.ListCtrl):
+        """The Windows list: plain wx.ListCtrl, unchanged."""
+
+        def __init__(self, parent, name="", **kwargs):
+            super().__init__(
+                parent,
+                name=name,
+                style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
+                **kwargs,
+            )
+
+
 # ── Run Workflow: inputs dialog ─────────────────────────────────────────
 
 
@@ -525,14 +624,31 @@ class GhViewerFrame(wx.Frame):
         self.splitter.SetMinimumPaneSize(120)
 
         # List panel
+        #
+        # See ItemList: on macOS this is a native table, on Windows the same
+        # wx.ListCtrl as always.
+        #
+        # The label is not decoration. This list was the one control in the
+        # window without a wx.StaticText before it, and its name was
+        # "item_list" — an identifier, not something anyone would want read
+        # aloud. Under VoiceOver that combination gives the table no accessible
+        # name at all, so tabbing onto it announces essentially nothing and it
+        # reads as though the list is not there. The repo list and the details
+        # box were always reachable precisely because they carry a label; this
+        # follows the same convention the generated dialogs above document —
+        # a StaticText immediately before the control *and* a matching SetName,
+        # so the name is right whether the screen reader takes it from the
+        # associated label or from the control itself.
+        #
+        # Both are refreshed by _update_list_label() when the view changes, so
+        # the list is announced as "Issues", "Branches", "Releases" and so on
+        # rather than something generic.
         list_panel = wx.Panel(self.splitter, name="list_panel")
         list_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.list_ctrl = wx.ListCtrl(
-            list_panel,
-            name="item_list",
-            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
-        )
-        list_sizer.Add(self.list_ctrl, proportion=1, flag=wx.EXPAND)
+        self.list_label = wx.StaticText(list_panel, label="Issues")
+        list_sizer.Add(self.list_label, flag=wx.LEFT | wx.TOP, border=3)
+        self.list_ctrl = ItemList(list_panel, name="Issues")
+        list_sizer.Add(self.list_ctrl, proportion=1, flag=wx.EXPAND | wx.ALL, border=3)
         list_panel.SetSizer(list_sizer)
 
         # Details panel
@@ -977,10 +1093,26 @@ class GhViewerFrame(wx.Frame):
     def _bind_events(self) -> None:
         self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_repo_activated, self.repo_list)
         self.repo_list.Bind(wx.EVT_CHAR_HOOK, self.on_repo_key_down)
-        self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_item_selected, self.list_ctrl)
-        self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_item_activated, self.list_ctrl)
-        self.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self.on_item_context_menu, self.list_ctrl)
-        self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
+        # The two widgets emit different event families, so the bindings differ
+        # even though the handlers are shared. The handlers below take their
+        # row from list_ctrl.GetFirstSelected() rather than off the event, which
+        # is what lets one set of handlers serve both.
+        if IS_MAC:
+            self.Bind(wx.dataview.EVT_DATAVIEW_SELECTION_CHANGED,
+                      self.on_item_selected, self.list_ctrl)
+            self.Bind(wx.dataview.EVT_DATAVIEW_ITEM_ACTIVATED,
+                      self.on_item_activated, self.list_ctrl)
+            self.Bind(wx.dataview.EVT_DATAVIEW_ITEM_CONTEXT_MENU,
+                      self.on_item_context_menu, self.list_ctrl)
+            # DataViewCtrl has no EVT_LIST_KEY_DOWN equivalent. EVT_KEY_DOWN
+            # carries the same key codes; on_list_key_down already Skip()s
+            # anything it does not claim, so arrow-key navigation still works.
+            self.list_ctrl.Bind(wx.EVT_KEY_DOWN, self.on_list_key_down)
+        else:
+            self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_item_selected, self.list_ctrl)
+            self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_item_activated, self.list_ctrl)
+            self.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self.on_item_context_menu, self.list_ctrl)
+            self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
         self.details_text.Bind(wx.EVT_CHAR_HOOK, self.on_details_key_down)
         # Frame-level, so Insert/Delete in the Labels view work wherever focus
         # is — including the details panel, which is where the text describing
@@ -1297,6 +1429,20 @@ class GhViewerFrame(wx.Frame):
             parts.append(self.repo)
         parts.append("ghviewer")
         self.SetTitle(" — ".join(parts))
+        self._update_list_label()
+
+    def _update_list_label(self) -> None:
+        """Keep the item list's visible label and accessible name in step.
+
+        Called from _update_title, which already runs on every view, repo and
+        drill-down change, so the list announces what it is currently showing.
+        Both are set: the StaticText is what a sighted user reads and what a
+        screen reader may pick up as the associated label, and SetName is the
+        control's own accessible name for when it does not.
+        """
+        label = self._VIEW_LABELS.get(self.view_mode, self.view_mode.title())
+        self.list_label.SetLabel(label)
+        self.list_ctrl.SetName(label)
 
     def _populate_filtered_list(self, source_items: list, use_favorite_prefix: bool = False) -> None:
         """Populate the list ctrl with items that match the current filter.
@@ -1794,8 +1940,13 @@ class GhViewerFrame(wx.Frame):
 
     # ── List events ─────────────────────────────────────────────────────
 
-    def on_item_selected(self, event: wx.ListEvent) -> None:
-        idx = event.GetIndex()
+    def on_item_selected(self, event) -> None:
+        # Read the row from the control, not the event: wx.ListEvent has
+        # GetIndex() but the macOS DataViewEvent does not, and this handler
+        # serves both. GetFirstSelected() means the same thing on each.
+        idx = self.list_ctrl.GetFirstSelected()
+        if idx < 0:
+            return
         self._show_details(idx)
         if self.list_mode == "full":
             item = self._focused_item()
@@ -1808,7 +1959,7 @@ class GhViewerFrame(wx.Frame):
                 else:
                     self._announce(item.to_accessible_string(self.columns))
 
-    def on_item_activated(self, event: wx.ListEvent) -> None:
+    def on_item_activated(self, event) -> None:  # wx.ListEvent / DataViewEvent
         """Double-click or Enter — context-dependent action."""
         item = self._focused_item()
         if not item:
@@ -1881,7 +2032,7 @@ class GhViewerFrame(wx.Frame):
         else:
             self._announce("No URL for this item")
 
-    def on_item_context_menu(self, event: wx.ListEvent) -> None:
+    def on_item_context_menu(self, event) -> None:  # wx.ListEvent / DataViewEvent
         """Right-click / Menu key — offer item-specific actions."""
         item = self._focused_item()
         if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):

@@ -9,3 +9,5 @@ build/
 /.venv
 build.log
 installer/Releases/
+# Finder drops these all over a repo once it is worked on from a Mac.
+.DS_Store

@@ -1,6 +1,10 @@
 # Installer & Automatic Updates
 
-GHManage is packaged with [Velopack](https://velopack.io/). `build.bat installer`
+GHManage is packaged with [Velopack](https://velopack.io/) on both Windows and
+macOS. This file covers Windows first; the macOS section is further down and
+only describes what differs.
+
+`build.bat installer` (Windows) or `./build.sh installer` (macOS)
 runs PyInstaller then `vpk pack`, emitting `installer/Releases/` (gitignored):
 
 - `GHManage-win-Setup.exe` — the installer users download
@@ -62,14 +66,38 @@ The `velopack` PyPI package is only the in-app client library.
 
 ## Release flow (CI)
 
-On a `v*` tag, `.github/workflows/ghmanage.yml`:
+`.github/workflows/ghmanage.yml` has three jobs. `build-windows` and
+`build-macos` run in parallel and only build; a third `release` job publishes
+what they produce.
+
+The split is what makes a release atomic across platforms. The workflow used to
+create the release from inside the Windows job, so there was no point at which
+"both platforms succeeded" could be checked before publishing. Now a tag either
+ships Windows and macOS together or ships nothing — a half release is worse than
+a failed one, because the missing platform's users see a version they cannot get
+and that platform's updater has nothing to resolve.
+
+Each build job, on a `v*` tag:
 
 1. Verifies the tag matches `version.py`.
 2. Builds with PyInstaller (`--onedir --hidden-import velopack --hidden-import yaml`).
 3. `vpk download github` — fetches the previous release's packages so a delta
-   can be built. Allowed to fail (the first Velopack release has no prior).
-4. `vpk pack` — builds the setup exe, full/delta packages, and feed metadata.
-5. Uploads Setup.exe, the portable zip, the packages, and the three feed files.
+   can be built. Allowed to fail (the first release in a channel has no prior).
+   The macOS job passes `--channel osx`; the channels are independent.
+4. `vpk pack` — builds the installer, full/delta packages, and feed metadata.
+5. Uploads its assets as a build artifact.
+
+The `release` job then downloads both artifacts into one directory and creates
+the GitHub release from them.
+
+**The macOS job does not publish its `RELEASES` file.** `vpk pack` writes that
+legacy Squirrel index on both platforms and its name carries no channel, so the
+two would collide as release assets and whichever uploaded second would replace
+the other — silently repointing the Windows legacy index at macOS packages. The
+modern client reads `releases.win.json` / `releases.osx.json`, which are
+channel-named and safe to publish side by side, so the macOS `RELEASES` is
+simply left out. This is why the macOS upload step lists files explicitly rather
+than globbing the directory.
 
 The feed files are required assets, not extras. A release missing `RELEASES`,
 `releases.win.json` or `assets.win.json` strands every installed client
@@ -129,7 +157,130 @@ updates to ship an urgent fix:
 Do not delete or reuse the test release — a machine that already updated to it
 would point at missing assets, and reusing the number muddles the delta chain.
 
-## Code signing
+## macOS
+
+Apple Silicon only. wxPython and Velopack both publish per-architecture wheels
+and no universal2 build, so an Intel release would mean a second job on the
+deprecated `macos-13` runner rather than a fat binary. The build script and the
+CI job both hard-fail on a non-arm64 machine rather than quietly producing an
+x86_64 app under an Apple Silicon filename.
+
+`./build.sh installer` produces, in `installer/Releases/`:
+
+- `GHManage-osx.dmg` — the drag-to-Applications image most Mac users expect
+- `GHManage-osx-Setup.pkg` — the installer, offering `/Applications` or `~/Applications`
+- `GHManage-osx-Portable.zip` — the same app bundle, unzipped by hand
+- `GHManage-<version>-osx-full.nupkg` / `-delta.nupkg` — the update packages
+- `releases.osx.json`, `assets.osx.json` — the update feed
+
+`./build.sh` on its own stops after `dist/GHManage.app`. `build.command` is a
+double-clickable wrapper for Finder; it calls `./build.sh installer`.
+
+### Key facts
+
+- **All three downloads self-update.** Unlike Windows, there is no
+  portable-versus-installed distinction: a macOS bundle carries its own
+  `UpdateMac` binary and manifest, so it updates from `/Applications`,
+  `~/Applications`, or wherever the user dragged it. Velopack's macOS locator
+  reflects this by reporting `IsPortable: true` for *every* `.app` it can find.
+  That is why `updater.py` scopes its portable guard to Windows — applying it on
+  macOS disables updates for every Mac user, including `.pkg` installs, and does
+  it silently, because the check returns before it ever logs "no update
+  available".
+- **The DMG is built from the packed app, not from `dist/GHManage.app`.**
+  `scripts/make_dmg.sh` extracts `GHManage-osx-Portable.zip`, because `vpk pack`
+  is what injects `UpdateMac` and `sq.version`. A DMG built straight from the
+  PyInstaller output would install a GHManage that runs perfectly and never
+  updates again. The script fails loudly if `UpdateMac` is missing.
+- **Extraction uses `ditto`, not `unzip`.** Only `ditto` preserves the extended
+  attributes and symlinks that carry the code signature.
+- **`Info.plist` is stamped, then the bundle is re-signed.** PyInstaller ad-hoc
+  signs the bundle it builds — an unsigned binary will not run on Apple Silicon
+  at all — and the plist is covered by that signature, so writing the version
+  into it invalidates it (`codesign` reports "invalid Info.plist"). macOS then
+  refuses to launch the app and calls it damaged, which reads as a broken build
+  rather than a broken signature. `build.sh` re-signs immediately after
+  stamping.
+- **`gh` is found explicitly.** An app launched from Finder inherits launchd's
+  PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) and never reads the user's shell
+  profile, so `/opt/homebrew/bin/gh` is invisible to it. `gh_data.py` searches
+  the usual Homebrew and MacPorts locations directly; `GHMANAGE_GH_PATH`
+  overrides. Without this every operation fails with "gh not found" while
+  `which gh` in Terminal answers immediately.
+- **No App Sandbox.** Velopack's updater has to write outside the sandbox and
+  request elevation, and GHManage shells out to `gh`. Both are forbidden under
+  App Sandbox, so the entitlement must never be added.
+
+### Signing and notarization
+
+Two Apple certificates are needed, both from the Apple Developer Program:
+**Developer ID Application** (signs the app) and **Developer ID Installer**
+(signs the `.pkg`). Notarization uses an App Store Connect API key.
+
+Signing is off until the secrets exist, exactly like `AZURE_CLIENT_ID` on
+Windows. With none set the build still succeeds and publishes, ad-hoc signed,
+with a workflow warning — a half-configured signing setup must not be able to
+block a release.
+
+| Secret | Purpose |
+|--------|---------|
+| `MACOS_CERTIFICATE_P12` | Developer ID **Application** cert, base64 `.p12`. Turns signing on. |
+| `MACOS_CERTIFICATE_PASSWORD` | Its export password. |
+| `MACOS_INSTALLER_P12` | Developer ID **Installer** cert, base64 `.p12`. Optional; without it the `.pkg` is unsigned and users should install from the DMG. |
+| `MACOS_INSTALLER_PASSWORD` | Its password. Falls back to `MACOS_CERTIFICATE_PASSWORD`. |
+| `NOTARY_KEY_P8` | App Store Connect API key, base64 `.p8`. |
+| `NOTARY_KEY_ID` | The 10-character Key ID. |
+| `NOTARY_ISSUER_ID` | The issuer UUID. |
+| `MACOS_SIGNING_IDENTITY` | Optional override; defaults to `Developer ID Application: Kelly Ford (P887QF74N8)`. |
+| `MACOS_INSTALLER_IDENTITY` | Optional override; defaults to `Developer ID Installer: Kelly Ford (P887QF74N8)`. |
+
+Notarization needs all three `NOTARY_*` values *and* the application
+certificate; signing needs only the certificate. Each switches on independently.
+
+The certificates are imported into a throwaway keychain in `RUNNER_TEMP`, never
+the login keychain, and it is deleted at the end of the job whatever happens.
+`.github/workflows/build-macos.yml` in Image-Description-Toolkit is the
+reference implementation this follows.
+
+**The app is signed before `vpk pack`, with `--signDisableDeep`.** Velopack's
+own signing path uses `codesign --deep`, which Apple deprecated: it applies the
+app's entitlements to every nested binary and silently skips code it does not
+recognise. A wxPython onedir bundle carries around 60 nested `.so`/`.dylib`
+files, and notarization rejects the entire submission over any one of them left
+unsigned. So `scripts/sign_macos.sh` signs inside-out — deepest nested code
+first, the bundle last, entitlements only on the bundle — and Velopack then
+copies it with `cp -a` (which preserves those signatures), injects `UpdateMac`,
+and signs only that binary plus the outer bundle. That last part is exactly what
+`sign_macos.sh` cannot do, because `UpdateMac` does not exist when it runs.
+
+`vpk pack` then notarizes and staples the `.app` itself before packaging it, so
+the bundle inside both the `.pkg` and the portable zip carries its own ticket
+and validates offline. `scripts/make_dmg.sh` signs, notarizes and staples the
+DMG separately, because Gatekeeper assesses the disk image the user actually
+downloads.
+
+`assets/entitlements.plist` documents why each hardened-runtime exception is
+required. Do not trim it without launching a notarized build on a Mac that has
+never run GHManage — a missing entitlement kills the app before it can draw a
+window, with nothing in the UI to say why.
+
+### Signing locally
+
+```bash
+GHM_SIGN_CODE=1 GHM_NOTARIZE=1 \
+  NOTARY_KEY_PATH=~/AuthKey_XXXXXXXXXX.p8 \
+  NOTARY_KEY_ID=XXXXXXXXXX \
+  NOTARY_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+  ./build.sh installer
+```
+
+`build.sh` creates the `notarytool` keychain profile that `vpk` requires from
+those API-key values, so there is one credential source rather than two. If you
+already have a profile, set `GHM_NOTARY_PROFILE` instead. With nothing set the
+build is ad-hoc signed: it runs on the machine that built it, and macOS refuses
+to open it after a download.
+
+## Code signing (Windows)
 
 The workflow is wired for **Azure Trusted Signing**, reusing the same account
 QuickMail signs with — signing account `kellylford` (resource group `IdeaPlace`,

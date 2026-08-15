@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import sys
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -14,13 +17,58 @@ class GhError(RuntimeError):
     """Raised when a `gh` command fails."""
 
 
+# Where to look for `gh` beyond $PATH, on Unix.
+#
+# A .app launched from Finder, the Dock or Spotlight inherits launchd's PATH —
+# /usr/bin:/bin:/usr/sbin:/sbin — and never reads the user's shell profile. So
+# every normal way of installing gh on a Mac lands somewhere invisible to the
+# packaged app, and plain `gh` raises FileNotFoundError for every single
+# operation even though `which gh` in Terminal answers immediately. That looks
+# like "the app is broken", not like a PATH problem, so search these directly.
+_EXTRA_GH_DIRS = (
+    "/opt/homebrew/bin",   # Homebrew on Apple Silicon — the common case
+    "/usr/local/bin",      # Homebrew on Intel, and manual installs
+    "/opt/local/bin",      # MacPorts
+    os.path.expanduser("~/.local/bin"),
+)
+
+_gh_exe: Optional[str] = None
+
+
+def _find_gh() -> str:
+    """Return the path to the `gh` executable, resolved once and cached.
+
+    Falls back to the bare name so the FileNotFoundError below still produces
+    the install message rather than something less useful.
+    """
+    global _gh_exe
+    if _gh_exe is not None:
+        return _gh_exe
+
+    # Escape hatch for anyone with gh somewhere unusual.
+    override = os.environ.get("GHMANAGE_GH_PATH")
+    if override:
+        _gh_exe = override
+        return _gh_exe
+
+    search = os.environ.get("PATH", "")
+    if sys.platform != "win32":
+        parts = search.split(os.pathsep)
+        search = os.pathsep.join(
+            [search, *(d for d in _EXTRA_GH_DIRS if d not in parts)]
+        )
+
+    _gh_exe = shutil.which("gh", path=search) or "gh"
+    return _gh_exe
+
+
 def _run_gh(args: list[str]) -> str:
     """Run a `gh` command and return stdout, raising GhError on failure."""
     # On Windows, suppress the console window that subprocess would otherwise pop up.
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
-            ["gh", *args],
+            [_find_gh(), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -30,7 +78,9 @@ def _run_gh(args: list[str]) -> str:
         )
     except FileNotFoundError:
         raise GhError(
-            "The `gh` CLI was not found. Install it from https://cli.github.com/"
+            "The `gh` CLI was not found. Install it from https://cli.github.com/ "
+            "(on macOS: brew install gh), then run `gh auth login`. If it is "
+            "installed somewhere unusual, set GHMANAGE_GH_PATH to its full path."
         )
     except subprocess.CalledProcessError as exc:
         raise GhError(exc.stderr.strip() or f"`gh {' '.join(args)}` failed")

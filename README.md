@@ -51,6 +51,36 @@ install. It does not update itself.
 Windows may show a SmartScreen "unknown publisher" warning until code signing is
 switched on. See [docs/INSTALLER.md](docs/INSTALLER.md).
 
+### macOS
+
+Apple Silicon (M1 or later), macOS 11 Big Sur or newer.
+
+Download **GHManage-osx.dmg** from the
+[latest release](https://github.com/kellylford/GHManage/releases), open it, and
+drag GHManage to Applications. **GHManage-osx-Setup.pkg** is also published if
+you would rather run an installer, and **GHManage-osx-Portable.zip** contains
+the same app if you prefer to unzip it yourself.
+
+All three update themselves — a macOS app bundle carries its own updater, so it
+keeps working wherever you put it. New versions download in the background and
+install the next time you start GHManage; Help ▸ Check for Updates checks on
+demand.
+
+Install and sign in to the GitHub CLI first:
+
+```bash
+brew install gh
+```
+
+then `gh auth login`. GHManage looks for `gh` in the usual Homebrew and MacPorts
+locations, because an app launched from Finder does not inherit the PATH from
+your shell profile. If you keep it somewhere else, set `GHMANAGE_GH_PATH` to its
+full path.
+
+There is no Intel build. wxPython and Velopack both publish per-architecture
+wheels with no universal2 build, so an Intel release would be a separate build
+rather than a fat binary.
+
 ### From source
 
 ```bash
