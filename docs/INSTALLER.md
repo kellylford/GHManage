@@ -271,7 +271,8 @@ and validates offline. `scripts/make_dmg.sh` signs, notarizes and staples the
 DMG separately, because Gatekeeper assesses the disk image the user actually
 downloads.
 
-`assets/entitlements.plist` documents why each hardened-runtime exception is
+`assets/GHManage.entitlements` — named for the extension `vpk` insists on, not
+for any preference of ours — documents why each hardened-runtime exception is
 required. Do not trim it without launching a notarized build on a Mac that has
 never run GHManage — a missing entitlement kills the app before it can draw a
 window, with nothing in the UI to say why.

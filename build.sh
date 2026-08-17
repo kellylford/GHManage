@@ -222,7 +222,10 @@ VPK_ARGS=(
 )
 
 if [ "$SIGN_CODE" = "1" ]; then
-    VPK_ARGS+=(--signDisableDeep --signEntitlements assets/entitlements.plist)
+    # The file is named .entitlements, not .plist, because vpk validates the
+    # extension and refuses anything else: "--signEntitlements does not have an
+    # .entitlements extension". codesign itself does not care.
+    VPK_ARGS+=(--signDisableDeep --signEntitlements assets/GHManage.entitlements)
     [ -n "${GHM_SIGNING_IDENTITY:-}" ] && VPK_ARGS+=(--signAppIdentity "$GHM_SIGNING_IDENTITY")
     [ -n "${GHM_INSTALLER_IDENTITY:-}" ] && VPK_ARGS+=(--signInstallIdentity "$GHM_INSTALLER_IDENTITY")
     [ -n "${GHM_KEYCHAIN:-}" ] && VPK_ARGS+=(--keychain "$GHM_KEYCHAIN")

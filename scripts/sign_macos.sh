@@ -15,7 +15,7 @@
 #                          If unset, the first Developer ID Application
 #                          identity in the keychain is used.
 #   GHM_ENTITLEMENTS       Path to entitlements plist.
-#                          Defaults to assets/entitlements.plist.
+#                          Defaults to assets/GHManage.entitlements.
 #   GHM_KEYCHAIN           Optional keychain to search. CI uses a temporary one
 #                          so the signing key never touches the login keychain.
 #
@@ -38,7 +38,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENTITLEMENTS="${GHM_ENTITLEMENTS:-$ROOT/assets/entitlements.plist}"
+ENTITLEMENTS="${GHM_ENTITLEMENTS:-$ROOT/assets/GHManage.entitlements}"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <path-to-.app-or-binary> [more paths...]"
