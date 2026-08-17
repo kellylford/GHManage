@@ -319,6 +319,18 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: ./build.sh
 
+      # The macOS runner has a `dotnet` CLI new enough to *install* a tool but no
+      # runtime the installed tool can then run on: vpk's apphost targets
+      # net10.0 and reports ".NET location: Not found", DOTNET_ROOT unset, and
+      # exits 131. setup-dotnet installs the runtime and exports DOTNET_ROOT, so
+      # the shim resolves. The Windows job needs none of this — its image
+      # registers .NET properly — which is why the two jobs differ here.
+      - name: Set up .NET
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Install vpk
         if: startsWith(github.ref, 'refs/tags/v')
         run: dotnet tool install -g vpk
