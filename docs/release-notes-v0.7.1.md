@@ -19,9 +19,8 @@ Updates checks on demand. On the Mac that works wherever you keep the app —
 `/Applications`, your own `~/Applications`, or anywhere else — because a Mac app
 bundle carries its own updater with it.
 
-If you would rather run an installer, **GHManage-osx-Setup.pkg** does the same
-job and offers to install for everyone or just for you. **GHManage-osx-Portable.zip**
-is the same app if you prefer to unzip it yourself. All three update themselves.
+**GHManage-osx-Portable.zip** is the same app if you prefer to unzip it
+yourself. Both update themselves.
 
 Apple Silicon only — an M1 or later, on macOS 11 Big Sur or newer. There is no
 Intel build: the GUI toolkit GHManage is built on ships separate builds per
@@ -73,7 +72,6 @@ anything; this version will arrive on its own.
 | `GHManage-win-Setup.exe` | Windows, installed and updating itself |
 | `GHManage-win-Portable.zip` | Windows, a folder to run from anywhere, no install, no updates |
 | `GHManage-osx.dmg` | macOS, drag to Applications |
-| `GHManage-osx-Setup.pkg` | macOS, if you prefer an installer |
 | `GHManage-osx-Portable.zip` | macOS, unzip it yourself |
 
 The remaining files (`*.nupkg`, `RELEASES`, `releases.win.json`,

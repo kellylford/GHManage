@@ -213,14 +213,26 @@ double-clickable wrapper for Finder; it calls `./build.sh installer`.
 
 ### Signing and notarization
 
-Two Apple certificates are needed, both from the Apple Developer Program:
-**Developer ID Application** (signs the app) and **Developer ID Installer**
-(signs the `.pkg`). Notarization uses an App Store Connect API key.
+One Apple certificate is needed: **Developer ID Application**, which signs the
+app. Notarization uses an App Store Connect API key.
+
+A second certificate, **Developer ID Installer**, would sign the `.pkg` — but
+the `.pkg` is not published (see the release job), so it is not needed. The
+`MACOS_INSTALLER_*` secrets below stay wired up for whenever that changes.
 
 Signing is off until the secrets exist, exactly like `AZURE_CLIENT_ID` on
 Windows. With none set the build still succeeds and publishes, ad-hoc signed,
 with a workflow warning — a half-configured signing setup must not be able to
 block a release.
+
+**To set them, run `scripts/setup_macos_secrets.sh`.** It discovers everything
+on the signing Mac — the Developer ID certificate from the login keychain, and
+the notary key, key id and issuer id from `~/.fastweather-keys/asc.json` — then
+verifies the credentials against Apple and uploads the five secrets. Do not
+gather them by hand: nothing about them is specific to this repo, and the same
+five values already back Image-Description-Toolkit. GitHub never reveals a
+secret's value once set, which is why they must be re-derived from those local
+files rather than copied between repositories.
 
 | Secret | Purpose |
 |--------|---------|

@@ -420,6 +420,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # The .pkg `vpk pack` produces is deliberately not published. Signing it
+      # needs a Developer ID *Installer* certificate — a separate Apple product
+      # from the application one — and without that macOS refuses to open it.
+      # The DMG is the documented way to install, the portable zip covers the
+      # rest, and both self-update identically, so a third install path was not
+      # worth a second certificate. Add the file back here if that cert ever
+      # exists; MACOS_INSTALLER_P12 already wires it up.
+      #
       # Explicit file list, not the whole directory. `vpk pack` also writes the
       # legacy Squirrel `RELEASES` file, whose name carries no channel — the
       # Windows job publishes one too, and a same-named asset uploaded second
@@ -433,7 +441,6 @@ jobs:
         with:
           name: release-macos
           path: |
-            installer/Releases/GHManage-osx-Setup.pkg
             installer/Releases/GHManage-osx-Portable.zip
             installer/Releases/GHManage-osx.dmg
             installer/Releases/*-osx-full.nupkg
