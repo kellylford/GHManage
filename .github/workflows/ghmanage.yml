@@ -495,27 +495,43 @@ jobs:
 
     steps:
       # Needed only for docs/release-notes-<tag>.md, which is the release body.
+      # It also drops the repo's own assets/ directory into the workspace, which
+      # is why the downloads below land in release-assets/ and NOT assets/. When
+      # they shared a name, `files: assets/*` published ghmanage.icns,
+      # make_icon.py and the entitlements file alongside the real downloads —
+      # v0.7.1 shipped that way. The directory must stay distinct from every
+      # path in the repository.
       - uses: actions/checkout@v7
 
       - name: Download Windows assets
         uses: actions/download-artifact@v7
         with:
           name: release-windows
-          path: assets
+          path: release-assets
 
       - name: Download macOS assets
         uses: actions/download-artifact@v7
         with:
           name: release-macos
-          path: assets
+          path: release-assets
 
+      # Guards the collision above from coming back by any other route: these
+      # are exactly the files a release may carry, so anything else appearing in
+      # the directory fails the job before it can be published.
       - name: List assets
-        run: ls -la assets
+        run: |
+          ls -la release-assets
+          unexpected=$(ls release-assets | grep -vE '^(GHManage-win-Setup\.exe|GHManage-win-Portable\.zip|GHManage-osx\.dmg|GHManage-osx-Portable\.zip|.*\.nupkg|RELEASES|releases\.(win|osx)\.json|assets\.(win|osx)\.json)$' || true)
+          if [ -n "$unexpected" ]; then
+            echo "ERROR: unexpected files staged for the release:"
+            echo "$unexpected"
+            exit 1
+          fi
 
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
           name: GHManage ${{ github.ref_name }}
-          files: assets/*
+          files: release-assets/*
           fail_on_unmatched_files: true
           body_path: docs/release-notes-${{ github.ref_name }}.md
