@@ -122,7 +122,17 @@ python ghviewer.py --repo owner/repo-name
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
+| `F6` / `Shift+F6` | Move focus to the next / previous pane: repo list, item list, details panel, status bar |
 | `Ctrl+Q` | Quit |
+
+### In the status bar
+
+`F6` stops on the status bar as well as the three panes. The bar is split into
+items — the latest message, the keys that work in the current view, the filter
+when one is set, the list mode, and a found update — and `Left` / `Right` move
+from one to the next, wrapping at either end. Items with nothing to say are not
+on the bar. Press `Enter` or `Space` on the update item to install the update
+and restart.
 
 ### Switching views
 

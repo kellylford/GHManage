@@ -10,7 +10,7 @@ import argparse
 import sys
 import threading
 import webbrowser
-from typing import Optional
+from typing import Callable, Optional
 
 import wx
 
@@ -330,6 +330,137 @@ else:
             )
 
 
+# ── Status bar ──────────────────────────────────────────────────────────
+
+
+class _StatusText(wx.TextCtrl):
+    """A piece of status bar text that keyboard focus can land on.
+
+    A native status bar field cannot take focus, so each one is covered by a
+    borderless read-only edit showing the same text. A screen reader reads an
+    edit's value when it gets focus, and the native field underneath keeps its
+    text too, so the screen reader's own read-the-status-bar command still works.
+    """
+
+    def __init__(self, parent: wx.Window, name: str) -> None:
+        super().__init__(parent, name=name, style=wx.TE_READONLY | wx.BORDER_NONE)
+        self.SetBackgroundColour(parent.GetBackgroundColour())
+
+    def AcceptsFocusFromKeyboard(self) -> bool:
+        # F6 and the arrow keys reach the status bar; Tab does not. Tab moves
+        # between the repo list, item list and details panel, as it always has.
+        return False
+
+
+class _StatusButton(wx.Button):
+    """A status bar item that does something when pressed."""
+
+    def __init__(self, parent: wx.Window, name: str) -> None:
+        super().__init__(parent, name=name, style=wx.BU_EXACTFIT)
+
+    def AcceptsFocusFromKeyboard(self) -> bool:
+        return False  # as _StatusText: F6 and arrows, not Tab
+
+
+class NavStatusBar(wx.StatusBar):
+    """The frame's status bar, split into items you can arrow between.
+
+    F6 lands on the first item; Left and Right move from item to item, wrapping
+    at either end. An item with no text is removed from the bar, so the arrows
+    only ever stop on something worth reading. The message item is the
+    exception — it always stays, so the bar is never empty to land on.
+    """
+
+    ITEMS = ("message", "keys", "filter", "mode", "update")
+    _WIDTHS = {"message": -3, "keys": -3, "filter": -1, "mode": -1, "update": -2}
+
+    def __init__(self, parent: wx.Window, on_update: "Callable[[], None]") -> None:
+        super().__init__(parent, name="status_bar")
+        self._texts: dict[str, str] = dict.fromkeys(self.ITEMS, "")
+        self._controls: dict[str, wx.Window] = {}
+        for key in self.ITEMS:
+            if key == "update":
+                ctrl = _StatusButton(self, name=key)
+                ctrl.Bind(wx.EVT_BUTTON, lambda event: on_update())
+            else:
+                ctrl = _StatusText(self, name=key)
+            ctrl.Hide()
+            self._controls[key] = ctrl
+        self.Bind(wx.EVT_SIZE, self._on_size)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_char_hook)
+        self._layout()
+
+    def set_item(self, key: str, text: str) -> None:
+        """Set one item's text. Empty text takes the item off the bar."""
+        if self._texts[key] == text:
+            return
+        appearing_or_going = bool(self._texts[key]) != bool(text)
+        self._texts[key] = text
+        if appearing_or_going and key != "message":
+            self._layout()
+            return
+        index = self._visible().index(key)
+        self.SetStatusText(text, index)
+        self._set_control_text(key, text)
+
+    def focus_first(self) -> None:
+        self._controls[self._visible()[0]].SetFocus()
+
+    def _visible(self) -> list[str]:
+        return [k for k in self.ITEMS if k == "message" or self._texts[k]]
+
+    def _focused_item(self) -> str | None:
+        focus = wx.Window.FindFocus()
+        for key, ctrl in self._controls.items():
+            if focus is ctrl:
+                return key
+        return None
+
+    def _set_control_text(self, key: str, text: str) -> None:
+        ctrl = self._controls[key]
+        if isinstance(ctrl, wx.Button):
+            ctrl.SetLabel(text.replace("&", "&&"))
+        else:
+            ctrl.ChangeValue(text)
+
+    def _layout(self) -> None:
+        visible = self._visible()
+        focused = self._focused_item()
+        self.SetFieldsCount(len(visible), [self._WIDTHS[k] for k in visible])
+        for index, key in enumerate(visible):
+            self.SetStatusText(self._texts[key], index)
+            self._set_control_text(key, self._texts[key])
+        for key, ctrl in self._controls.items():
+            ctrl.Show(key in visible)
+        self._place_controls()
+        # Don't strand focus on an item that has just left the bar.
+        if focused and focused not in visible:
+            self.focus_first()
+
+    def _place_controls(self) -> None:
+        for index, key in enumerate(self._visible()):
+            self._controls[key].SetRect(self.GetFieldRect(index).Deflate(1, 1))
+
+    def _on_size(self, event: wx.SizeEvent) -> None:
+        self._place_controls()
+        event.Skip()
+
+    def _on_char_hook(self, event: wx.KeyEvent) -> None:
+        key = event.GetKeyCode()
+        current = self._focused_item()
+        if (
+            current is None
+            or event.HasAnyModifiers()
+            or key not in (wx.WXK_LEFT, wx.WXK_RIGHT)
+        ):
+            event.Skip()
+            return
+        visible = self._visible()
+        step = 1 if key == wx.WXK_RIGHT else -1
+        target = visible[(visible.index(current) + step) % len(visible)]
+        self._controls[target].SetFocus()
+
+
 # ── Run Workflow: inputs dialog ─────────────────────────────────────────
 
 
@@ -543,6 +674,7 @@ class GhViewerFrame(wx.Frame):
             size=(1000, 700),
         )
         self.updater = update_service
+        self._pending_update: tuple[str, str] | None = None  # (version, notes url)
         self.repo: str | None = None
         self.items: list[Item] = []
         self._all_repos: list[dict] = []
@@ -677,9 +809,14 @@ class GhViewerFrame(wx.Frame):
         self.main_splitter.SplitVertically(repo_panel, right_panel, 300)
         self.main_splitter.SetSashPosition(300)
 
-        # Status bar
-        self.CreateStatusBar()
-        self.SetStatusText("Ready")
+        # Status bar — part of the F6 loop, see NavStatusBar
+        self.status_bar = NavStatusBar(self, on_update=self._on_update_item)
+        self.SetStatusBar(self.status_bar)
+        # Menu help text would be written to the native field alone, out of
+        # step with the focusable item covering it.
+        self.SetStatusBarPane(-1)
+        self._announce("Ready")
+        self._update_mode_status()
 
         # Layout
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -910,6 +1047,7 @@ class GhViewerFrame(wx.Frame):
                 wx.CallAfter(self._show_no_update, portable=False)
             return
 
+        wx.CallAfter(self._show_update_item, info.version, info.whats_new_url)
         if silent:
             wx.CallAfter(
                 self._announce,
@@ -918,6 +1056,19 @@ class GhViewerFrame(wx.Frame):
             )
         else:
             wx.CallAfter(self._show_update_dialog, info.version, info.whats_new_url)
+
+    def _show_update_item(self, version: str, url: str) -> None:
+        """Keep a found update on the status bar, where pressing it offers a restart.
+
+        The startup announcement is overwritten by the next status message; this
+        item stays until GHManage restarts.
+        """
+        self._pending_update = (version, url)
+        self.status_bar.set_item("update", f"GHManage {version} ready to install")
+
+    def _on_update_item(self) -> None:
+        if self._pending_update:
+            self._show_update_dialog(*self._pending_update)
 
     def _show_no_update(self, portable: bool) -> None:
         if portable:
@@ -1145,7 +1296,7 @@ class GhViewerFrame(wx.Frame):
     # ── Repo loading ───────────────────────────────────────────────────
 
     def _load_repos(self) -> None:
-        self.SetStatusText("Loading your repositories…")
+        self._announce("Loading your repositories…")
 
         def worker() -> None:
             try:
@@ -1189,14 +1340,14 @@ class GhViewerFrame(wx.Frame):
             label = f"{name} — {desc}" if desc else name
             self.repo_list.Append(label, clientData=name)
         if self.repo_list.GetCount():
-            self.SetStatusText(f"Loaded {self.repo_list.GetCount()} repositories. Select one to view issues and PRs.")
+            self._announce(f"Loaded {self.repo_list.GetCount()} repositories. Select one to view issues and PRs.")
             self.repo_list.SetSelection(0)
             self.repo_list.SetFocus()
         else:
-            self.SetStatusText("No repositories found.")
+            self._announce("No repositories found.")
 
     def _on_repos_error(self, msg: str) -> None:
-        self.SetStatusText(f"Error loading repos: {msg}")
+        self._announce(f"Error loading repos: {msg}")
 
     def on_repo_activated(self, event: wx.CommandEvent) -> None:
         """Double-click on repo list — load that repo's items."""
@@ -1272,18 +1423,16 @@ class GhViewerFrame(wx.Frame):
         # Favorites load synchronously from disk, but still take a token — an
         # in-flight repo fetch must not land on top of them.
         self._begin_fetch()
-        self.SetStatusText("Loading favorites…")
+        self._set_view_status("Loading favorites…")
         self.details_text.Clear()
         self.favorites = load_favorites()
         self.git_items = list(self.favorites)  # favorites are stored as git_items for the list
         self.items = []
         filtered = self._populate_filtered_list(self.favorites)
         n = len(self.favorites)
-        self.SetStatusText(
-            f"★ Favorites — {n} item{'s' if n != 1 else ''}.  "
-            f"F=unfavorite  Enter=open in browser  Ctrl+F=filter  "
-            f"Mode={self.list_mode}"
-            + self._filter_status_suffix()
+        self._set_view_status(
+            f"★ Favorites — {n} item{'s' if n != 1 else ''}.",
+            "F=unfavorite  Enter=open in browser  Ctrl+F=filter",
         )
         self._update_title()
         if filtered:
@@ -1293,7 +1442,7 @@ class GhViewerFrame(wx.Frame):
         # Name the view as well as the repo: after a Ctrl+<n> switch this is the
         # first confirmation of where you landed.
         view_label = self._VIEW_LABELS.get(self.view_mode, self.view_mode)
-        self.SetStatusText(f"Loading {view_label} for {self.repo}…")
+        self._set_view_status(f"Loading {view_label} for {self.repo}…")
         self.list_ctrl.DeleteAllItems()
         self.details_text.Clear()
         # Read the view and repo once, here on the UI thread, so the worker
@@ -1476,6 +1625,7 @@ class GhViewerFrame(wx.Frame):
                         self.list_ctrl.InsertItem(i, prefix + label)
                     else:
                         self.list_ctrl.SetItem(i, j, label)
+        self._update_filter_status()
         return filtered
 
     def _on_items_loaded(
@@ -1491,13 +1641,11 @@ class GhViewerFrame(wx.Frame):
         source = f"{self.repo} (issues from upstream {upstream})" if upstream else self.repo
         label_info = f" labelled '{self.label_filter}'" if self.label_filter else ""
         label_hint = "  Backspace=back to labels" if self.label_filter else ""
-        self.SetStatusText(
+        self._set_view_status(
             f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}){label_info}. "
-            f"Showing up to {self.current_limit} newest. "
-            f"Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter"
-            f"{label_hint}  "
-            f"Mode={self.list_mode}"
-            + self._filter_status_suffix()
+            f"Showing up to {self.current_limit} newest.",
+            "Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter"
+            f"{label_hint}",
         )
         self._update_title()
         if filtered:
@@ -1595,12 +1743,10 @@ class GhViewerFrame(wx.Frame):
         # tags, releases, or labels list is advertising a key that answers
         # "Select Branch is only available in Commits view."
         branch_hint = "  Ctrl+B=select branch" if self.view_mode == VIEW_COMMITS else ""
-        self.SetStatusText(
+        self._set_view_status(
             f"{self.repo} — {len(items)} {kind}{branch_info}.{totals} "
-            f"Showing up to {self.current_limit}. "
-            f"Ctrl++=view more  R=refresh{branch_hint}  Ctrl+F=filter{compare_hint}  "
-            f"Mode={self.list_mode}"
-            + self._filter_status_suffix()
+            f"Showing up to {self.current_limit}.",
+            f"Ctrl++=view more  R=refresh{branch_hint}  Ctrl+F=filter{compare_hint}",
         )
         self._update_title()
         if filtered:
@@ -1614,7 +1760,7 @@ class GhViewerFrame(wx.Frame):
         self._show_details(0)
 
     def _on_items_error(self, msg: str) -> None:
-        self.SetStatusText(f"Error: {msg}")
+        self._announce(f"Error: {msg}")
         self._update_title()
 
     def _on_fetch_error(self, token: int, msg: str) -> None:
@@ -1936,7 +2082,20 @@ class GhViewerFrame(wx.Frame):
 
     def _announce(self, msg: str) -> None:
         """Update status bar (screen reader accessible)."""
-        self.SetStatusText(msg)
+        self.status_bar.set_item("message", msg)
+
+    def _set_view_status(self, message: str, keys: str = "") -> None:
+        """Describe the view in the status bar: what it shows and its keys.
+
+        A load in progress passes no keys, which takes the last view's keys off
+        the bar — they may not work in the view that is on its way.
+        """
+        self.status_bar.set_item("message", message)
+        self.status_bar.set_item("keys", keys)
+        self._update_filter_status()
+
+    def _update_mode_status(self) -> None:
+        self.status_bar.set_item("mode", f"{self.list_mode.capitalize()} mode")
 
     # ── List events ─────────────────────────────────────────────────────
 
@@ -2242,15 +2401,23 @@ class GhViewerFrame(wx.Frame):
         everywhere in the window. Their Ctrl+I / Ctrl+D twins in the Actions menu
         are ordinary accelerators, which is why those need nothing here.
 
+        F6 and Shift+F6 move between panes, see ``_cycle_pane``.
+
         Everything else is skipped, so the focused control keeps first claim on
         its own keys.
         """
+        key = event.GetKeyCode()
+        if key == wx.WXK_F6 and event.GetModifiers() in (wx.MOD_NONE, wx.MOD_SHIFT):
+            self._cycle_pane(backward=event.ShiftDown())
+            return
         # Not from the repository list: Delete there reads as "remove this
         # repo", and acting on the item list from another pane is a surprise.
-        if self.FindFocus() is self.repo_list:
+        # Nor from the status bar, which is not about any item in the list.
+        focus = self.FindFocus()
+        in_status_bar = focus is not None and self.status_bar.IsDescendant(focus)
+        if focus is self.repo_list or in_status_bar:
             event.Skip()
             return
-        key = event.GetKeyCode()
         if key == wx.WXK_INSERT and self.view_mode == VIEW_LABELS:
             self._do_new_label()
             return
@@ -2258,6 +2425,37 @@ class GhViewerFrame(wx.Frame):
             self._delete_focused_item()
             return
         event.Skip()
+
+    def _focus_panes(self) -> list[wx.Window]:
+        """The F6 loop, in order. The status bar is always the last stop."""
+        return [self.repo_list, self.list_ctrl, self.details_text, self.status_bar]
+
+    def _pane_index(self, window: wx.Window | None) -> int | None:
+        """Which pane `window` belongs to, or None when it is in none of them.
+
+        Walks up the parents: on macOS focus in the item list sits on a child
+        of the table, not the table itself.
+        """
+        panes = self._focus_panes()
+        while window is not None and not window.IsTopLevel():
+            for index, pane in enumerate(panes):
+                if window is pane:
+                    return index
+            window = window.GetParent()
+        return None
+
+    def _cycle_pane(self, backward: bool) -> None:
+        """F6 / Shift+F6 — move focus to the next or previous pane, wrapping."""
+        panes = self._focus_panes()
+        current = self._pane_index(self.FindFocus())
+        if current is None:
+            target = len(panes) - 1 if backward else 0
+        else:
+            target = (current + (-1 if backward else 1)) % len(panes)
+        if panes[target] is self.status_bar:
+            self.status_bar.focus_first()
+        else:
+            panes[target].SetFocus()
 
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
@@ -2609,15 +2807,16 @@ class GhViewerFrame(wx.Frame):
         else:
             return [it for it in self.git_items if self._matches_filter(it)]
 
-    def _filter_status_suffix(self) -> str:
-        """Return a status-bar fragment showing the filter state."""
+    def _update_filter_status(self) -> None:
+        """Show the filter state in the status bar, or take it off when none."""
         if not self.filter_text:
-            return ""
+            self.status_bar.set_item("filter", "")
+            return
         total = len(self.items) if self.view_mode == VIEW_ISSUES else (
             len(self.favorites) if self.view_mode == VIEW_FAVORITES else len(self.git_items)
         )
         shown = len(self._filtered_items())
-        return f"  Filter: '{self.filter_text}' ({shown}/{total})"
+        self.status_bar.set_item("filter", f"Filter: '{self.filter_text}' ({shown}/{total})")
 
     def _goto_issue(self, number: int) -> None:
         """Select the item with the given number and focus the details box.
@@ -2933,6 +3132,7 @@ class GhViewerFrame(wx.Frame):
     def on_quick_mode(self, event: wx.CommandEvent) -> None:
         self.list_mode = "quick"
         self._update_menu_checks()
+        self._update_mode_status()
         self._announce("Quick mode: compact display")
         if self.items or self.git_items:
             self._refresh_list_display()
@@ -2940,6 +3140,7 @@ class GhViewerFrame(wx.Frame):
     def on_full_mode(self, event: wx.CommandEvent) -> None:
         self.list_mode = "full"
         self._update_menu_checks()
+        self._update_mode_status()
         self._announce("Full mode: field names included for screen reader")
         if self.items or self.git_items:
             self._refresh_list_display()
