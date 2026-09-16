@@ -193,7 +193,18 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 ### Screen-reader friendliness
 
-- **Status bar is the announcement channel.** Use `self._announce(msg)` (which calls `SetStatusText`).
+- **Status bar is the announcement channel.** Use `self._announce(msg)`, which sets the
+  status bar's message item. Never call `SetStatusText` directly.
+- **The status bar is a `NavStatusBar` of named items** — `message`, `keys`, `filter`, `mode`,
+  `update` — set with `status_bar.set_item(key, text)`; empty text takes an item off the bar.
+  A view's summary and key hints go through `_set_view_status(message, keys)`; a load in
+  progress passes no keys so the last view's keys don't linger. Each item is a focusable
+  control laid over its native field (read-only text, or a button for the update) so F6 and
+  Left/Right can reach it; the native field keeps the same text for the screen reader's
+  read-status-bar command. The controls refuse *keyboard* focus (`AcceptsFocusFromKeyboard`)
+  so Tab never lands on them.
+- **F6 loop** — `_cycle_pane` in `on_char_hook`: repo list → item list → details → status bar,
+  wrapping; Shift+F6 reverses. A new pane goes in `_focus_panes`.
 - **Full mode** prefixes field names in list rows: `"number: 208, type: PR, state: OPEN"`.
 - **Keyboard first.** Every action has a keybinding. Never add a feature that requires mouse-only access.
 - **No patronizing hand-holding.** Don't add "Welcome!" dialogs or verbose tooltips. Power users want speed.
@@ -249,6 +260,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 ## Release process
 
+The `release` project skill (`.claude/skills/release/SKILL.md`) walks through all of this,
+including the checks either side. The short version:
+
 1. Update `__version__` in `version.py`. (`pyproject.toml` reads it from there; CI fails the
    build if the tag and `version.py` disagree.)
 2. Create `docs/release-notes-vX.Y.Z.md`. **Required** — the workflow passes it to both
@@ -275,6 +289,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 - v0.6.2 — first signed release (Azure Trusted Signing). No code changes.
 - v0.6.3 — a slow fetch can no longer land in a view you have already left.
 - v0.7.0 — GitHub Pages view (Ctrl+0): publish history and the pages a site serves
+- v0.7.1 — first macOS release (signed and notarized .dmg). No Windows changes.
+- v0.8.0 — F6 loop through the panes and the status bar; the status bar split into items
+  you arrow between, with a persistent update button
 
 ## Roadmap
 
