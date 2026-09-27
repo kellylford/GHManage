@@ -31,9 +31,13 @@ IDENTITY="Developer ID Application: Kelly Ford (P887QF74N8)"
 die() { echo "❌ $*" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
+# macOS ships bash 3.2, which exits 0 when `set -u` trips while an EXIT trap is
+# set, so an unset variable would pass for success. The trap fails the script
+# unless it reached the end.
 cleanup() {
     rm -rf "$WORK"
     [ -n "${VERIFY_KC:-}" ] && security delete-keychain "$VERIFY_KC" 2>/dev/null || true
+    [ -n "${finished:-}" ] || exit 1
 }
 trap cleanup EXIT
 
@@ -80,39 +84,51 @@ else
     echo "macOS will ask you to allow this — click Allow (or Always Allow)."
     echo ""
     # `security export` has no way to select one identity, so this exports every
-    # identity in the keychain and the private keys are narrowed below. Without
-    # that narrowing the App Store distribution key would ship to CI too, which
-    # this release has no use for.
+    # identity in the keychain and narrows it to the Developer ID Application
+    # one. That is a requirement, not a nicety: the App Store distribution and
+    # development keys have no business in CI, so a narrowing that fails stops
+    # here rather than uploading everything.
     security export -k "$HOME/Library/Keychains/login.keychain-db" \
         -t identities -f pkcs12 -P "$P12_PW" -o "$WORK/all.p12" \
         || die "Keychain export failed or was denied."
 
-    if command -v openssl >/dev/null 2>&1 && \
-       openssl pkcs12 -in "$WORK/all.p12" -passin "pass:$P12_PW" -nodes \
-            -legacy -out "$WORK/all.pem" 2>/dev/null; then
-        # Rebuild a .p12 holding only the Developer ID Application identity.
-        python3 - "$WORK/all.pem" "$WORK/one.pem" "$IDENTITY" <<'PY'
+    command -v openssl >/dev/null || die "openssl is needed to narrow the export to one identity."
+    openssl pkcs12 -in "$WORK/all.p12" -passin "pass:$P12_PW" -nodes -legacy \
+        -out "$WORK/all.pem" 2>/dev/null \
+        || die "Could not read the keychain export with openssl."
+
+    # Keep the certificate and the one private key whose localKeyID matches it.
+    # Keeping every key, as this once did, gives OpenSSL several to choose from;
+    # it refuses the export, and the old fallback then uploaded all of them.
+    python3 - "$WORK/all.pem" "$WORK/one.pem" "$IDENTITY" <<'PY' \
+        || die "No '$IDENTITY' certificate with a matching key in the export."
 import re, sys
 src, dst, want = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(src).read()
-# Each bag is a friendlyName/subject header followed by one PEM block.
+# Each bag is its attribute lines followed by one PEM block.
 blocks = re.findall(r'(?:^.*?\n)*?-----BEGIN [^-]+-----.*?-----END [^-]+-----\n',
                     text, re.S | re.M)
-keep = [b for b in blocks if want in b or 'PRIVATE KEY' in b]
-cert = [b for b in blocks if want in b and 'CERTIFICATE' in b]
-if not cert:
+
+def key_id(block):
+    found = re.search(r'localKeyID:\s*([0-9A-Fa-f ]+)', block)
+    return found.group(1).strip() if found else None
+
+cert = next((b for b in blocks if 'CERTIFICATE' in b and want in b), None)
+if cert is None or key_id(cert) is None:
     sys.exit(1)
-open(dst, 'w').write(''.join(keep))
+key = next((b for b in blocks if 'PRIVATE KEY' in b and key_id(b) == key_id(cert)), None)
+if key is None:
+    sys.exit(1)
+open(dst, 'w').write(cert + key)
 PY
-        if [ -s "$WORK/one.pem" ] && openssl pkcs12 -export -in "$WORK/one.pem" \
-                -passout "pass:$P12_PW" -out "$P12" 2>/dev/null; then
-            echo "  Narrowed the export to the Developer ID certificate alone."
-        else
-            cp "$WORK/all.p12" "$P12"
-        fi
-    else
-        cp "$WORK/all.p12" "$P12"
-    fi
+
+    # -legacy because `security import`, which the runner uses, cannot read the
+    # AES/PBKDF2 encryption OpenSSL 3 gives a .p12 by default.
+    openssl pkcs12 -export -legacy -in "$WORK/one.pem" -name "$IDENTITY" \
+        -passout "pass:$P12_PW" -out "$P12" 2>/dev/null \
+        || die "Could not build a .p12 from the Developer ID identity."
+    rm -f "$WORK/all.p12" "$WORK/all.pem" "$WORK/one.pem"
+    echo "  Narrowed the export to the Developer ID certificate alone."
 fi
 
 # ── Verify the .p12 the way the CI runner will import it ──────────────
@@ -125,6 +141,9 @@ security import "$P12" -k "$VERIFY_KC" -P "$P12_PW" -T /usr/bin/codesign >/dev/n
 FOUND="$(security find-identity -v -p codesigning "$VERIFY_KC" 2>/dev/null)"
 echo "$FOUND" | grep -q "Developer ID Application" \
     || die "That .p12 holds no Developer ID Application certificate:
+$FOUND"
+[ "$(echo "$FOUND" | grep -c '^ *[0-9])')" = 1 ] \
+    || die "That .p12 holds more than one signing identity; CI needs only Developer ID Application:
 $FOUND"
 echo ""
 echo "Certificates in the .p12:"
@@ -164,3 +183,4 @@ fi
 
 echo "✅ Done. The Mac release is now signed and notarized on the next tag:"
 echo "     git tag v0.7.1 && git push origin v0.7.1"
+finished=1
