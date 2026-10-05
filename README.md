@@ -6,7 +6,10 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 
 ## Features
 
-- **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load
+- **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
+  Turn on View ▸ Repository List to add the repositories you have starred or are watching
+- **Activity** — your GitHub feed: what happens in the repositories you star or watch and
+  what the people you follow do, newest first, across every repository
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
 - **Git views** — browse branches, commits, tags, releases, workflows (run them on a branch), and workflow runs (drill into a run's artifacts and download them)
 - **GitHub Pages** — if a repo publishes a site, see every publish and whether it worked, then browse the pages it serves and open any of them in your browser
@@ -15,9 +18,10 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Branch-specific commits** — press Enter on a branch to see its commits, or press Ctrl+B in Commits view to pick a branch
 - **Details panel** — full body, metadata, comments, file changes, and release notes shown below the list
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
-- **View More** — press Ctrl++ to load more items (30 at a time)
+- **View More** — press Ctrl++ to load more items (100 at a time)
 - **View menu** with:
-  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, and GitHub Pages
+  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, GitHub Pages, and Activity
+  - **Repository List** — add your starred and watched repositories to the list on the left
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
@@ -153,9 +157,65 @@ details panel).
 | `Ctrl+8` | Labels |
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
+| `Ctrl+Shift+A` | Activity |
 
-Every view except Favorites needs a repository, so with none selected the status
-bar says "Select a repository first" and the view is left alone.
+Every view except Favorites and Activity needs a repository, so with none
+selected the status bar says "Select a repository first" and the view is left
+alone.
+
+### Starred and watched repositories
+
+The repository list starts with **★ Favorites** and **Activity**, then any
+repositories you opened by address, then your own. View ▸ Repository List adds
+two more lists after those, each switched on separately and remembered between
+sessions:
+
+- **Show Starred Repositories** — the repositories you have starred, most
+  recently starred first.
+- **Show Watched Repositories** — the repositories you are watching. GitHub
+  watches your own repositories for you, so only the ones that belong to other
+  people are added.
+
+Each added repository says why it is there after its name, for example
+`nvaccess/nvda (starred) — NVDA, the free and open source screen reader`, or
+`(starred, watching)` when it is on both lists. Typing a letter still jumps by
+owner name. Up to 100 starred repositories are shown, your most recent stars,
+and the watched list looks through 300. The status bar says how many each list
+added, and says so when a list was cut off.
+
+Remove from List does not take a starred or watched repository out of the list;
+switch the list off instead.
+
+### In the Activity view
+
+| Key | Action |
+|-----|--------|
+| `Enter` (or double-click) | Open what the event is about on GitHub: the issue, pull request, comment, release or commits |
+| `G` or `Ctrl+Shift+G` | Open the event's repository here in GHManage; `Backspace` there brings you back to the same event |
+| `F` | Favorite what the event is about: its issue, pull request, release or discussion |
+| `Ctrl++` | Load older events |
+
+Choose **Activity** at the top of the repository list, press `Ctrl+Shift+A`, or
+use View ▸ View Mode ▸ Activity. The repository you were in stays selected, so
+`Ctrl+1` takes you straight back to it. It is the feed github.com shows on your
+dashboard: pushes, pull requests, issues, comments, reviews, releases, stars
+and forks in the repositories you star or watch, and by the people you follow.
+Each row reads who, what, which repository, what it was about, and when (in
+your local time), for example "alice, merged pull request #42,
+nvaccess/nvda, Fix the braille cursor, 2026-10-05 14:32". The details panel
+gives the whole event as one sentence, then the comment, review or description
+text when there is one.
+
+GitHub keeps only the latest 300 events from the last 90 days. The first 100 are
+loaded, `Ctrl++` loads the next 100 and puts you on the first of them, and the
+status bar says when there are no more. The quick filter (`Ctrl+F`) works here
+like in every other view.
+
+`F` favorites the issue, pull request, release or discussion an event is about,
+the same favorite you would make from that item's own view. Events about a
+push, a branch or the repository as a whole have nothing of their own to keep,
+and the status bar says so. `G` and Actions ▸ Go to Event's Repository work
+from the details panel as well as the list.
 
 ### In the issue/PR list only
 
@@ -301,8 +361,9 @@ so does the bare `Delete` key, which additionally works from the details panel.
 
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
 (with download counts), **Workflows** (the workflow definitions, which you can run
-on a branch), **Workflow Runs** (recent run history), **Labels**, and
-**GitHub Pages** (a published site and the pages it serves).
+on a branch), **Workflow Runs** (recent run history), **Labels**,
+**GitHub Pages** (a published site and the pages it serves), and **Activity**
+(your GitHub feed, across all repositories).
 Each view has its own set of columns and detail formatting.
 
 ## Building

@@ -22,6 +22,7 @@ import gh_data  # noqa: E402
 
 # Kept before any fixture swaps it out, for the tests of _run_gh itself.
 _REAL_RUN_GH = gh_data._run_gh
+_REAL_GRAPHQL = gh_data._graphql
 
 
 class FakeGh:
@@ -76,6 +77,10 @@ def _isolated(monkeypatch, tmp_path_factory):
     favorites, pinned repos or the update log lands in a temp folder.
     """
     monkeypatch.setattr(gh_data, "_run_gh", _no_real_gh)
+    # GraphQL bypasses _run_gh (it needs the output of a failed run), so it
+    # is shut off separately: it answers with no data, which leaves PR titles
+    # blank. Tests about titles install their own via the `graphql` fixture.
+    monkeypatch.setattr(gh_data, "_graphql", lambda query: {"data": {}})
     monkeypatch.setattr(gh_data, "_gh_exe", None)
     monkeypatch.delenv("GHMANAGE_GH_PATH", raising=False)
     home = tmp_path_factory.mktemp("appdata")
@@ -88,6 +93,12 @@ def _isolated(monkeypatch, tmp_path_factory):
 def real_run_gh():
     """The genuine _run_gh. Only for tests that also patch subprocess.run."""
     return _REAL_RUN_GH
+
+
+@pytest.fixture
+def real_graphql():
+    """The genuine _graphql. Only for tests that also patch subprocess.run."""
+    return _REAL_GRAPHQL
 
 
 @pytest.fixture
