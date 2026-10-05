@@ -324,6 +324,9 @@ The build is `--onedir`, not `--onefile`, and that is not optional — see
 [docs/INSTALLER.md](docs/INSTALLER.md) for why, along with the update flow, how to
 test an upgrade locally, and the code-signing setup.
 
+Tests run with `python -m pytest` (install it with `pip install pytest`). They
+fake the `gh` CLI, so they need no network and no sign-in.
+
 `assets\` holds the icon stamped into the app, the Start menu shortcut, and
 Setup.exe, plus the two scripts that generate it and the exe's version resource.
 `make_icon.py` only needs re-running if the artwork changes.

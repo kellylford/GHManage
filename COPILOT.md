@@ -250,9 +250,28 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Deployment state | `repos/{owner}/{repo}/deployments/{id}/statuses` |
 | Published file list | `repos/{owner}/{repo}/git/trees/{branch}?recursive=1` |
 
+## Tests
+
+`python -m pytest` from the repo root (pytest is in the `dev` extras). Nothing
+in `tests/` talks to GitHub:
+
+- `fake_gh` (in `tests/conftest.py`) replaces `gh_data._run_gh`, the one function
+  every gh call goes through. Route replies by a fragment of the command line;
+  an unrouted call fails the test. Reply shapes should match what real `gh`
+  prints — `gh issue/pr view` give one object, the `list` commands an array.
+- `app_data` points favorites and pinned repos at a temp folder.
+- An autouse fixture covers every test regardless: `_run_gh` fails if called
+  without `fake_gh`, and `APPDATA`/`HOME` point at a temp folder. Tests of
+  `_run_gh` itself take `real_run_gh` and patch `subprocess.run`.
+- `test_ghviewer.py` calls frame methods (details panel, comment navigation,
+  favorites) on a `SimpleNamespace` stand-in, so no window is opened. It needs
+  wx importable and skips otherwise.
+
+Add tests alongside any change; CI runs them before building.
+
 ## CI/CD
 
-- `.github/workflows/ghmanage.yml` — builds `ghmanage.exe` via PyInstaller on Windows.
+- `.github/workflows/ghmanage.yml` — runs the tests, then builds `ghmanage.exe` via PyInstaller on Windows.
 - Triggers on push to `main`, `v*` tags, and PRs to `main`.
 - On tag push: creates a GitHub Release with `ghmanage.exe` attached.
 - Release notes read from `docs/release-notes-<tag>.md`.

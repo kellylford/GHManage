@@ -241,10 +241,17 @@ def _parse_comments(row: dict) -> tuple[int, list[dict]]:
     return 0, []
 
 
+def _as_rows(data: object) -> list:
+    """``gh issue/pr list`` return an array, ``gh issue/pr view`` one object."""
+    if isinstance(data, dict):
+        return [data]
+    return data if isinstance(data, list) else []
+
+
 def _parse_issues(raw: str) -> list[Item]:
     if not raw.strip():
         return []
-    rows = json.loads(raw)
+    rows = _as_rows(json.loads(raw))
     items: list[Item] = []
     for row in rows:
         items.append(
@@ -270,7 +277,7 @@ def _parse_issues(raw: str) -> list[Item]:
 def _parse_prs(raw: str) -> list[Item]:
     if not raw.strip():
         return []
-    rows = json.loads(raw)
+    rows = _as_rows(json.loads(raw))
     items: list[Item] = []
     for row in rows:
         items.append(
@@ -348,45 +355,43 @@ def fetch_prs(
     return _parse_prs(_run_gh(args))
 
 
-def fetch_item_detail(item: Item, repo: Optional[str]) -> Item:
-    """Re-fetch a single item with full detail (body, comments count, etc.)."""
-    effective = resolve_issue_repo(repo)
-    sub = "pr" if item.is_pr else "issue"
-    fields = PR_FIELDS if item.is_pr else ISSUE_FIELDS
-    args = [sub, "view", str(item.number), "--json", fields]
-    if effective:
-        args += ["--repo", effective]
-    raw = _run_gh(args)
-    if not raw.strip():
-        return item
-    row = json.loads(raw)
-    if item.is_pr:
-        updated = _parse_prs(raw)
-        return updated[0] if updated else item
-    else:
-        updated = _parse_issues(raw)
-        return updated[0] if updated else item
+def _is_no_such_number(exc: GhError) -> bool:
+    """True when gh says the number is not a PR (or not an issue or PR at all).
+
+    gh passes GitHub's GraphQL error through: "Could not resolve to a
+    PullRequest with the number of N" or "Could not resolve to an issue or
+    pull request with the number of N". A missing *repository* also reads
+    "Could not resolve to a Repository", and that one is a real failure.
+    """
+    msg = str(exc).lower()
+    return ("could not resolve to a pullrequest" in msg
+            or "could not resolve to an issue or pull request" in msg)
 
 
 def fetch_item_by_number(number: int, repo: Optional[str]) -> Optional[Item]:
     """Fetch a single issue or PR by number, regardless of state.
 
-    Tries ``gh issue view`` first; if that fails (e.g. the number is a PR,
-    not an issue), falls back to ``gh pr view``. Returns ``None`` if the
-    number doesn't exist as either an issue or a PR.
+    Tries ``gh pr view`` first, then ``gh issue view``. The order matters:
+    ``gh issue view`` happily returns a PR number as if it were an issue,
+    losing every PR field, whereas ``gh pr view`` with the PR fields fails on
+    an issue number. Returns ``None`` if the number is neither. Any other
+    failure — offline, signed out, rate limited — raises GhError rather than
+    passing for "no such number", which would tell the user something false.
     """
     effective = resolve_issue_repo(repo)
     for sub, fields, parser in (
-        ("issue", ISSUE_FIELDS, _parse_issues),
         ("pr", PR_FIELDS, _parse_prs),
+        ("issue", ISSUE_FIELDS, _parse_issues),
     ):
         args = [sub, "view", str(number), "--json", fields]
         if effective:
             args += ["--repo", effective]
         try:
             raw = _run_gh(args)
-        except GhError:
-            continue
+        except GhError as exc:
+            if _is_no_such_number(exc):
+                continue
+            raise
         if not raw.strip():
             continue
         items = parser(raw)
