@@ -1103,7 +1103,7 @@ class GhViewerFrame(wx.Frame):
         if not self.updater.apply_update_and_restart(sys.argv[1:]):
             wx.MessageBox(
                 "The update could not be applied. It will be retried the next "
-                f"time GHManage starts.\n\nRelease notes: {url}",
+                f"time GHManage starts.\n\nRelease notes:\n{url}",
                 "Update Failed",
                 wx.OK | wx.ICON_WARNING,
                 self,
@@ -1796,11 +1796,14 @@ class GhViewerFrame(wx.Frame):
         lines.append(f"★ {fav.title}")
         lines.append(f"Type: {fav.item_type}")
         lines.append(f"Repo: {fav.repo}")
-        if fav.subtitle:
+        # Pages files were favourited with their address as the subtitle;
+        # it is shown under URL already, so don't read it out twice.
+        if fav.subtitle and fav.subtitle != fav.url:
             lines.append(f"Detail: {fav.subtitle}")
         if fav.added_at:
             lines.append(f"Favorited: {fav.added_at[:10]}")
-        lines.append(f"URL: {fav.url}")
+        lines.append("URL:")
+        lines.append(fav.url or "(none)")
         lines.append("")
         lines.append("─" * 60)
         lines.append("")
@@ -1820,7 +1823,8 @@ class GhViewerFrame(wx.Frame):
         lines.append(f"Author: {item.author}")
         lines.append(f"Created: {item.created_at}")
         lines.append(f"Updated: {item.updated_at}")
-        lines.append(f"URL: {item.url}")
+        lines.append("URL:")
+        lines.append(item.url or "(none)")
         if item.labels:
             lines.append(f"Labels: {', '.join(item.labels)}")
         if item.assignees:
@@ -1837,7 +1841,9 @@ class GhViewerFrame(wx.Frame):
         lines.append("─" * 60)
         lines.append("")
         body = item.body or "(no description)"
-        lines.append(body)
+        # One list entry per text line, so the comment positions recorded
+        # below count the same lines _line_to_position does.
+        lines.extend(body.splitlines() or [""])
         # Show actual comments if we have them, tracking line positions
         if item.comment_list:
             lines.append("")
@@ -1875,7 +1881,8 @@ class GhViewerFrame(wx.Frame):
                 lines.append(f"Ahead: {item.ahead}")
             if item.behind:
                 lines.append(f"Behind: {item.behind}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
         elif isinstance(item, Commit):
             lines.append(f"Commit: {item.sha}")
             lines.append(f"Short SHA: {item.short_sha}")
@@ -1883,7 +1890,8 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Branch: {branch}")
             lines.append(f"Author: {item.author}")
             lines.append(f"Date: {item.date}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -1905,13 +1913,15 @@ class GhViewerFrame(wx.Frame):
         elif isinstance(item, Tag):
             lines.append(f"Tag: {item.name}")
             lines.append(f"Commit: {item.commit_sha}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
         elif isinstance(item, Label):
             lines.append(f"Label: {item.name}")
             lines.append(f"Description: {item.description or '(none)'}")
             lines.append(f"Colour: {'#' + item.color if item.color else '(none)'}")
             lines.append(f"Default label: {'Yes' if item.is_default else 'No'}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -1932,7 +1942,8 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Draft: {'Yes' if item.draft else 'No'}")
             lines.append(f"Prerelease: {'Yes' if item.prerelease else 'No'}")
             lines.append(f"Downloads: {item.downloads:,} across {len(item.assets)} assets")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             if item.assets:
                 lines.append("")
                 lines.append("─" * 60)
@@ -1952,7 +1963,8 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"State: {item.state}")
             lines.append(f"File: {item.path}")
             lines.append(f"ID: {item.id}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -1967,7 +1979,8 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Branch: {item.branch}")
             lines.append(f"Event: {item.event}")
             lines.append(f"Date: {item.created_at}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -1995,7 +2008,8 @@ class GhViewerFrame(wx.Frame):
                 lines.append(f"Release: {item.release_tag}")
             lines.append(f"Updated: {item.updated_at}")
             lines.append(f"ID: {item.id}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
@@ -2019,7 +2033,8 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"ID: {item.id}")
             if site:
                 lines.append("")
-                lines.append(f"Site: {site.url}")
+                lines.append("Site:")
+                lines.append(site.url or "(none)")
                 lines.append(f"Source: {site.source_branch}{site.source_path}")
                 lines.append(f"Built by: {'Actions' if site.built_by_actions else 'GitHub'}")
                 lines.append(f"HTTPS enforced: {'Yes' if site.https_enforced else 'No'}")
@@ -2042,7 +2057,8 @@ class GhViewerFrame(wx.Frame):
         elif isinstance(item, PagesFile):
             site = self.pages_site
             lines.append(f"Page: {item.path}")
-            lines.append(f"URL: {item.url}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
             lines.append(f"Size: {item.size_human()}")
             lines.append("")
             lines.append("─" * 60)
