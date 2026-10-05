@@ -312,6 +312,7 @@ including the checks either side. The short version:
 - v0.8.0 — F6 loop through the panes and the status bar; the status bar split into items
   you arrow between, with a persistent update button
 - v0.8.1 — web addresses in the details panel on a line of their own; comment navigation lands on the right comment
+- v0.8.2 — Go To Issue fetches items not in the list (it never finished before), PRs as PRs, real errors instead of "not found"; first test suite, run in CI
 
 ## Roadmap
 
