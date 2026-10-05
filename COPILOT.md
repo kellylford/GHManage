@@ -292,6 +292,7 @@ including the checks either side. The short version:
 - v0.7.1 — first macOS release (signed and notarized .dmg). No Windows changes.
 - v0.8.0 — F6 loop through the panes and the status bar; the status bar split into items
   you arrow between, with a persistent update button
+- v0.8.1 — web addresses in the details panel on a line of their own; comment navigation lands on the right comment
 
 ## Roadmap
 
