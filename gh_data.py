@@ -574,6 +574,60 @@ def list_repos(limit: int = 100) -> list[dict]:
     return json.loads(raw)
 
 
+def _api_pages(endpoint: str, limit: int) -> list[dict]:
+    """Fetch up to ``limit`` entries of a paged REST list, 100 to a page.
+
+    ``gh api --paginate`` would fetch every page there is, and someone with
+    thousands of stars does not want to wait for all of them to see the first
+    hundred. So pages are requested one at a time and the loop stops at the
+    limit, or at a short page, which means there are no more.
+    """
+    sep = "&" if "?" in endpoint else "?"
+    per_page = max(1, min(limit, 100))
+    out: list[dict] = []
+    page = 1
+    while len(out) < limit:
+        raw = _run_gh(["api", f"{endpoint}{sep}per_page={per_page}&page={page}"])
+        rows = json.loads(raw) if raw.strip() else []
+        if not isinstance(rows, list):
+            break
+        out.extend(r for r in rows if isinstance(r, dict))
+        if len(rows) < per_page:
+            break
+        page += 1
+    return out[:limit]
+
+
+def _repo_entry(raw: dict) -> dict:
+    """Shape a REST repository object like a `gh repo list` row."""
+    return {
+        "nameWithOwner": raw.get("full_name", "") or "",
+        "description": raw.get("description") or "",
+        "isArchived": bool(raw.get("archived")),
+        "isFork": bool(raw.get("fork")),
+    }
+
+
+def list_starred_repos(limit: int = 100) -> list[dict]:
+    """Repositories the signed-in user has starred, most recently starred first."""
+    return [
+        _repo_entry(r) for r in _api_pages("user/starred", limit)
+        if r.get("full_name")
+    ]
+
+
+def list_watched_repos(limit: int = 100) -> list[dict]:
+    """Repositories the signed-in user is watching (subscribed to).
+
+    GitHub watches your own repositories automatically, so most of this list
+    is usually repos already shown as your own; the caller drops those.
+    """
+    return [
+        _repo_entry(r) for r in _api_pages("user/subscriptions", limit)
+        if r.get("full_name")
+    ]
+
+
 def parent_repo(repo: Optional[str]) -> Optional[str]:
     """Return the ``OWNER/NAME`` of ``repo``'s upstream parent, or None.
 
@@ -1793,3 +1847,476 @@ def fetch_pages_files(
         ))
     files.sort(key=lambda f: f.path.lower())
     return files[:limit]
+
+
+# ── Activity feed ───────────────────────────────────────────────────────
+#
+# What github.com shows on your dashboard: events from the people you follow
+# and the repositories you star or watch. It comes from
+# /users/{login}/received_events, which the API caps at the most recent 300
+# events from the last 90 days.
+
+ACTIVITY_COLUMNS = ["actor", "action", "repo", "title", "date"]
+ACTIVITY_DEFAULT_COLUMNS = ["actor", "action", "repo", "title", "date"]
+
+# The API returns no more than this, however many pages are asked for.
+ACTIVITY_MAX = 300
+
+_login: Optional[str] = None
+
+
+def current_login() -> str:
+    """The signed-in user's GitHub login, looked up once and cached."""
+    global _login
+    if _login is None:
+        login = _run_gh(["api", "user", "-q", ".login"]).strip()
+        if not login:
+            raise GhError("Couldn't tell who is signed in to gh. Run `gh auth login`.")
+        _login = login
+    return _login
+
+
+def _local_time(iso: str) -> str:
+    """``2026-10-05T14:32:00Z`` as ``2026-10-05 07:32`` in local time.
+
+    The activity list is about what happened recently, so the time of day
+    matters in a way it doesn't for a commit or a release date.
+    """
+    if not iso:
+        return ""
+    from datetime import datetime
+    try:
+        stamp = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso[:16].replace("T", " ")
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
+    return stamp.strftime("%Y-%m-%d %H:%M")
+
+
+# Events whose object is the repository itself: "bob starred o/r", not
+# "bob starred in o/r".
+_REPO_OBJECT_EVENTS = ("WatchEvent", "ForkEvent", "SponsorshipEvent")
+
+
+@dataclass
+class ActivityEvent:
+    """One entry in the activity feed: someone did something in a repo."""
+
+    event_type: str          # GitHub's type, e.g. "IssuesEvent"
+    actor: str
+    repo: str                # OWNER/NAME the event happened in
+    action: str              # what was done, in words: "opened issue #12"
+    created_at: str = ""
+    title: str = ""          # the issue, PR or release it was about, if any
+    url: str = ""            # where to read this event on github.com
+    body: str = ""           # comment, review or description text, if any
+    event_id: str = ""       # GitHub's id for the event, unique in the feed
+    verb: str = ""           # the payload's action: "opened", "closed", ...
+    # What the event is about, when that is an issue, pull request, release
+    # or discussion: its kind, number and own address (not a comment anchor).
+    # This is what F favorites. Empty for events about a branch, a push or
+    # the repository as a whole, which have nothing of their own to keep.
+    subject_kind: str = ""   # "issue", "PR", "release", "discussion"
+    number: int = 0
+    subject_url: str = ""
+
+    @property
+    def pr_number(self) -> int:
+        """The pull request this event was about, or 0."""
+        return self.number if self.subject_kind == "PR" else 0
+
+    @property
+    def summary(self) -> str:
+        """The whole event as one sentence: who, what, where."""
+        if self.event_type == "PublicEvent":
+            return f"{self.actor} made {self.repo} public"
+        if self.event_type in _REPO_OBJECT_EVENTS:
+            text = f"{self.actor} {self.action} {self.repo}"
+            return f"{text} {self.title}" if self.title else text
+        text = f"{self.actor} {self.action}"
+        if self.repo:
+            text += f" in {self.repo}"
+        if self.title:
+            text += f": {self.title}"
+        return text
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "actor": self.actor,
+            "action": self.action,
+            "repo": self.repo,
+            "title": self.title,
+            "date": _local_time(self.created_at),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
+
+
+def _ref_name(ref: str) -> str:
+    """``refs/heads/main`` -> ``main``."""
+    for prefix in ("refs/heads/", "refs/tags/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    return ref
+
+
+def _first_line(text: str) -> str:
+    lines = (text or "").splitlines()
+    return lines[0] if lines else ""
+
+
+def _login_of(obj) -> str:
+    return (obj or {}).get("login", "") or "" if isinstance(obj, dict) else ""
+
+
+def _issue_action(verb: str, noun: str, number, payload: dict) -> str:
+    """Words for an issue or PR event, naming who or what a verb applies to.
+
+    "labeled pull request #3" three times over says nothing about which label,
+    so the label, assignee or requested reviewer goes in the sentence.
+    """
+    ref = f"{noun} #{number}" if number else noun
+    if verb in ("labeled", "unlabeled"):
+        label = ((payload.get("label") or {}).get("name") or "") if isinstance(
+            payload.get("label"), dict) else ""
+        return f'{verb} {ref} "{label}"' if label else f"{verb} {ref}"
+    if verb == "assigned":
+        who = _login_of(payload.get("assignee"))
+        return f"assigned {who} to {ref}" if who else f"assigned {ref}"
+    if verb == "unassigned":
+        who = _login_of(payload.get("assignee"))
+        return f"unassigned {who} from {ref}" if who else f"unassigned {ref}"
+    if verb == "review_requested":
+        who = _login_of(payload.get("requested_reviewer"))
+        return f"requested a review from {who} on {ref}" if who else f"requested a review on {ref}"
+    return f"{verb} {ref}"
+
+
+def parse_event(raw: dict) -> ActivityEvent:
+    """Turn one REST event into words.
+
+    Payloads vary by type, and GitHub has been trimming them (push events no
+    longer always carry their commits, pull requests arrive without a title),
+    so every field is read as optional and an unknown type still produces a
+    readable row.
+    """
+    etype = raw.get("type", "") or ""
+    actor_obj = raw.get("actor") or {}
+    actor = actor_obj.get("display_login") or actor_obj.get("login", "") or ""
+    repo = (raw.get("repo") or {}).get("name", "") or ""
+    payload = raw.get("payload") or {}
+    repo_url = f"https://github.com/{repo}" if repo else ""
+    title = ""
+    url = repo_url
+    body = ""
+    verb = payload.get("action", "") or ""
+    subject_kind = ""
+    number = 0
+    subject_url = ""
+
+    if etype == "WatchEvent":
+        # Despite the name, a WatchEvent is a star.
+        action = "starred"
+    elif etype == "ForkEvent":
+        forkee = payload.get("forkee") or {}
+        action = "forked"
+        if forkee.get("full_name"):
+            title = f"to {forkee['full_name']}"
+        url = forkee.get("html_url") or url
+    elif etype == "CreateEvent":
+        kind = payload.get("ref_type", "") or ""
+        ref = payload.get("ref") or ""
+        if kind == "repository":
+            action = "created repository"
+            body = payload.get("description") or ""
+        else:
+            action = f"created {kind} {ref}".strip()
+            if kind == "branch" and ref:
+                url = f"{repo_url}/tree/{ref}"
+            elif kind == "tag" and ref:
+                url = f"{repo_url}/releases/tag/{ref}"
+    elif etype == "DeleteEvent":
+        action = f"deleted {payload.get('ref_type', '') or ''} {payload.get('ref', '') or ''}".strip()
+    elif etype == "PushEvent":
+        branch = _ref_name(payload.get("ref", "") or "")
+        commits = [c for c in (payload.get("commits") or []) if isinstance(c, dict)]
+        size = payload.get("distinct_size") or payload.get("size") or len(commits)
+        where = f" to {branch}" if branch else ""
+        if size:
+            action = f"pushed {size} commit{'s' if size != 1 else ''}{where}"
+        else:
+            action = f"pushed{where}"
+        if commits:
+            title = _first_line(commits[-1].get("message", ""))
+            body = "\n".join(
+                f"{(c.get('sha') or '')[:7]} {_first_line(c.get('message', ''))}".strip()
+                for c in commits
+            )
+        before = payload.get("before") or ""
+        head = payload.get("head") or ""
+        if before and head and before.strip("0"):
+            url = f"{repo_url}/compare/{before[:12]}...{head[:12]}"
+        elif branch:
+            url = f"{repo_url}/commits/{branch}"
+    elif etype in ("IssuesEvent", "PullRequestEvent"):
+        is_pr = etype == "PullRequestEvent"
+        obj = payload.get("pull_request" if is_pr else "issue") or {}
+        n = payload.get("number") or obj.get("number")
+        verb = verb or "updated"
+        if is_pr and verb == "closed" and obj.get("merged"):
+            verb = "merged"
+        action = _issue_action(verb, "pull request" if is_pr else "issue", n, payload)
+        title = obj.get("title") or ""
+        if obj.get("html_url"):
+            url = obj["html_url"]
+        elif n:
+            url = f"{repo_url}/{'pull' if is_pr else 'issues'}/{n}"
+        if verb == "opened":
+            body = obj.get("body") or ""
+        if isinstance(n, int) and n:
+            subject_kind, number, subject_url = ("PR" if is_pr else "issue"), n, url
+    elif etype == "IssueCommentEvent":
+        issue = payload.get("issue") or {}
+        comment = payload.get("comment") or {}
+        n = issue.get("number")
+        is_pr = "pull_request" in issue
+        noun = "pull request" if is_pr else "issue"
+        action = f"commented on {noun} #{n}" if n else "commented"
+        title = issue.get("title") or ""
+        url = comment.get("html_url") or issue.get("html_url") or url
+        body = comment.get("body") or ""
+        if isinstance(n, int) and n:
+            subject_kind, number = ("PR" if is_pr else "issue"), n
+            subject_url = issue.get("html_url") or (
+                f"{repo_url}/{'pull' if is_pr else 'issues'}/{n}")
+    elif etype in ("PullRequestReviewEvent", "PullRequestReviewCommentEvent"):
+        pr = payload.get("pull_request") or {}
+        n = pr.get("number")
+        if etype == "PullRequestReviewEvent":
+            review = payload.get("review") or {}
+            phrase = {
+                "approved": "approved",
+                "changes_requested": "requested changes on",
+            }.get((review.get("state") or "").lower(), "reviewed")
+            url = review.get("html_url") or pr.get("html_url") or url
+            body = review.get("body") or ""
+        else:
+            comment = payload.get("comment") or {}
+            phrase = "commented on the review of"
+            url = comment.get("html_url") or pr.get("html_url") or url
+            body = comment.get("body") or ""
+        action = f"{phrase} pull request #{n}" if n else f"{phrase} a pull request"
+        title = pr.get("title") or ""
+        if isinstance(n, int) and n:
+            subject_kind, number = "PR", n
+            subject_url = pr.get("html_url") or f"{repo_url}/pull/{n}"
+    elif etype == "ReleaseEvent":
+        release = payload.get("release") or {}
+        verb = verb or "published"
+        tag = release.get("tag_name") or ""
+        action = f"{verb} release {tag}".strip()
+        name = release.get("name") or ""
+        title = name if name != tag else ""
+        url = release.get("html_url") or url
+        body = release.get("body") or ""
+        if release.get("html_url"):
+            subject_kind, subject_url = "release", release["html_url"]
+    elif etype == "CommitCommentEvent":
+        comment = payload.get("comment") or {}
+        sha = (comment.get("commit_id") or "")[:7]
+        action = f"commented on commit {sha}".strip()
+        url = comment.get("html_url") or url
+        body = comment.get("body") or ""
+    elif etype == "PublicEvent":
+        action = "made the repository public"
+    elif etype == "MemberEvent":
+        member = _login_of(payload.get("member"))
+        action = f"{verb or 'added'} {member} as a collaborator".replace("  ", " ")
+    elif etype == "GollumEvent":
+        pages = [p for p in (payload.get("pages") or []) if isinstance(p, dict)]
+        action = "edited the wiki"
+        if pages:
+            title = ", ".join(p["title"] for p in pages if p.get("title"))
+            url = pages[0].get("html_url") or url
+    elif etype == "DiscussionEvent":
+        discussion = payload.get("discussion") or {}
+        n = discussion.get("number")
+        verb = verb or "updated"
+        action = f"{verb} discussion #{n}" if n else f"{verb} a discussion"
+        title = discussion.get("title") or ""
+        url = discussion.get("html_url") or url
+        if verb == "created":
+            body = discussion.get("body") or ""
+        if discussion.get("html_url"):
+            subject_kind, subject_url = "discussion", discussion["html_url"]
+            number = n if isinstance(n, int) else 0
+    elif etype == "SponsorshipEvent":
+        action = "sponsored"
+    else:
+        # "SomethingNewEvent" -> "something new", so a type added after this
+        # was written still says roughly what happened.
+        words = etype[:-5] if etype.endswith("Event") else etype
+        action = "".join(f" {c.lower()}" if c.isupper() else c for c in words).strip()
+        action = action or "did something"
+
+    return ActivityEvent(
+        event_type=etype,
+        actor=actor,
+        repo=repo,
+        action=action,
+        created_at=raw.get("created_at", "") or "",
+        title=title,
+        url=url,
+        body=body,
+        event_id=str(raw.get("id", "") or ""),
+        verb=verb,
+        subject_kind=subject_kind,
+        number=number,
+        subject_url=subject_url,
+    )
+
+
+# Pages of 100 the events API will serve; asking for a fourth is an HTTP 422.
+_ACTIVITY_PAGES = ACTIVITY_MAX // 100
+
+# Repositories per GraphQL query when looking up pull request titles. Keeps
+# each query well inside GitHub's limits however busy the feed is.
+_TITLE_QUERY_REPOS = 40
+
+
+def _graphql(query: str) -> dict:
+    """Run a GraphQL query and return the reply, partial or not.
+
+    Not `_run_gh`: when part of a query can't be resolved (a deleted PR, a
+    repo you can no longer read), gh prints the data it *did* get and still
+    exits 1, and `_run_gh` would throw that data away. The query also goes in
+    on stdin rather than the command line, so its length is never a problem.
+    """
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [_find_gh(), "api", "graphql", "--input", "-"],
+            input=json.dumps({"query": query}),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise GhError(str(exc))
+    try:
+        reply = json.loads(result.stdout) if result.stdout.strip() else None
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):
+        raise GhError(result.stderr.strip() or "GraphQL query failed")
+    return reply
+
+
+def _fill_pr_titles(events: list[ActivityEvent]) -> None:
+    """Look up the titles that pull request events no longer carry.
+
+    GitHub trimmed the pull request in event payloads to little more than its
+    number, so "opened pull request #341" arrives without saying what #341 is.
+    GraphQL fetches every title in a query or two. Whatever can't be resolved
+    comes back as null and that row simply goes without a title: the feed is
+    worth showing anyway, so nothing here raises.
+    """
+    wanted: dict[str, set[int]] = {}
+    for ev in events:
+        if ev.pr_number and not ev.title and "/" in ev.repo:
+            wanted.setdefault(ev.repo, set()).add(ev.pr_number)
+    if not wanted:
+        return
+
+    found: dict[tuple[str, int], dict] = {}
+    repos = sorted(wanted)
+    for start in range(0, len(repos), _TITLE_QUERY_REPOS):
+        chunk = repos[start:start + _TITLE_QUERY_REPOS]
+        parts = []
+        for i, repo in enumerate(chunk):
+            owner, name = repo.split("/", 1)
+            prs = " ".join(
+                f"p{n}: pullRequest(number: {n}) {{ title body }}"
+                for n in sorted(wanted[repo])
+            )
+            # json.dumps gives a valid GraphQL string literal, quotes escaped
+            parts.append(
+                f"r{i}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{ {prs} }}"
+            )
+        try:
+            data = _graphql("{ " + " ".join(parts) + " }").get("data") or {}
+        except Exception:  # noqa: BLE001 — titles are a nicety, never a failure
+            continue
+        if not isinstance(data, dict):
+            continue
+        for i, repo in enumerate(chunk):
+            node = data.get(f"r{i}")
+            if not isinstance(node, dict):
+                continue
+            for n in wanted[repo]:
+                pr = node.get(f"p{n}")
+                if isinstance(pr, dict):
+                    found[(repo, n)] = pr
+
+    for ev in events:
+        pr = found.get((ev.repo, ev.pr_number))
+        if pr and not ev.title:
+            ev.title = pr.get("title") or ""
+            if ev.verb == "opened" and not ev.body:
+                ev.body = pr.get("body") or ""
+
+
+def fetch_activity(limit: int = 100) -> tuple[list[ActivityEvent], bool]:
+    """The signed-in user's activity feed, newest first.
+
+    Returns the events and whether GitHub has more to give. Event pages are
+    not reliably full (filtered events leave gaps, so a page of 100 can hold
+    96), which is why a short page is not taken to be the last one here.
+    """
+    login = current_login()
+    pages = max(1, min(-(-limit // 100), _ACTIVITY_PAGES))
+    raw_events: list[dict] = []
+    seen: set = set()
+    exhausted = False
+    read = 0
+    for page in range(1, pages + 1):
+        try:
+            out = _run_gh([
+                "api", f"users/{login}/received_events?per_page=100&page={page}",
+            ])
+            rows = json.loads(out) if out.strip() else []
+        except (GhError, ValueError):
+            if page == 1:
+                raise
+            # A later page failing should not cost the pages already read. It
+            # says nothing about whether older events exist, so `more` stays
+            # true and View More tries again.
+            break
+        if not isinstance(rows, list) or not rows:
+            exhausted = True
+            break
+        read = page
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            # Pages are offsets, so an event arriving between two requests
+            # pushes one already read onto the next page as well.
+            key = r.get("id")
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            raw_events.append(r)
+    events = [parse_event(r) for r in raw_events]
+    # The API's order is close to newest first but not exact, and a list that
+    # says "newest first" has to be. ISO timestamps sort as strings.
+    events.sort(key=lambda e: e.created_at, reverse=True)
+    _fill_pr_titles(events)
+    more = not exhausted and read < _ACTIVITY_PAGES
+    return events, more
