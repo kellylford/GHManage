@@ -20,6 +20,7 @@ dependencies = [
 dev = [
     "pyinstaller>=6.0",
     "build>=1.0",
+    "pytest>=8.0",
 ]
 
 [project.scripts]
@@ -33,3 +34,6 @@ version = { attr = "version.__version__" }
 
 [tool.pyinstaller]
 # Build a standalone .exe with:  pyinstaller --noconsole --name ghviewer ghviewer.py
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

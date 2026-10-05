@@ -78,7 +78,6 @@ from gh_data import (
     fetch_commit_detail,
     fetch_issues,
     fetch_item_by_number,
-    fetch_item_detail,
     fetch_labels,
     fetch_pages_builds,
     fetch_pages_files,
@@ -2859,6 +2858,13 @@ class GhViewerFrame(wx.Frame):
                 item = fetch_item_by_number(number, self.repo)
             except GhError as exc:
                 wx.CallAfter(self._goto_error, number, str(exc))
+                return
+            except Exception as exc:
+                # Anything escaping here kills the thread silently and leaves
+                # the status on "fetching…" for good. A bare str() of, say, a
+                # KeyError is just "'number'", so name the kind of error too.
+                wx.CallAfter(self._goto_error, number,
+                             f"Unexpected error ({type(exc).__name__}: {exc})")
                 return
             wx.CallAfter(self._on_goto_fetched, item, number)
 

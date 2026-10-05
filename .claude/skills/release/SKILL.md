@@ -18,7 +18,8 @@ outward-facing (no force pushes, no moving or deleting a pushed tag) without ask
 - The working tree holds only what belongs in the release. Commit the feature work on
   its own first, with a message describing the change.
 - `git log --oneline <last tag>..HEAD` — this is what the notes must cover.
-- `python -m py_compile ghviewer.py gh_data.py updater.py` passes.
+- `python -m py_compile ghviewer.py gh_data.py updater.py` passes, and so does
+  `python -m pytest -q`.
 - If the user has not tried the change in the running app, offer to launch it first
   (`python ghviewer.py` from the checkout).
 

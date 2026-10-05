@@ -56,6 +56,13 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Before anything is built or signed, so a failing test stops a release
+      # rather than shipping it. Nothing here touches GitHub: gh is faked.
+      - name: Run tests
+        run: |
+          pip install "pytest>=8,<10"
+          python -m pytest -q -rs
+
       # The release tag is the source of truth, but the app reports version.py.
       # If they disagree the updater compares against a lie, so fail early.
       - name: Verify tag matches version.py

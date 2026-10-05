@@ -1,0 +1,386 @@
+"""Issues, pull requests, labels and the actions on them."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import gh_data
+from gh_data import GhError, Item
+
+
+def _issue_row(number=1, **extra):
+    row = {
+        "number": number,
+        "title": f"Issue {number}",
+        "state": "OPEN",
+        "url": f"https://github.com/o/r/issues/{number}",
+        "author": {"login": "alice"},
+        "createdAt": "2026-01-02T03:04:05Z",
+        "updatedAt": "2026-01-03T00:00:00Z",
+        "body": "Body text",
+        "labels": [{"name": "bug"}, {"name": "ui"}],
+        "assignees": [{"login": "bob"}],
+        "comments": [
+            {"author": {"login": "carol"}, "body": "First", "createdAt": "2026-01-04"},
+            {"author": {"login": "dave"}, "body": None, "createdAt": "2026-01-05"},
+        ],
+    }
+    row.update(extra)
+    return row
+
+
+# ── Parsing ────────────────────────────────────────────────────────────
+
+
+def test_parse_issues_reads_every_field():
+    [item] = gh_data._parse_issues(json.dumps([_issue_row(7)]))
+    assert item.number == 7
+    assert item.is_pr is False
+    assert item.author == "alice"
+    assert item.labels == ["bug", "ui"]
+    assert item.assignees == ["bob"]
+    assert item.comments == 2
+    assert item.comment_list[0] == {"author": "carol", "body": "First", "created_at": "2026-01-04"}
+    # A null comment body becomes an empty string, not None
+    assert item.comment_list[1]["body"] == ""
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n"])
+def test_parse_empty_output_is_empty_list(raw):
+    assert gh_data._parse_issues(raw) == []
+    assert gh_data._parse_prs(raw) == []
+    assert gh_data._parse_labels(raw) == []
+
+
+def test_parse_issue_tolerates_missing_and_null_fields():
+    [item] = gh_data._parse_issues(json.dumps([{"number": 3, "body": None, "author": None}]))
+    assert item.title == ""
+    assert item.body == ""
+    assert item.author == "unknown"
+    assert item.labels == [] and item.comments == 0
+
+
+def test_parse_author_variants():
+    assert gh_data._parse_author({"author": {"login": "x"}}) == "x"
+    assert gh_data._parse_author({"author": "plain"}) == "plain"
+    assert gh_data._parse_author({}) == "unknown"
+
+
+def test_parse_comments_accepts_a_bare_count():
+    assert gh_data._parse_comments({"comments": 5}) == (5, [])
+    assert gh_data._parse_comments({"comments": None}) == (0, [])
+
+
+def test_parse_prs_reads_pr_fields():
+    row = _issue_row(9, isDraft=True, mergedAt="2026-02-01", reviewDecision=None,
+                     additions=10, deletions=2, changedFiles=3,
+                     baseRefName="main", headRefName="feature")
+    [pr] = gh_data._parse_prs(json.dumps([row]))
+    assert pr.is_pr and pr.is_draft and pr.is_merged
+    assert pr.review_status == ""
+    assert (pr.additions, pr.deletions, pr.changed_files) == (10, 2, 3)
+    assert (pr.base_branch, pr.head_branch) == ("main", "feature")
+
+
+# ── Item display ───────────────────────────────────────────────────────
+
+
+def test_item_kind_and_state_display():
+    issue = Item(1, "t", "open", "u", is_pr=False)
+    merged = Item(2, "t", "closed", "u", is_pr=True, is_merged=True)
+    assert issue.kind == "ISSUE" and issue.state_display == "OPEN"
+    assert merged.kind == "PR" and merged.state_display == "MERGED"
+
+
+def test_item_to_row_blanks_pr_columns_for_issues():
+    issue = Item(1, "t", "open", "u", is_pr=False, created_at="2026-01-02T03:04:05Z")
+    row = issue.to_row(["number", "created", "+/-", "files", "base", "nonsense"])
+    assert row == {"number": "1", "created": "2026-01-02", "+/-": "", "files": "",
+                   "base": "", "nonsense": ""}
+
+
+def test_accessible_string_names_fields_and_skips_blanks():
+    item = Item(4, "Crash on start", "open", "u", is_pr=False, author="")
+    assert item.to_accessible_string(["number", "title", "author"]) == (
+        "number: 4, title: Crash on start"
+    )
+
+
+def test_every_column_is_known_to_to_row():
+    item = Item(1, "t", "open", "u", is_pr=True, additions=1, changed_files=1,
+                base_branch="b", head_branch="h", created_at="x", updated_at="y")
+    row = item.to_row(gh_data.ALL_COLUMNS)
+    assert set(row) == set(gh_data.ALL_COLUMNS)
+
+
+# ── Sorting ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def three_items():
+    return [
+        Item(2, "banana", "open", "", False, created_at="2026-02", updated_at="2026-09", comments=1),
+        Item(10, "Apple", "open", "", False, created_at="2026-01", updated_at="2026-03", comments=7),
+        Item(5, "cherry", "open", "", False, created_at="2026-03", updated_at="2026-05", comments=0),
+    ]
+
+
+@pytest.mark.parametrize("order, expected", [
+    ("Number (newest first)", [10, 5, 2]),
+    ("Number (oldest first)", [2, 5, 10]),
+    ("Title (A-Z)", [10, 2, 5]),          # case-insensitive: Apple, banana, cherry
+    ("Title (Z-A)", [5, 2, 10]),
+    ("Created (newest first)", [5, 2, 10]),
+    ("Created (oldest first)", [10, 2, 5]),
+    ("Updated (newest first)", [2, 5, 10]),
+    ("Updated (oldest first)", [10, 5, 2]),
+    ("Comments (most first)", [10, 2, 5]),
+])
+def test_sort_items(three_items, order, expected):
+    assert [i.number for i in gh_data.sort_items(three_items, order)] == expected
+
+
+def test_every_offered_sort_order_is_handled(three_items):
+    for order in gh_data.SORT_ORDERS:
+        result = gh_data.sort_items(three_items, order)
+        assert result is not three_items, f"{order!r} fell through unsorted"
+
+
+def test_unknown_sort_order_leaves_items_alone(three_items):
+    assert gh_data.sort_items(three_items, "whatever") is three_items
+
+
+# ── Fetching ───────────────────────────────────────────────────────────
+
+
+def test_fetch_issues_builds_command(fake_gh):
+    fake_gh.route("issue list", [_issue_row(1)])
+    items = gh_data.fetch_issues("o/r", state="closed", limit=50, label="bug")
+    assert [i.number for i in items] == [1]
+    [call] = fake_gh.called_with("issue list")
+    assert call[call.index("--state") + 1] == "closed"
+    assert call[call.index("--limit") + 1] == "50"
+    assert call[call.index("--label") + 1] == "bug"
+    assert call[call.index("--repo") + 1] == "o/r"
+
+
+def test_fetch_issues_without_label_or_repo(fake_gh):
+    fake_gh.route("issue list", [])
+    assert gh_data.fetch_issues(None) == []
+    [call] = fake_gh.called_with("issue list")
+    assert "--label" not in call and "--repo" not in call
+
+
+def test_fork_issues_come_from_the_parent(fake_gh):
+    fake_gh.route("repo view me/fork", {"isFork": True,
+                                        "parent": {"owner": {"login": "up"}, "name": "stream"}})
+    fake_gh.route("pr list", [])
+    gh_data.fetch_prs("me/fork")
+    [call] = fake_gh.called_with("pr list")
+    assert call[call.index("--repo") + 1] == "up/stream"
+
+
+@pytest.mark.parametrize("reply", [
+    GhError("boom"),
+    "not json",
+    {"isFork": True, "parent": None},
+    {"isFork": True, "parent": {"owner": {}, "name": "x"}},
+    {"isFork": False},
+])
+def test_parent_repo_falls_back_to_none(fake_gh, reply):
+    fake_gh.route("repo view", reply)
+    assert gh_data.parent_repo("o/r") is None
+    assert gh_data.resolve_issue_repo("o/r") == "o/r"
+
+
+def test_parent_repo_of_nothing_makes_no_call(fake_gh):
+    assert gh_data.parent_repo(None) is None
+    assert gh_data.parent_repo("") is None
+    assert fake_gh.calls == []
+
+
+def test_parse_accepts_the_single_object_view_returns():
+    # `gh issue view --json` prints one object, not an array
+    [item] = gh_data._parse_issues(json.dumps(_issue_row(8)))
+    assert item.number == 8
+    [pr] = gh_data._parse_prs(json.dumps(_issue_row(9)))
+    assert pr.number == 9 and pr.is_pr
+
+
+def test_parse_non_list_non_object_is_empty():
+    assert gh_data._parse_issues("42") == []
+
+
+def test_fetch_item_by_number_finds_a_pr_as_a_pr(fake_gh):
+    # gh issue view would also answer for a PR number, minus the PR fields,
+    # so the PR lookup has to come first.
+    fake_gh.route("pr view", _issue_row(12, headRefName="feature"))
+    fake_gh.route("issue view", _issue_row(12))
+    item = gh_data.fetch_item_by_number(12, "o/r")
+    assert item.is_pr and item.head_branch == "feature"
+    assert fake_gh.called_with("issue view") == []
+
+
+def test_fetch_item_by_number_falls_back_to_issue(fake_gh):
+    fake_gh.route("pr view", GhError("Could not resolve to a PullRequest"))
+    fake_gh.route("issue view", _issue_row(2))
+    item = gh_data.fetch_item_by_number(2, "o/r")
+    assert item is not None and not item.is_pr and item.number == 2
+
+
+def test_fetch_item_by_number_missing_returns_none(fake_gh):
+    fake_gh.route("pr view", GhError(
+        "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)"))
+    fake_gh.route("issue view", GhError(
+        "GraphQL: Could not resolve to an issue or pull request with the number of 99. (repository.issue)"))
+    assert gh_data.fetch_item_by_number(99, "o/r") is None
+
+
+@pytest.mark.parametrize("error", [
+    "error connecting to api.github.com",
+    "HTTP 401: Bad credentials",
+    "API rate limit exceeded",
+    "GraphQL: Could not resolve to a Repository with the name 'o/gone'. (repository)",
+])
+def test_fetch_item_by_number_real_failures_are_not_not_found(fake_gh, error):
+    # Reporting these as "does not exist" would tell the user something false
+    fake_gh.route("pr view", GhError(error))
+    with pytest.raises(GhError, match=error[:20]):
+        gh_data.fetch_item_by_number(5, "o/r")
+    assert fake_gh.called_with("issue view") == []
+
+
+def test_fetch_item_by_number_issue_lookup_failure_propagates(fake_gh):
+    fake_gh.route("pr view", GhError("Could not resolve to a PullRequest with the number of 3"))
+    fake_gh.route("issue view", GhError("HTTP 502"))
+    with pytest.raises(GhError, match="502"):
+        gh_data.fetch_item_by_number(3, "o/r")
+
+
+@pytest.mark.parametrize("func, verb", [
+    (gh_data.close_item, "close"),
+    (gh_data.reopen_item, "reopen"),
+])
+def test_close_and_reopen(fake_gh, func, verb):
+    fake_gh.route(verb, "")
+    func(Item(3, "t", "open", "", is_pr=True), "o/r")
+    [call] = fake_gh.called_with(verb)
+    assert call[:3] == ["pr", verb, "3"] and call[-2:] == ["--repo", "o/r"]
+
+
+def test_add_comment_passes_body_as_one_argument(fake_gh):
+    fake_gh.route("comment", "")
+    gh_data.add_comment(Item(3, "t", "open", "", is_pr=False), "two\nlines; rm -rf", "o/r")
+    [call] = fake_gh.called_with("comment")
+    assert call[call.index("--body") + 1] == "two\nlines; rm -rf"
+
+
+def test_detect_repo(fake_gh):
+    fake_gh.route("nameWithOwner", {"nameWithOwner": "o/r"})
+    assert gh_data.detect_repo() == "o/r"
+
+
+@pytest.mark.parametrize("reply", [GhError("not a repo"), "garbage"])
+def test_detect_repo_failure_is_none(fake_gh, reply):
+    fake_gh.route("nameWithOwner", reply)
+    assert gh_data.detect_repo() is None
+
+
+def test_list_repos(fake_gh):
+    fake_gh.route("repo list", [{"nameWithOwner": "o/a"}])
+    assert gh_data.list_repos(5) == [{"nameWithOwner": "o/a"}]
+    fake_gh.routes.clear()
+    fake_gh.route("repo list", "")
+    assert gh_data.list_repos() == []
+
+
+# ── Labels ─────────────────────────────────────────────────────────────
+
+
+def test_parse_labels():
+    raw = json.dumps([{"name": "bug", "color": "#d73a4a", "description": None, "isDefault": 1}])
+    [label] = gh_data._parse_labels(raw)
+    assert label.color == "d73a4a"
+    assert label.description == ""
+    assert label.is_default is True
+    assert label.to_row(["color", "default"]) == {"color": "#d73a4a", "default": "Yes"}
+
+
+def test_parse_labels_rejects_non_list():
+    assert gh_data._parse_labels('{"name": "x"}') == []
+
+
+def test_fetch_labels_sorted_by_name(fake_gh):
+    fake_gh.route("label list", [{"name": "a"}])
+    gh_data.fetch_labels("o/r")
+    [call] = fake_gh.called_with("label list")
+    assert call[call.index("--sort") + 1] == "name"
+
+
+def test_fetch_labels_no_labels_is_empty(fake_gh):
+    fake_gh.route("label list", GhError("no labels found in o/r"))
+    assert gh_data.fetch_labels("o/r") == []
+
+
+def test_fetch_labels_other_errors_propagate(fake_gh):
+    fake_gh.route("label list", GhError("HTTP 500"))
+    with pytest.raises(GhError):
+        gh_data.fetch_labels("o/r")
+
+
+def test_create_label_strips_hash_and_omits_blanks(fake_gh):
+    fake_gh.route("label create", "")
+    gh_data.create_label("o/r", "needs info", color="#FFAA00")
+    [call] = fake_gh.called_with("label create")
+    assert call[2] == "needs info"
+    assert call[call.index("--color") + 1] == "FFAA00"
+    assert "--description" not in call
+
+
+def test_delete_label_does_not_prompt(fake_gh):
+    fake_gh.route("label delete", "")
+    gh_data.delete_label("o/r", "bug")
+    [call] = fake_gh.called_with("label delete")
+    assert "--yes" in call
+
+
+# ── The gh runner itself ───────────────────────────────────────────────
+
+
+def test_run_gh_missing_cli_explains_install(monkeypatch, real_run_gh):
+    def missing(*a, **k):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(gh_data.subprocess, "run", missing)
+    with pytest.raises(GhError, match="cli.github.com"):
+        real_run_gh(["status"])
+
+
+def test_run_gh_failure_carries_stderr(monkeypatch, real_run_gh):
+    def fail(cmd, **k):
+        raise gh_data.subprocess.CalledProcessError(1, cmd, stderr="  HTTP 404  \n")
+
+    monkeypatch.setattr(gh_data.subprocess, "run", fail)
+    with pytest.raises(GhError, match="^HTTP 404$"):
+        real_run_gh(["api", "x"])
+
+
+def test_run_gh_failure_without_stderr_names_command(monkeypatch, real_run_gh):
+    def fail(cmd, **k):
+        raise gh_data.subprocess.CalledProcessError(1, cmd, stderr="")
+
+    monkeypatch.setattr(gh_data.subprocess, "run", fail)
+    with pytest.raises(GhError, match="`gh api x` failed"):
+        real_run_gh(["api", "x"])
+
+
+def test_find_gh_honours_override(monkeypatch):
+    monkeypatch.setenv("GHMANAGE_GH_PATH", r"C:\tools\gh.exe")
+    assert gh_data._find_gh() == r"C:\tools\gh.exe"
+
+
+def test_find_gh_falls_back_to_bare_name(monkeypatch):
+    monkeypatch.setattr(gh_data.shutil, "which", lambda *a, **k: None)
+    assert gh_data._find_gh() == "gh"
