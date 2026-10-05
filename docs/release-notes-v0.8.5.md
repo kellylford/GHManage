@@ -1,11 +1,11 @@
-# GHManage 0.9.0
+# GHManage 0.8.5
 
 GHManage is a desktop app for reading and managing your GitHub repositories from
 a fast, keyboard-driven list.
 
-This release reaches past your own repositories. You can add the repositories
-you have starred or are watching to the repository list, and a new Activity view
-shows your GitHub feed.
+This release reaches past your own repositories: your GitHub activity feed, and
+the repositories you star and watch, each with its own entry at the top of the
+repository list. And GHManage now has a user guide.
 
 ## Activity
 
@@ -16,7 +16,7 @@ newest first and across every repository.
 
 Open it from **Activity** near the top of the repository list, with
 `Ctrl+Shift+A` (`Cmd+Shift+A` on a Mac), or from View ▸ View Mode ▸ Activity.
-The repository you were in stays selected, so `Ctrl+1` takes you back to it.
+GHManage keeps the repository you were in, so `Ctrl+1` takes you back to it.
 Each row says who, what, which repository, what it was about, and when, in your
 local time. The details panel gives the whole event as one sentence, followed by
 the comment, review or description when there is one.
@@ -35,22 +35,32 @@ GitHub keeps only the latest 300 events from the last 90 days. The first 100 are
 loaded, `Ctrl++` loads 100 more at a time and puts you on the first of them, and
 the status bar tells you when there are no more.
 
-## Starred and watched repositories in the repository list
+## Starred and watched repositories
 
-View ▸ Repository List has two new settings, Show Starred Repositories and Show
-Watched Repositories. Each adds that list after your own repositories, and
-GHManage remembers your choice. Both are off until you turn them on.
+The repository list now opens with four entries, in this order: **★ Favorites**,
+**Activity**, **Starred Repositories** and **Watched Repositories**. Your own
+repositories follow, as before. Starred and Watched are also on View ▸ View Mode.
 
-Every added repository says why it is there, after its name:
+Each lists its repositories with their description, language, stars and when
+they were last pushed. Starred puts your most recent stars first. Watched
+includes your own repositories, because GitHub watches those for you.
 
-- `nvaccess/nvda (starred)`
-- `owner/name (watching)`
-- `(starred, watching)` for a repository on both lists
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the repository here in GHManage. `Backspace` from its issues brings you back to the same row |
+| `Ctrl+O` | Open it on GitHub |
+| `F` | Favorite the repository |
+| `Ctrl++` | Load 100 more |
 
-Typing a letter still jumps by owner name. GitHub watches your own repositories
-automatically, so the watched list only adds repositories that belong to other
-people. Your own repositories appear first, and the status bar tells you how many
-starred and watched ones were added once they arrive.
+Like Activity, these keep the repository you were in, so `Ctrl+1` takes you
+straight back to it.
+
+## A user guide
+
+GHManage has a full user guide at
+<https://kellylford.github.io/GHManage/>, one page per topic or all on one
+page. **Help ▸ User Guide**, or `F1` (`fn+F1` on a Mac keyboard), opens it in
+your browser.
 
 ## Also fixed
 

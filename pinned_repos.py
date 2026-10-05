@@ -61,35 +61,3 @@ def remove_pinned(repo: str) -> list[str]:
     save_pinned(repos)
     return repos
 
-
-# ── Which lists feed the repository list ──────────────────────────────
-#
-# Your own repositories always show. Starred and watched repositories are
-# extra lists you can switch on from View > Repository List; the choice is
-# remembered in repo_sources.json beside the pinned list.
-
-OPTIONAL_SOURCES = ("starred", "watched")
-
-
-def _sources_file() -> Path:
-    return _app_data_dir() / "repo_sources.json"
-
-
-def load_repo_sources() -> set[str]:
-    """The optional repo lists switched on. Empty (only your own) if unset."""
-    f = _sources_file()
-    if not f.exists():
-        return set()
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return set()
-    if not isinstance(data, list):
-        return set()
-    return {s for s in data if s in OPTIONAL_SOURCES}
-
-
-def save_repo_sources(sources: set[str]) -> None:
-    """Remember which optional repo lists are switched on."""
-    keep = [s for s in OPTIONAL_SOURCES if s in sources]
-    _sources_file().write_text(json.dumps(keep, indent=2), encoding="utf-8")

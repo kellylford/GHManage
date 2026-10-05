@@ -598,17 +598,69 @@ def _api_pages(endpoint: str, limit: int) -> list[dict]:
     return out[:limit]
 
 
-def _repo_entry(raw: dict) -> dict:
-    """Shape a REST repository object like a `gh repo list` row."""
-    return {
-        "nameWithOwner": raw.get("full_name", "") or "",
-        "description": raw.get("description") or "",
-        "isArchived": bool(raw.get("archived")),
-        "isFork": bool(raw.get("fork")),
-    }
+REPO_COLUMNS = ["repo", "description", "language", "stars", "pushed", "owner"]
+REPO_DEFAULT_COLUMNS = ["repo", "description", "language", "stars", "pushed"]
 
 
-def list_starred_repos(limit: int = 100) -> list[dict]:
+@dataclass
+class RepoEntry:
+    """A repository in the Starred or Watched list."""
+
+    name: str                # OWNER/NAME
+    description: str = ""
+    url: str = ""
+    language: str = ""
+    stars: int = 0
+    forks: int = 0
+    open_issues: int = 0
+    pushed_at: str = ""
+    archived: bool = False
+    fork: bool = False
+    private: bool = False
+
+    @property
+    def owner(self) -> str:
+        return self.name.split("/", 1)[0]
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        flags = [f for f, on in (("archived", self.archived), ("fork", self.fork),
+                                 ("private", self.private)) if on]
+        mapping = {
+            "repo": self.name,
+            # Flags lead the description, where they are read before the
+            # prose rather than lost after it.
+            "description": "; ".join(flags + [self.description] if self.description else flags),
+            "language": self.language,
+            "stars": f"{self.stars:,}",
+            "pushed": self.pushed_at[:10] if self.pushed_at else "",
+            "owner": self.owner,
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
+
+
+def _repo_entry(raw: dict) -> RepoEntry:
+    """A REST repository object as a RepoEntry."""
+    name = raw.get("full_name", "") or ""
+    return RepoEntry(
+        name=name,
+        description=raw.get("description") or "",
+        url=raw.get("html_url") or (f"https://github.com/{name}" if name else ""),
+        language=raw.get("language") or "",
+        stars=raw.get("stargazers_count") or 0,
+        forks=raw.get("forks_count") or 0,
+        open_issues=raw.get("open_issues_count") or 0,
+        pushed_at=raw.get("pushed_at") or "",
+        archived=bool(raw.get("archived")),
+        fork=bool(raw.get("fork")),
+        private=bool(raw.get("private")),
+    )
+
+
+def fetch_starred_repos(limit: int = 100) -> list[RepoEntry]:
     """Repositories the signed-in user has starred, most recently starred first."""
     return [
         _repo_entry(r) for r in _api_pages("user/starred", limit)
@@ -616,11 +668,10 @@ def list_starred_repos(limit: int = 100) -> list[dict]:
     ]
 
 
-def list_watched_repos(limit: int = 100) -> list[dict]:
+def fetch_watched_repos(limit: int = 100) -> list[RepoEntry]:
     """Repositories the signed-in user is watching (subscribed to).
 
-    GitHub watches your own repositories automatically, so most of this list
-    is usually repos already shown as your own; the caller drops those.
+    GitHub watches your own repositories for you, so they are here as well.
     """
     return [
         _repo_entry(r) for r in _api_pages("user/subscriptions", limit)

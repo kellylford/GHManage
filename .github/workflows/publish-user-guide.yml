@@ -1,0 +1,98 @@
+name: Publish User Guide
+
+# Builds docs/USER-GUIDE.md and the release notes into the site at
+# https://kellylford.github.io/GHManage/ and deploys it with the official Pages
+# actions. Pages must be set to "GitHub Actions" as its source (Settings → Pages
+# → Build and deployment), not to a branch: nothing here pushes a gh-pages branch.
+#
+# It runs two ways:
+# - called by the publish-guide job in ghmanage.yml, once a v* tag's release
+#   is out. A release made by softprops/action-gh-release uses GITHUB_TOKEN,
+#   and GitHub starts no workflow from events a GITHUB_TOKEN raises, so a
+#   `release: published` trigger here would never fire for our releases.
+# - by hand from the Actions tab, to republish after a guide-only fix.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  pages: write      # deploy to Pages
+  id-token: write   # deploy-pages proves where the artifact came from with OIDC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The release history reads every tag and its date, so it needs the
+          # whole history, not the single commit a default checkout takes.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+          pandoc --version | head -1
+
+      # The version on the site is the released version, read from the tags:
+      # the tag on this commit for a release run, otherwise the newest tag. Not
+      # version.py, which between releases holds the version being worked on,
+      # so a run by hand mid-cycle would announce a version nobody can download.
+      - name: Determine the released version
+        id: version
+        run: |
+          VERSION=$(git tag --points-at HEAD --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "No v* tags in the checkout; cannot tell which version this documents." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing the guide as version: $VERSION"
+
+      # Fails on a pandoc warning, a link to a heading that does not exist, a
+      # broken link between pages, or a tagged version with no release notes.
+      - name: Build the site
+        run: |
+          python scripts/build_user_guide.py \
+            --out build/docs \
+            --version "${{ steps.version.outputs.version }}" \
+            --repo-root .
+          test -f build/docs/index.html
+          test -f build/docs/full.html
+          test -f build/docs/releases.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # One deploy at a time. A newer run waits rather than cancelling one that
+    # is part-way through deploying. On the job, not the workflow, so it holds
+    # when ghmanage.yml calls this workflow too.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

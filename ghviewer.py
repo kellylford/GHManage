@@ -16,9 +16,7 @@ import wx
 
 import updater
 from version import __version__ as APP_VERSION
-from pinned_repos import (
-    add_pinned, load_pinned, load_repo_sources, remove_pinned, save_repo_sources,
-)
+from pinned_repos import add_pinned, load_pinned, remove_pinned
 from favorites import FavoriteEntry, load_favorites, save_favorites, is_favorite, toggle_favorite
 
 from gh_data import (
@@ -27,6 +25,9 @@ from gh_data import (
     ACTIVITY_MAX,
     ALL_COLUMNS,
     ActivityEvent,
+    REPO_COLUMNS,
+    REPO_DEFAULT_COLUMNS,
+    RepoEntry,
     BRANCH_COLUMNS,
     BRANCH_DEFAULT_COLUMNS,
     COMMIT_COLUMNS,
@@ -97,8 +98,8 @@ from gh_data import (
     fetch_workflows,
     fetch_activity,
     list_repos,
-    list_starred_repos,
-    list_watched_repos,
+    fetch_starred_repos,
+    fetch_watched_repos,
     open_in_browser,
     parent_repo,
     reopen_item,
@@ -172,8 +173,9 @@ ID_VIEW_LABELS = wx.NewIdRef()
 ID_VIEW_FAVORITES = wx.NewIdRef()
 ID_VIEW_PAGES = wx.NewIdRef()
 ID_VIEW_ACTIVITY = wx.NewIdRef()
-ID_SHOW_STARRED = wx.NewIdRef()
-ID_SHOW_WATCHED = wx.NewIdRef()
+ID_VIEW_STARRED = wx.NewIdRef()
+ID_VIEW_WATCHED = wx.NewIdRef()
+ID_USER_GUIDE = wx.NewIdRef()
 ID_GO_TO_EVENT_REPO = wx.NewIdRef()
 ID_NEW_LABEL = wx.NewIdRef()
 ID_DELETE_LABEL = wx.NewIdRef()
@@ -211,22 +213,38 @@ VIEW_FAVORITES = "favorites"
 VIEW_PAGES = "pages"           # GitHub Pages: site config + publish history
 VIEW_PAGEFILES = "pagefiles"   # the pages that site serves (drill-down)
 VIEW_ACTIVITY = "activity"     # your GitHub activity feed (not tied to a repo)
+VIEW_STARRED = "starred"       # repositories you have starred
+VIEW_WATCHED = "watched"       # repositories you watch
 
 # Views that are not views *of a repo*, so they work with none selected.
-REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_ACTIVITY)
+REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_ACTIVITY, VIEW_STARRED, VIEW_WATCHED)
+# The repoless views fetched from GitHub (Favorites is read from disk).
+FEED_VIEWS = (VIEW_ACTIVITY, VIEW_STARRED, VIEW_WATCHED)
+# Views listing repositories; Enter on one opens it here.
+REPO_LIST_VIEWS = (VIEW_STARRED, VIEW_WATCHED)
 
 # clientData of the pseudo-entries at the top of the repository list.
 FAVORITES_ENTRY = "__favorites__"
 ACTIVITY_ENTRY = "__activity__"
+STARRED_ENTRY = "__starred__"
+WATCHED_ENTRY = "__watched__"
 
-# The optional repo lists: menu wording, and the tag after the repo's name.
-REPO_SOURCE_LABELS = {"starred": "starred repositories", "watched": "watched repositories"}
-REPO_SOURCE_TAGS = {"starred": "starred", "watched": "watching"}
-# How many of each to fetch. GitHub puts every repo you own, and the ones in
-# your organizations, on your watch list, and those are dropped as already
-# shown — so watched needs a deeper look to reach anyone else's.
-STARRED_LIMIT = 100
-WATCHED_LIMIT = 300
+# The category entries after ★ Favorites, in order, with their labels.
+CATEGORY_ENTRIES = [
+    (ACTIVITY_ENTRY, "Activity"),
+    (STARRED_ENTRY, "Starred Repositories"),
+    (WATCHED_ENTRY, "Watched Repositories"),
+]
+# Which repo-list entry stands for which view, both ways.
+VIEW_ENTRIES = {
+    VIEW_FAVORITES: FAVORITES_ENTRY,
+    VIEW_ACTIVITY: ACTIVITY_ENTRY,
+    VIEW_STARRED: STARRED_ENTRY,
+    VIEW_WATCHED: WATCHED_ENTRY,
+}
+ENTRY_VIEWS = {entry: view for view, entry in VIEW_ENTRIES.items()}
+
+USER_GUIDE_URL = "https://kellylford.github.io/GHManage/"
 
 # Drill-down views: pressing Backspace in the key view returns to its parent.
 # These are the views you reach by activating an item in another view
@@ -258,6 +276,8 @@ VIEW_COLUMNS = {
     VIEW_PAGES: (PAGES_DEFAULT_COLUMNS, PAGES_COLUMNS),
     VIEW_PAGEFILES: (PAGEFILE_DEFAULT_COLUMNS, PAGEFILE_COLUMNS),
     VIEW_ACTIVITY: (ACTIVITY_DEFAULT_COLUMNS, ACTIVITY_COLUMNS),
+    VIEW_STARRED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
+    VIEW_WATCHED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
 }
 
 
@@ -709,10 +729,6 @@ class GhViewerFrame(wx.Frame):
         self.items: list[Item] = []
         self._all_repos: list[dict] = []
         self._pinned_repos: list[str] = load_pinned()
-        # Optional lists shown after your own repos ("starred", "watched"),
-        # and what they returned when the repo list was last loaded.
-        self._repo_sources: set[str] = load_repo_sources()
-        self._extra_repos: dict[str, list[dict]] = {}
         self.favorites: list[FavoriteEntry] = load_favorites()
 
         # View settings
@@ -744,15 +760,16 @@ class GhViewerFrame(wx.Frame):
         # Whether GitHub has older activity than the Activity view has loaded;
         # None while a load is under way and the answer isn't known yet.
         self._activity_more: bool | None = False
-        # Row to put the cursor on when the Activity load about to start lands
-        # (View More lands you on the first older event, not back at the
-        # top). Handed to that one load in _load_items and reset there, so a
-        # load that is superseded or fails can't leave it for a later one.
-        self._activity_focus_row: int = 0
-        # The feed as it was when G took you into a repository, so Backspace
-        # can bring you back to the same event without fetching it again:
-        # (events, more, event, limit).
-        self._activity_return: tuple | None = None
+        # Row to put the cursor on when the feed load about to start lands
+        # (View More lands you on the first new row, not back at the top).
+        # Handed to that one load in _load_items and reset there, so a load
+        # that is superseded or fails can't leave it for a later one.
+        self._pending_focus_row: int = 0
+        # The list you were in when you opened a repository from it — G on an
+        # activity event, Enter on a starred or watched repo — so Backspace
+        # brings you back to the same item without fetching the list again:
+        # (view, items, more, item, limit).
+        self._return_to: tuple | None = None
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -769,8 +786,9 @@ class GhViewerFrame(wx.Frame):
 
         if repo:
             self._select_repo(repo)
-        else:
-            self._load_repos()
+        # The list on the left loads either way; with --repo it then keeps
+        # that repository selected (see _restore_repo_selection).
+        self._load_repos()
 
         self.Show()
 
@@ -911,6 +929,9 @@ class GhViewerFrame(wx.Frame):
             # Same column names as other views, different contents: the date
             # carries a time, and the title shares the row with an action.
             widths.update({"actor": 130, "action": 240, "title": 300, "date": 130})
+        elif self.view_mode in REPO_LIST_VIEWS:
+            widths.update({"repo": 240, "description": 380, "language": 100,
+                           "stars": 80, "pushed": 100, "owner": 140})
         for i, col in enumerate(self.columns):
             self.list_ctrl.InsertColumn(i, col, width=widths.get(col, 100))
 
@@ -998,14 +1019,9 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+9")
         show_menu.AppendRadioItem(ID_VIEW_PAGES, "GitHub Pages\tCtrl+0")
         show_menu.AppendRadioItem(ID_VIEW_ACTIVITY, "Activity\tCtrl+Shift+A")
+        show_menu.AppendRadioItem(ID_VIEW_STARRED, "Starred Repositories")
+        show_menu.AppendRadioItem(ID_VIEW_WATCHED, "Watched Repositories")
         view_menu.AppendSubMenu(show_menu, "View Mode")
-
-        # Repository List submenu — which lists feed the repo list on the left.
-        # Your own repos are always there; these add other people's.
-        repo_list_menu = wx.Menu()
-        repo_list_menu.AppendCheckItem(ID_SHOW_STARRED, "Show Starred Repositories")
-        repo_list_menu.AppendCheckItem(ID_SHOW_WATCHED, "Show Watched Repositories")
-        view_menu.AppendSubMenu(repo_list_menu, "Repository List")
 
         view_menu.AppendSeparator()
 
@@ -1055,12 +1071,15 @@ class GhViewerFrame(wx.Frame):
 
         # Help menu
         help_menu = wx.Menu()
+        help_menu.Append(ID_USER_GUIDE, "User Guide\tF1")
+        help_menu.AppendSeparator()
         help_menu.Append(ID_CHECK_UPDATES, "Check for Updates…")
         help_menu.Append(wx.ID_ABOUT, "About GHManage")
         menu_bar.Append(help_menu, "Help")
 
         self.SetMenuBar(menu_bar)
 
+        self.Bind(wx.EVT_MENU, self.on_user_guide, id=ID_USER_GUIDE)
         self.Bind(wx.EVT_MENU, self.on_check_updates, id=ID_CHECK_UPDATES)
         self.Bind(wx.EVT_MENU, self.on_about, id=wx.ID_ABOUT)
 
@@ -1084,8 +1103,8 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_favorites, id=ID_VIEW_FAVORITES)
         self.Bind(wx.EVT_MENU, self.on_view_pages, id=ID_VIEW_PAGES)
         self.Bind(wx.EVT_MENU, self.on_view_activity, id=ID_VIEW_ACTIVITY)
-        self.Bind(wx.EVT_MENU, self.on_show_starred, id=ID_SHOW_STARRED)
-        self.Bind(wx.EVT_MENU, self.on_show_watched, id=ID_SHOW_WATCHED)
+        self.Bind(wx.EVT_MENU, self.on_view_starred, id=ID_VIEW_STARRED)
+        self.Bind(wx.EVT_MENU, self.on_view_watched, id=ID_VIEW_WATCHED)
         self.Bind(wx.EVT_MENU, self.on_go_to_event_repo, id=ID_GO_TO_EVENT_REPO)
 
     # ── Updates ─────────────────────────────────────────────────────────
@@ -1184,6 +1203,13 @@ class GhViewerFrame(wx.Frame):
                 self,
             )
 
+    def on_user_guide(self, event) -> None:
+        """Help ▸ User Guide (F1): the guide on the web, in your browser."""
+        if webbrowser.open(USER_GUIDE_URL):
+            self._announce("Opened the user guide in your browser.")
+        else:
+            self._announce(f"Couldn't open a browser. The user guide is at {USER_GUIDE_URL}")
+
     def on_about(self, event) -> None:
         wx.MessageBox(
             f"GHManage {APP_VERSION}\n\n"
@@ -1212,9 +1238,8 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         menu_bar.Check(ID_VIEW_PAGES, self.view_mode == VIEW_PAGES)
         menu_bar.Check(ID_VIEW_ACTIVITY, self.view_mode == VIEW_ACTIVITY)
-        # Repository list sources
-        menu_bar.Check(ID_SHOW_STARRED, "starred" in self._repo_sources)
-        menu_bar.Check(ID_SHOW_WATCHED, "watched" in self._repo_sources)
+        menu_bar.Check(ID_VIEW_STARRED, self.view_mode == VIEW_STARRED)
+        menu_bar.Check(ID_VIEW_WATCHED, self.view_mode == VIEW_WATCHED)
         # State filter
         menu_bar.Check(ID_STATE_OPEN, self.state_filter == "open")
         menu_bar.Check(ID_STATE_CLOSED, self.state_filter == "closed")
@@ -1313,7 +1338,7 @@ class GhViewerFrame(wx.Frame):
         if mode != VIEW_ISSUES:
             # The way back to the feed is from the repo's issues, where G
             # left you; anywhere else Backspace means something of its own.
-            self._activity_return = None
+            self._return_to = None
         self.filter_text = ""  # clear filter on view switch
         # Update columns for the new view
         default_cols, _ = VIEW_COLUMNS.get(mode, (DEFAULT_COLUMNS, ALL_COLUMNS))
@@ -1322,11 +1347,15 @@ class GhViewerFrame(wx.Frame):
         self._rebuild_columns_menu()
         self._update_menu_checks()
         self.current_limit = self.page_size
+        # Keep the repo list in step with the view however you got there —
+        # Ctrl+Shift+A or the View menu as much as the list itself — so Tab
+        # back to it lands on the entry for what you are looking at.
+        self._restore_repo_selection(None)
         if not load:
             return
         if mode == VIEW_FAVORITES:
             self._load_favorites_view()
-        elif self.repo or mode == VIEW_ACTIVITY:
+        elif self.repo or mode in FEED_VIEWS:
             self._load_items()
 
     # ── Event binding ───────────────────────────────────────────────────
@@ -1386,7 +1415,6 @@ class GhViewerFrame(wx.Frame):
     # ── Repo loading ───────────────────────────────────────────────────
 
     def _load_repos(self) -> None:
-        sources = set(self._repo_sources)
         self._repo_token += 1
         token = self._repo_token
         self._announce("Loading your repositories…")
@@ -1397,74 +1425,29 @@ class GhViewerFrame(wx.Frame):
             except GhError as exc:
                 wx.CallAfter(self._on_repos_error, str(exc))
                 return
-            if not sources:
-                wx.CallAfter(self._on_repos_loaded, repos, {}, [], token=token)
-                return
-            # Your own repos first, so the list is usable while the extra
-            # lists — up to six more API calls — are still on their way.
-            wx.CallAfter(self._on_repos_loaded, repos, None, None, token=token)
-            # The optional lists are extras. One failing (a token without the
-            # scope for it, say) must not cost you the list of your own repos,
-            # so its error is reported and the rest still loads.
-            extras: dict[str, list[dict]] = {}
-            errors: list[str] = []
-            for source, fetch, limit in (("starred", list_starred_repos, STARRED_LIMIT),
-                                         ("watched", list_watched_repos, WATCHED_LIMIT)):
-                if source not in sources:
-                    continue
-                try:
-                    extras[source] = fetch(limit=limit)
-                except GhError as exc:
-                    errors.append(f"{REPO_SOURCE_LABELS[source]}: {exc}")
-            wx.CallAfter(self._on_repos_loaded, repos, extras, errors, token=token)
+            wx.CallAfter(self._on_repos_loaded, repos, token=token)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _extra_repo_rows(self) -> list[tuple[str, str, list[str]]]:
-        """Starred and watched repos as (name, description, [source labels]).
-
-        A repo on both lists is one row naming both. Order is starred first,
-        most recently starred at the top, then whatever is only watched.
-        """
-        rows: dict[str, tuple[str, list[str]]] = {}
-        for source in ("starred", "watched"):
-            if source not in self._repo_sources:
-                continue
-            for repo in self._extra_repos.get(source, []):
-                name = repo.get("nameWithOwner", "")
-                if not name:
-                    continue
-                if name not in rows:
-                    rows[name] = (repo.get("description") or "", [])
-                rows[name][1].append(REPO_SOURCE_TAGS[source])
-        return [(name, desc, tags) for name, (desc, tags) in rows.items()]
-
-    def _on_repos_loaded(
-        self,
-        repos: list[dict],
-        extras: dict[str, list[dict]] | None = None,
-        errors: list[str] | None = None,
-        token: int | None = None,
-    ) -> None:
-        # A load superseded by a later one (two lists switched on in quick
-        # succession) must not land on top of it. No token means a rebuild
-        # from what is already cached, which is always current.
+    def _on_repos_loaded(self, repos: list[dict], token: int | None = None) -> None:
+        # A load superseded by a later one must not land on top of it. No
+        # token means a rebuild from what is already cached, which is always
+        # current.
         if token is not None and token != self._repo_token:
             return
         self._all_repos = repos
-        if extras is not None:
-            self._extra_repos = extras
         # Remember what was selected so the rebuild puts you back on it,
         # rather than at the top of the list while you are arrowing through.
         old = self.repo_list.GetSelection()
         previous = self.repo_list.GetClientData(old) if old != wx.NOT_FOUND else None
         self.repo_list.Clear()
-        # ★ Favorites entry first — special pseudo-repo
+        # The views that aren't of one repository come first, Favorites
+        # leading as it always has.
         n_fav = len(self.favorites)
         fav_label = f"★ Favorites ({n_fav})" if n_fav else "★ Favorites"
         self.repo_list.Append(fav_label, clientData=FAVORITES_ENTRY)
-        # Then the activity feed, the other view that isn't of one repo
-        self.repo_list.Append("Activity", clientData=ACTIVITY_ENTRY)
+        for entry, label in CATEGORY_ENTRIES:
+            self.repo_list.Append(label, clientData=entry)
         # Pinned (added-by-URL) repos next, marked with a pin
         shown = set()
         for name in self._pinned_repos:
@@ -1488,79 +1471,30 @@ class GhViewerFrame(wx.Frame):
             desc = repo.get("description") or ""
             label = f"{name} — {desc}" if desc else name
             self.repo_list.Append(label, clientData=name)
-        # Then starred and watched repos you don't own. The tag goes after the
-        # name, not before it, so typing a letter still jumps by owner name
-        # and the screen reader says the repo before saying why it is there.
-        added = {source: 0 for source in self._repo_sources}
-        for name, desc, tags in self._extra_repo_rows():
-            if name in shown:
-                continue
-            shown.add(name)
-            for source, tag in REPO_SOURCE_TAGS.items():
-                if tag in tags and source in added:
-                    added[source] += 1
-            label = f"{name} ({', '.join(tags)})"
-            if desc:
-                label += f" — {desc}"
-            self.repo_list.Append(label, clientData=name)
-        self._announce(self._repos_loaded_message(len(shown), added, extras, errors))
+        self._announce(
+            f"Loaded {len(shown)} repositories. Select one to view issues and PRs."
+        )
         self._restore_repo_selection(previous)
         # Take focus only when the list first appears, or when it already has
-        # it. A list switched on from the menu lands seconds later, and must
-        # not pull you out of whatever you have gone on to read.
-        focus = self._current_focus()
-        # Not "no focus" either: that is also what the app sees while it is
-        # in the background, say after Enter opened an event in the browser.
-        if not self._repos_loaded_once or focus is self.repo_list:
+        # it. A rebuild (after Open Repository, say) must not pull you out of
+        # what you are reading — and not when nothing in the app has focus
+        # either, which is also what it sees while it is in the background.
+        if not self._repos_loaded_once or self._current_focus() is self.repo_list:
             self.repo_list.SetFocus()
         self._repos_loaded_once = True
 
     def _current_focus(self):
         return wx.Window.FindFocus()
 
-    def _repos_loaded_message(
-        self,
-        n_repos: int,
-        added: dict[str, int],
-        extras: dict[str, list[dict]] | None,
-        errors: list[str] | None,
-    ) -> str:
-        """What the status bar says once the repo list has been (re)built."""
-        if extras is None and self._repo_sources:
-            names = " and ".join(
-                REPO_SOURCE_LABELS[s] for s in ("starred", "watched") if s in self._repo_sources)
-            return f"Loaded {n_repos} repositories. Loading {names}…"
-        message = f"Loaded {n_repos} repositories"
-        parts = []
-        for source in ("starred", "watched"):
-            if source not in added:
-                continue
-            part = f"{added[source]} {source}"
-            limit = STARRED_LIMIT if source == "starred" else WATCHED_LIMIT
-            if len(self._extra_repos.get(source, [])) >= limit:
-                part += f" (from your latest {limit})"
-            parts.append(part)
-        if parts:
-            message += ", including " + " and ".join(parts)
-        if errors:
-            return message + ", but couldn't load " + "; ".join(errors)
-        return message + ". Select one to view issues and PRs."
-
     def _restore_repo_selection(self, previous) -> None:
         """Select the right row after a rebuild of the repo list.
 
         Whatever was selected before, if it is still there; otherwise the
         entry for what the right-hand side is showing. If that has gone (a
-        starred repo whose list was just switched off), select nothing rather
-        than something that disagrees with the rest of the window.
+        pinned repo just removed), select nothing rather than something that
+        disagrees with the rest of the window.
         """
-        wanted = [previous]
-        if self.view_mode == VIEW_ACTIVITY:
-            wanted.append(ACTIVITY_ENTRY)
-        elif self.view_mode == VIEW_FAVORITES:
-            wanted.append(FAVORITES_ENTRY)
-        else:
-            wanted.append(self.repo)
+        wanted = [previous, VIEW_ENTRIES.get(self.view_mode, self.repo)]
         for target in wanted:
             if target is None:
                 continue
@@ -1568,8 +1502,10 @@ class GhViewerFrame(wx.Frame):
                 if self.repo_list.GetClientData(i) == target:
                     self.repo_list.SetSelection(i)
                     return
-        if previous is None and not self.repo:
-            self.repo_list.SetSelection(0)  # first load: start at the top
+        if previous is None and not self.repo and self.repo_list.GetCount():
+            # First load: start at the top. Not on an empty list — before the
+            # repos arrive, or after they failed to — where wx asserts.
+            self.repo_list.SetSelection(0)
         else:
             self.repo_list.SetSelection(wx.NOT_FOUND)
 
@@ -1597,8 +1533,8 @@ class GhViewerFrame(wx.Frame):
             return
         if name == FAVORITES_ENTRY:
             self._select_favorites()
-        elif name == ACTIVITY_ENTRY:
-            self._select_activity()
+        elif name in ENTRY_VIEWS:
+            self._select_category(ENTRY_VIEWS[name])
         else:
             self._select_repo(name)
 
@@ -1606,7 +1542,7 @@ class GhViewerFrame(wx.Frame):
         if " — " in repo:
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
-        self._activity_return = None
+        self._return_to = None
         self.current_limit = self.page_size  # reset to first page
         self.filter_text = ""  # clear filter on repo switch
         self.label_filter = ""  # a label of the old repo means nothing here
@@ -1628,14 +1564,14 @@ class GhViewerFrame(wx.Frame):
         else:
             self._load_favorites_view()
 
-    def _select_activity(self) -> None:
-        """Switch to the Activity view — your GitHub feed, across all repos.
+    def _select_category(self, view: str) -> None:
+        """Switch to Activity, Starred or Watched — lists across all repos.
 
-        Unlike Favorites this leaves the current repository selected, so
-        Ctrl+1 after a glance at the feed takes you straight back to it.
+        Unlike Favorites these keep the repository you were in, so Ctrl+1
+        after a glance at one takes you straight back to it.
         """
-        if self.view_mode != VIEW_ACTIVITY:
-            self._switch_view(VIEW_ACTIVITY)
+        if self.view_mode != view:
+            self._switch_view(view)
         else:
             self.current_limit = self.page_size
             self._load_items()
@@ -1686,6 +1622,8 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_ACTIVITY:
             self._set_view_status("Loading your activity feed…")
             self._activity_more = None  # unknown until this load lands
+        elif self.view_mode in REPO_LIST_VIEWS:
+            self._set_view_status(f"Loading your {view_label.lower()}…")
         else:
             self._set_view_status(f"Loading {view_label} for {self.repo}…")
         self.list_ctrl.DeleteAllItems()
@@ -1696,7 +1634,7 @@ class GhViewerFrame(wx.Frame):
         token = self._begin_fetch()
         view = self.view_mode
         limit = self.current_limit
-        focus_row, self._activity_focus_row = self._activity_focus_row, 0
+        focus_row, self._pending_focus_row = self._pending_focus_row, 0
 
         def worker() -> None:
             try:
@@ -1760,6 +1698,10 @@ class GhViewerFrame(wx.Frame):
                 elif view == VIEW_ACTIVITY:
                     events, more = fetch_activity(limit)
                     wx.CallAfter(self._on_activity_loaded, token, events, more, focus_row)
+                elif view in REPO_LIST_VIEWS:
+                    fetch = fetch_starred_repos if view == VIEW_STARRED else fetch_watched_repos
+                    repos = fetch(limit)
+                    wx.CallAfter(self._on_repo_list_loaded, token, repos, focus_row)
                 elif view == VIEW_PAGES:
                     # The config comes first: with Pages off it is the whole
                     # answer, and when it is on it says where to read the rest.
@@ -1813,6 +1755,8 @@ class GhViewerFrame(wx.Frame):
         VIEW_PAGES: "GitHub Pages",
         VIEW_PAGEFILES: "Published Pages",
         VIEW_ACTIVITY: "Activity",
+        VIEW_STARRED: "Starred Repositories",
+        VIEW_WATCHED: "Watched Repositories",
     }
 
     def _update_title(self) -> None:
@@ -1899,8 +1843,9 @@ class GhViewerFrame(wx.Frame):
         source = f"{self.repo} (issues from upstream {upstream})" if upstream else self.repo
         label_info = f" labelled '{self.label_filter}'" if self.label_filter else ""
         label_hint = "  Backspace=back to labels" if self.label_filter else ""
-        if self._activity_return:
-            label_hint = "  Backspace=back to activity"
+        if self._return_to:
+            back = self._VIEW_LABELS.get(self._return_to[0], "list").lower()
+            label_hint = f"  Backspace=back to {back}"
         self._set_view_status(
             f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}){label_info}. "
             f"Showing up to {self.current_limit} newest.",
@@ -2043,6 +1988,36 @@ class GhViewerFrame(wx.Frame):
             message,
             "Enter=open in browser  G=go to repository  Ctrl++=view more  "
             "R=refresh  F=favorite  Ctrl+F=filter",
+        )
+        self._update_title()
+        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
+    def _on_repo_list_loaded(self, token: int, repos: list, focus=0) -> None:
+        """Starred or Watched: one row per repository.
+
+        ``focus`` is the row to land on, or the repository to land on wherever
+        the list now shows it (Backspace from a repo opened from here).
+        """
+        if not self._fetch_is_current(token):
+            return  # the user has moved on; these belong to a view they left
+        self.git_items = repos
+        self.items = []
+        filtered = self._populate_filtered_list(repos, use_favorite_prefix=True)
+        n = len(repos)
+        label = self._VIEW_LABELS[self.view_mode]
+        if n:
+            more = " Ctrl++ loads more." if n >= self.current_limit else ""
+            message = f"{label} — {n} repositor{'ies' if n != 1 else 'y'}.{more}"
+        elif self.view_mode == VIEW_STARRED:
+            message = f"{label} — you haven't starred any repositories."
+        else:
+            message = f"{label} — you aren't watching any repositories."
+        self._set_view_status(
+            message,
+            "Enter=open here  Ctrl+O=open on GitHub  F=favorite  Ctrl++=view more  "
+            "R=refresh  Ctrl+F=filter",
         )
         self._update_title()
         row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
@@ -2381,6 +2356,28 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("Press Enter to open this page in your browser.")
             lines.append("Press Backspace to return to the publish history.")
+        elif isinstance(item, RepoEntry):
+            lines.append(item.name)
+            if item.description:
+                lines.append(item.description)
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
+            if item.language:
+                lines.append(f"Language: {item.language}")
+            lines.append(f"Stars: {item.stars:,}")
+            lines.append(f"Forks: {item.forks:,}")
+            lines.append(f"Open issues and pull requests: {item.open_issues:,}")
+            if item.pushed_at:
+                lines.append(f"Last pushed: {item.pushed_at[:10]}")
+            notes = [n for n, on in (("Archived (read-only)", item.archived),
+                                     ("A fork", item.fork), ("Private", item.private)) if on]
+            for note in notes:
+                lines.append(note)
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append("")
+            lines.append(f"Press Enter to open {item.name} here in GHManage.")
+            lines.append("Press Ctrl+O to open it on GitHub.")
         elif isinstance(item, ActivityEvent):
             lines.append(item.summary)
             lines.append(f"Who: {item.actor}")
@@ -2532,6 +2529,10 @@ class GhViewerFrame(wx.Frame):
                 self._announce(f"Opened {item.title} in browser")
             else:
                 self._announce("No URL for this favorite")
+            return
+        # In Starred and Watched, Enter opens the repository here
+        if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):
+            self._open_repo_from_list(item.name, item)
             return
         # In Activity view, Enter opens what the event was about
         if self.view_mode == VIEW_ACTIVITY and isinstance(item, ActivityEvent):
@@ -2825,24 +2826,40 @@ class GhViewerFrame(wx.Frame):
         else:
             panes[target].SetFocus()
 
+    @staticmethod
+    def _modifiers_down(event) -> bool:
+        """Whether Ctrl, Alt, Shift or Cmd is held for this key.
+
+        On Windows the list's key event is a wx.ListEvent, which carries no
+        modifier state at all; the keyboard is asked directly instead. The
+        list handles the key as it arrives, so that is the state it was
+        pressed with. On macOS it is an ordinary wx.KeyEvent.
+        """
+        if isinstance(event, wx.KeyEvent):
+            return event.HasAnyModifiers()
+        return wx.GetMouseState().HasAnyModifiers()
+
     def on_list_key_down(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
+        # The single-letter keys here are bare letters. With a modifier the
+        # key belongs to something else — Ctrl+C is copy, not Close — so it is
+        # passed on untouched.
+        if self._modifiers_down(event):
+            event.Skip()
+            return
         if key == wx.WXK_ESCAPE:
             self._clear_filter()
         elif key == ord("F"):
             self._toggle_favorite()
         elif key == ord("R"):
-            if self.view_mode == VIEW_FAVORITES:
-                self._load_favorites_view()
-            else:
-                self._load_items()
+            self.on_refresh(None)
         elif key == wx.WXK_BACK and self.view_mode in PARENT_VIEW:
             # Backspace steps back up a drill-down (artifacts -> runs, commits -> branches)
             parent = PARENT_VIEW[self.view_mode]
             self._switch_view(parent)
             self._announce(f"Back to {self._VIEW_LABELS.get(parent, parent).lower()}")
-        elif key == wx.WXK_BACK and self.view_mode == VIEW_ISSUES and self._activity_return:
-            self._return_to_activity()
+        elif key == wx.WXK_BACK and self.view_mode == VIEW_ISSUES and self._return_to:
+            self._return_to_list()
         elif key == wx.WXK_BACK and self.view_mode == VIEW_ISSUES and self.label_filter:
             # Issues restricted to a label is a drill-down too, even though the
             # view mode is the same one you reach with Ctrl+1.
@@ -2891,31 +2908,43 @@ class GhViewerFrame(wx.Frame):
         if not isinstance(item, ActivityEvent) or not item.repo:
             self._announce("No repository for this event.")
             return
-        repo = item.repo
-        # The event itself, not its row: with a quick filter on, the row
+        self._open_repo_from_list(item.repo, item)
+
+    def _open_repo_from_list(self, repo: str, item) -> None:
+        """Open ``repo`` from a list of many (Activity, Starred, Watched).
+
+        Remembers the list and the item you were on, so Backspace from the
+        repo's issues brings you back to it.
+        """
+        # The item itself, not its row: with a quick filter on, the row
         # number means something else once the filter is gone.
-        saved = (list(self.git_items), bool(self._activity_more), item, self.current_limit)
+        saved = (self.view_mode, list(self.git_items), bool(self._activity_more),
+                 item, self.current_limit)
         self._select_repo(repo)
         # Set after _select_repo, which clears it for an ordinary repo change.
-        self._activity_return = saved
+        self._return_to = saved
         # Select it in the repo list too when it is there, so the list on the
         # left agrees with what the right side is showing — and nothing when
-        # it isn't, rather than leaving "Activity" selected.
+        # it isn't, rather than leaving the list you came from selected.
         self.repo_list.SetSelection(wx.NOT_FOUND)
         for i in range(self.repo_list.GetCount()):
             if self.repo_list.GetClientData(i) == repo:
                 self.repo_list.SetSelection(i)
                 break
 
-    def _return_to_activity(self) -> None:
-        """Backspace from a repo reached with G: the feed, where you left it."""
-        events, more, event, limit = self._activity_return
-        self._activity_return = None
-        self._switch_view(VIEW_ACTIVITY, load=False)
+    def _return_to_list(self) -> None:
+        """Backspace from a repo opened from a list: that list, where you left it."""
+        view, items, more, item, limit = self._return_to
+        self._return_to = None
+        self._switch_view(view, load=False)
         self.current_limit = limit
         self._restore_repo_selection(None)
-        self._on_activity_loaded(self._begin_fetch(), events, more, event)
-        self._announce("Back to activity")
+        token = self._begin_fetch()
+        if view == VIEW_ACTIVITY:
+            self._on_activity_loaded(token, items, more, item)
+        else:
+            self._on_repo_list_loaded(token, items, item)
+        self._announce(f"Back to {self._VIEW_LABELS.get(view, view).lower()}")
 
     def _toggle_favorite(self) -> None:
         """Toggle favorite status on the currently focused item (F key)."""
@@ -2956,6 +2985,19 @@ class GhViewerFrame(wx.Frame):
         else:
             self._announce(f"Removed '{entry.title}' from favorites")
         self._refresh_repo_list_fav_count()
+        self._redraw_favorite_marks()
+
+    def _redraw_favorite_marks(self) -> None:
+        """Put the ★ on, or take it off, every row whose favorite just changed.
+
+        Every row, not just this one: in Activity several events can be about
+        the same issue, and they should all agree.
+        """
+        if not self.columns:
+            return
+        for row, item in enumerate(self._shown):
+            text = self._item_label(item, self.columns[0])
+            self.list_ctrl.SetItem(row, 0, self._favorite_prefix(item) + text)
 
     def _build_favorite_entry(self, item) -> FavoriteEntry | None:
         """Build a FavoriteEntry from any item type (Item, Branch, Commit, etc.)."""
@@ -2997,6 +3039,11 @@ class GhViewerFrame(wx.Frame):
             item_type = "page"
             title = item.path
             subtitle = item.url
+        elif isinstance(item, RepoEntry):
+            item_type = "repository"
+            repo = item.name
+            title = item.name
+            subtitle = item.description[:60] if item.description else ""
         elif isinstance(item, ActivityEvent):
             # F on an event favorites what it is about — the issue, pull
             # request, release or discussion — the same entry F makes in that
@@ -3087,7 +3134,7 @@ class GhViewerFrame(wx.Frame):
     def on_refresh(self, event: wx.CommandEvent) -> None:
         if self.view_mode == VIEW_FAVORITES:
             self._load_favorites_view()
-        elif self.repo or self.view_mode == VIEW_ACTIVITY:
+        elif self.repo or self.view_mode in FEED_VIEWS:
             self.current_limit = self.page_size  # reset to first page
             self._load_items()
 
@@ -3104,7 +3151,13 @@ class GhViewerFrame(wx.Frame):
                 )
                 return
             # Land on the first of the older events, not back at the top.
-            self._activity_focus_row = len(self._shown)
+            self._pending_focus_row = len(self._shown)
+        elif self.view_mode in REPO_LIST_VIEWS:
+            if len(self.git_items) < self.current_limit:
+                label = self._VIEW_LABELS[self.view_mode].lower()
+                self._announce(f"That is all your {label}.")
+                return
+            self._pending_focus_row = len(self._shown)
         elif not self.repo:
             return
         self.current_limit += self.page_size
@@ -3173,20 +3226,13 @@ class GhViewerFrame(wx.Frame):
         name = self.repo_list.GetClientData(idx)
         if not name:
             return
-        if name in (FAVORITES_ENTRY, ACTIVITY_ENTRY):
+        if name == FAVORITES_ENTRY or name in ENTRY_VIEWS:
             self._announce("That entry is always in the list.")
             return
         if name not in self._pinned_repos:
-            own = any(r.get("nameWithOwner") == name for r in self._all_repos)
-            if own:
-                self._announce(
-                    f"{name} is one of your own repositories and can't be removed from here."
-                )
-            else:
-                self._announce(
-                    f"{name} is in the list because you star or watch it. "
-                    "Turn that list off under View, Repository List."
-                )
+            self._announce(
+                f"{name} is one of your own repositories and can't be removed from here."
+            )
             return
         self._pinned_repos = remove_pinned(name)
         self._refresh_repo_list()
@@ -3194,7 +3240,7 @@ class GhViewerFrame(wx.Frame):
 
     def _refresh_repo_list(self) -> None:
         """Rebuild the repo list from cached gh results + current pinned repos."""
-        self._on_repos_loaded(self._all_repos, self._extra_repos, [])
+        self._on_repos_loaded(self._all_repos)
 
     def on_goto(self, event: wx.CommandEvent) -> None:
         """Ctrl+G — open a dialog to jump to a specific issue/PR by number."""
@@ -3728,31 +3774,13 @@ class GhViewerFrame(wx.Frame):
         self._switch_view(VIEW_PAGES)
 
     def on_view_activity(self, event: wx.CommandEvent) -> None:
-        self._select_activity()
+        self._select_category(VIEW_ACTIVITY)
 
-    def on_show_starred(self, event: wx.CommandEvent) -> None:
-        self._toggle_repo_source("starred")
+    def on_view_starred(self, event: wx.CommandEvent) -> None:
+        self._select_category(VIEW_STARRED)
 
-    def on_show_watched(self, event: wx.CommandEvent) -> None:
-        self._toggle_repo_source("watched")
-
-    def _toggle_repo_source(self, source: str) -> None:
-        """Add or take away one of the optional lists in the repo list."""
-        if source in self._repo_sources:
-            self._repo_sources.discard(source)
-            verb = "Hiding"
-        else:
-            self._repo_sources.add(source)
-            verb = "Showing"
-        save_repo_sources(self._repo_sources)
-        self._update_menu_checks()
-        if verb == "Hiding":
-            # Nothing to fetch to take a list away.
-            self._extra_repos.pop(source, None)
-            self._refresh_repo_list()
-            self._announce(f"{verb} {REPO_SOURCE_LABELS[source]} in the repository list.")
-        else:
-            self._load_repos()
+    def on_view_watched(self, event: wx.CommandEvent) -> None:
+        self._select_category(VIEW_WATCHED)
 
     # ── List display refresh ───────────────────────────────────────────
 

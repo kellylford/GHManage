@@ -69,21 +69,37 @@ def test_api_pages_error_propagates(fake_gh):
 # ── Starred / watched ──────────────────────────────────────────────────
 
 
-def test_starred_repos_shaped_like_repo_list_rows(fake_gh):
+def test_starred_repos_become_entries(fake_gh):
     fake_gh.route("user/starred", [
-        {"full_name": "a/one", "description": None, "fork": True, "archived": True},
+        {"full_name": "a/one", "description": None, "fork": True, "archived": True,
+         "html_url": "https://github.com/a/one", "language": "Python",
+         "stargazers_count": 1234, "forks_count": 5, "open_issues_count": 7,
+         "pushed_at": "2026-10-01T10:00:00Z", "private": False},
         {"full_name": "b/two", "description": "Two"},
         {"description": "no name, dropped"},
     ])
-    assert gh_data.list_starred_repos() == [
-        {"nameWithOwner": "a/one", "description": "", "isArchived": True, "isFork": True},
-        {"nameWithOwner": "b/two", "description": "Two", "isArchived": False, "isFork": False},
-    ]
+    one, two = gh_data.fetch_starred_repos()
+    assert (one.name, one.owner, one.url, one.language, one.stars, one.forks,
+            one.open_issues, one.archived, one.fork) == (
+        "a/one", "a", "https://github.com/a/one", "Python", 1234, 5, 7, True, True)
+    # No address in the reply: built from the name
+    assert two.url == "https://github.com/b/two" and two.description == "Two"
+    row = one.to_row(["repo", "description", "language", "stars", "pushed", "owner"])
+    assert row == {"repo": "a/one", "description": "archived; fork", "language": "Python",
+                   "stars": "1,234", "pushed": "2026-10-01", "owner": "a"}
+    assert two.to_row(["description"]) == {"description": "Two"}
+    assert one.to_accessible_string(["repo", "language"]) == "repo: a/one, language: Python"
 
 
 def test_watched_repos_use_subscriptions(fake_gh):
     fake_gh.route("user/subscriptions", [{"full_name": "c/three"}])
-    assert [r["nameWithOwner"] for r in gh_data.list_watched_repos()] == ["c/three"]
+    assert [r.name for r in gh_data.fetch_watched_repos()] == ["c/three"]
+
+
+def test_repo_lists_ask_for_the_limit(fake_gh):
+    fake_gh.route("user/starred", [])
+    gh_data.fetch_starred_repos(250)
+    assert fake_gh.calls[0] == ["api", "user/starred?per_page=100&page=1"]
 
 
 # ── Who is signed in ───────────────────────────────────────────────────
