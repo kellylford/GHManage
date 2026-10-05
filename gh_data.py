@@ -660,6 +660,61 @@ def _repo_entry(raw: dict) -> RepoEntry:
     )
 
 
+def _count_items(endpoint: str) -> int:
+    """How many entries a paged REST list holds, without fetching them.
+
+    Asks for one entry per page: the response's Link header then names the
+    last page, and with one entry to a page that is the count. With no Link
+    header there is only the one page, so the count is what came back.
+    """
+    sep = "&" if "?" in endpoint else "?"
+    raw = _run_gh(["api", "-i", f"{endpoint}{sep}per_page=1"])
+    head, blank, body = raw.replace("\r\n", "\n").partition("\n\n")
+    if not blank:
+        # No end to the headers means no body to count either; better no
+        # number than a 0 that looks like an answer.
+        raise GhError(f"Unexpected reply counting {endpoint}")
+    for line in head.splitlines():
+        if line.lower().startswith("link:"):
+            last = _last_page(line.split(":", 1)[1])
+            if last is None:
+                raise GhError(f"Couldn't read the page count for {endpoint}")
+            return last
+    try:
+        rows = json.loads(body) if body.strip() else []
+    except ValueError:
+        raise GhError(f"Unexpected reply counting {endpoint}")
+    return len(rows) if isinstance(rows, list) else 0
+
+
+def _last_page(link: str) -> Optional[int]:
+    """The page number of the rel="last" link in a Link header, or None.
+
+    Read from the URL's query by name, not by position, so it holds whatever
+    order GitHub puts per_page and page in.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    for part in link.split(","):
+        url, _, params = part.partition(";")
+        if 'rel="last"' not in params:
+            continue
+        query = parse_qs(urlsplit(url.strip().strip("<>")).query)
+        pages = query.get("page")
+        if pages and pages[0].isdigit():
+            return int(pages[0])
+    return None
+
+
+def count_starred_repos() -> int:
+    """How many repositories the signed-in user has starred."""
+    return _count_items("user/starred")
+
+
+def count_watched_repos() -> int:
+    """How many repositories the signed-in user watches."""
+    return _count_items("user/subscriptions")
+
+
 def fetch_starred_repos(limit: int = 100) -> list[RepoEntry]:
     """Repositories the signed-in user has starred, most recently starred first."""
     return [

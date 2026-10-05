@@ -98,6 +98,8 @@ from gh_data import (
     fetch_workflows,
     fetch_activity,
     list_repos,
+    count_starred_repos,
+    count_watched_repos,
     fetch_starred_repos,
     fetch_watched_repos,
     open_in_browser,
@@ -243,6 +245,12 @@ VIEW_ENTRIES = {
     VIEW_WATCHED: WATCHED_ENTRY,
 }
 ENTRY_VIEWS = {entry: view for view, entry in VIEW_ENTRIES.items()}
+# The categories whose entry carries a count, like ★ Favorites (6), and how
+# to ask GitHub for it. Activity has none: it is a feed, not a set of things.
+COUNTED_ENTRIES = {
+    STARRED_ENTRY: count_starred_repos,
+    WATCHED_ENTRY: count_watched_repos,
+}
 
 USER_GUIDE_URL = "https://kellylford.github.io/GHManage/"
 
@@ -778,6 +786,8 @@ class GhViewerFrame(wx.Frame):
         # can't overwrite a newer one. See _load_repos.
         self._repo_token: int = 0
         self._repos_loaded_once: bool = False
+        # How many repositories each counted category holds, once known.
+        self._category_counts: dict[str, int] = {}
 
         self._build_ui()
         self._bind_events()
@@ -1426,8 +1436,52 @@ class GhViewerFrame(wx.Frame):
                 wx.CallAfter(self._on_repos_error, str(exc))
                 return
             wx.CallAfter(self._on_repos_loaded, repos, token=token)
+            # The counts come after the list, one small call each, so the
+            # list is never kept waiting for them. A count that can't be had
+            # is left off rather than shown wrong.
+            counts = {}
+            for entry, count in COUNTED_ENTRIES.items():
+                try:
+                    counts[entry] = count()
+                except GhError:
+                    continue
+            wx.CallAfter(self._on_category_counts, counts, token)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_category_counts(self, counts: dict[str, int], token: int | None = None) -> None:
+        if token is not None and token != self._repo_token:
+            return  # a later load is on its way with newer numbers
+        self._category_counts.update(counts)
+        self._refresh_category_labels()
+
+    def _category_label(self, entry: str, label: str) -> str:
+        """``Starred Repositories (7)`` once the count is known, else the name."""
+        n = self._category_counts.get(entry)
+        return f"{label} ({n})" if n is not None else label
+
+    def _refresh_category_labels(self) -> None:
+        """Put the current counts on the category entries, in place.
+
+        SetString rather than a rebuild, as the Favorites count does, so the
+        row you are on in the list stays where it is.
+        """
+        labels = dict(CATEGORY_ENTRIES)
+        for i in range(self.repo_list.GetCount()):
+            entry = self.repo_list.GetClientData(i)
+            if entry in labels:
+                self._set_repo_list_label(i, self._category_label(entry, labels[entry]))
+
+    def _set_repo_list_label(self, i: int, label: str) -> None:
+        """Change one repo-list entry's text — only if it actually changes.
+
+        On Windows SetString deletes and re-inserts the row, and on the
+        selected row that raises a focus event even when the list doesn't
+        have focus, which a screen reader may announce. Rewriting a label to
+        the text it already has would do that for nothing.
+        """
+        if self.repo_list.GetString(i) != label:
+            self.repo_list.SetString(i, label)
 
     def _on_repos_loaded(self, repos: list[dict], token: int | None = None) -> None:
         # A load superseded by a later one must not land on top of it. No
@@ -1447,7 +1501,7 @@ class GhViewerFrame(wx.Frame):
         fav_label = f"★ Favorites ({n_fav})" if n_fav else "★ Favorites"
         self.repo_list.Append(fav_label, clientData=FAVORITES_ENTRY)
         for entry, label in CATEGORY_ENTRIES:
-            self.repo_list.Append(label, clientData=entry)
+            self.repo_list.Append(self._category_label(entry, label), clientData=entry)
         # Pinned (added-by-URL) repos next, marked with a pin
         shown = set()
         for name in self._pinned_repos:
@@ -1701,7 +1755,15 @@ class GhViewerFrame(wx.Frame):
                 elif view in REPO_LIST_VIEWS:
                     fetch = fetch_starred_repos if view == VIEW_STARRED else fetch_watched_repos
                     repos = fetch(limit)
-                    wx.CallAfter(self._on_repo_list_loaded, token, repos, focus_row)
+                    # A full page may not be all of them; ask for the count
+                    # so the entry in the repo list stays true.
+                    count = None
+                    if len(repos) >= limit:
+                        try:
+                            count = COUNTED_ENTRIES[VIEW_ENTRIES[view]]()
+                        except GhError:
+                            pass
+                    wx.CallAfter(self._on_repo_list_loaded, token, repos, focus_row, count)
                 elif view == VIEW_PAGES:
                     # The config comes first: with Pages off it is the whole
                     # answer, and when it is on it says where to read the rest.
@@ -1994,7 +2056,9 @@ class GhViewerFrame(wx.Frame):
         if filtered:
             wx.CallLater(100, self._focus_list, row)
 
-    def _on_repo_list_loaded(self, token: int, repos: list, focus=0) -> None:
+    def _on_repo_list_loaded(
+        self, token: int, repos: list, focus=0, count: int | None = None,
+    ) -> None:
         """Starred or Watched: one row per repository.
 
         ``focus`` is the row to land on, or the repository to land on wherever
@@ -2007,6 +2071,13 @@ class GhViewerFrame(wx.Frame):
         filtered = self._populate_filtered_list(repos, use_favorite_prefix=True)
         n = len(repos)
         label = self._VIEW_LABELS[self.view_mode]
+        if n < self.current_limit:
+            # The whole list is here, so its length is the count: newer than
+            # the one fetched at startup if you have starred something since.
+            count = n
+        if count is not None:
+            self._category_counts[VIEW_ENTRIES[self.view_mode]] = count
+            self._refresh_category_labels()
         if n:
             more = " Ctrl++ loads more." if n >= self.current_limit else ""
             message = f"{label} — {n} repositor{'ies' if n != 1 else 'y'}.{more}"
@@ -3079,7 +3150,7 @@ class GhViewerFrame(wx.Frame):
             if data == FAVORITES_ENTRY:
                 n = len(self.favorites)
                 label = f"★ Favorites ({n})" if n else "★ Favorites"
-                self.repo_list.SetString(i, label)
+                self._set_repo_list_label(i, label)
                 break
 
     def on_details_key_down(self, event: wx.KeyEvent) -> None:

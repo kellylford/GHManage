@@ -327,7 +327,11 @@ class FakeListBox:
     def SetSelection(self, i): self.selection = i
     def GetSelection(self): return self.selection
     def SetFocus(self): self.focused += 1
-    def SetString(self, i, label): self.rows[i] = (label, self.rows[i][1])
+    def SetString(self, i, label):
+        self.set_strings = getattr(self, "set_strings", 0) + 1
+        self.rows[i] = (label, self.rows[i][1])
+
+    def GetString(self, i): return self.rows[i][0]
 
     @property
     def labels(self) -> list[str]:
@@ -338,9 +342,11 @@ def _repo_frame(pinned=(), repo=None, view=ghviewer.VIEW_ISSUES, focus=None, loa
     f = _frame(
         repo=repo, view_mode=view, repo_list=FakeListBox(),
         _pinned_repos=list(pinned), _all_repos=[],
-        _repo_token=0, _repos_loaded_once=loaded_once,
+        _repo_token=0, _repos_loaded_once=loaded_once, _category_counts={},
     )
-    f._restore_repo_selection = Frame._restore_repo_selection.__get__(f)
+    for name in ("_restore_repo_selection", "_category_label", "_refresh_category_labels",
+                 "_set_repo_list_label"):
+        setattr(f, name, getattr(Frame, name).__get__(f))
     f._current_focus = lambda: focus
     return f
 
@@ -574,6 +580,8 @@ def test_repo_favorite():
 def _list_frame(view=ghviewer.VIEW_STARRED, limit=100):
     f = _activity_frame(limit)
     f.view_mode = view
+    f._category_counts = {}
+    f._refresh_category_labels = lambda: None
     f._VIEW_LABELS = Frame._VIEW_LABELS
     f._row_of = lambda item: Frame._row_of(f, item)
     return f
@@ -610,7 +618,7 @@ def test_load_items_fetches_the_list_for_the_view(monkeypatch, inline_worker):
         f._on_repo_list_loaded = lambda *a: landed.append(a)
         f._pending_focus_row = 7
         Frame._load_items(f)
-        assert landed[-1][-1] == 7
+        assert landed[-1][2] == 7   # (token, repos, focus row, count)
     assert calls == [("s", 100), ("w", 100)]
 
 
@@ -1116,3 +1124,108 @@ def test_modifiers_from_a_key_event_come_from_the_event():
     assert Frame._modifiers_down(ghviewer.wx.KeyEvent(ghviewer.wx.wxEVT_KEY_DOWN)) is False
 
 
+
+
+# ── Counts on the category entries ─────────────────────────────────────
+
+
+def test_category_entries_show_their_counts_once_known():
+    f = _repo_frame()
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    assert f.repo_list.labels[:4] == CATEGORIES   # not known yet: just the name
+    f.repo_list.SetSelection(4)
+    Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7, ghviewer.WATCHED_ENTRY: 0})
+    assert f.repo_list.labels[:5] == [
+        "★ Favorites", "Activity", "Starred Repositories (7)",
+        "Watched Repositories (0)", "me/a"]
+    assert f.repo_list.selection == 4   # updated in place: you stay where you were
+    # A rebuild keeps them
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    assert f.repo_list.labels[2] == "Starred Repositories (7)"
+
+
+def test_counts_from_a_superseded_load_are_dropped():
+    f = _repo_frame()
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    f._repo_token = 2
+    Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7}, 1)
+    assert f.repo_list.labels[2] == "Starred Repositories"
+
+
+def test_load_repos_fetches_the_counts_after_the_list(monkeypatch, inline_worker):
+    order = []
+    monkeypatch.setattr(ghviewer, "list_repos", lambda limit: order.append("list") or [_row("me/a")])
+
+    def watched():
+        raise ghviewer.GhError("HTTP 403")
+    monkeypatch.setitem(ghviewer.COUNTED_ENTRIES, ghviewer.STARRED_ENTRY,
+                        lambda: order.append("starred") or 7)
+    monkeypatch.setitem(ghviewer.COUNTED_ENTRIES, ghviewer.WATCHED_ENTRY, watched)
+    f = _repo_frame()
+    f._on_repos_loaded = lambda *a, **k: (order.append("shown"), Frame._on_repos_loaded(f, *a, **k))
+    f._on_category_counts = lambda *a: Frame._on_category_counts(f, *a)
+    Frame._load_repos(f)
+    assert order[:3] == ["list", "shown", "starred"]
+    # A count that failed is left off, not shown as 0
+    assert f.repo_list.labels[2:4] == ["Starred Repositories (7)", "Watched Repositories"]
+
+
+def test_a_complete_list_corrects_its_count(call_later):
+    f = _list_frame()
+    counted = []
+    f._refresh_category_labels = lambda: counted.append(dict(f._category_counts))
+    Frame._on_repo_list_loaded(f, 1, [STAR] * 8)
+    assert counted == [{ghviewer.STARRED_ENTRY: 8}]
+
+
+def test_a_full_page_does_not_claim_a_count(call_later):
+    # 100 of maybe more: the startup count stands
+    f = _list_frame()
+    f._category_counts = {ghviewer.STARRED_ENTRY: 250}
+    Frame._on_repo_list_loaded(f, 1, [STAR] * 100)   # no count fetched
+    assert f._category_counts == {ghviewer.STARRED_ENTRY: 250}
+
+
+def test_an_unchanged_count_does_not_rewrite_the_entry():
+    # On Windows a rewrite of the selected entry raises a focus event a
+    # screen reader may announce, so the same text is never written again.
+    f = _repo_frame()
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7})
+    assert f.repo_list.set_strings == 1
+    Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7})
+    Frame._refresh_category_labels(f)
+    assert f.repo_list.set_strings == 1
+    Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 8})
+    assert f.repo_list.set_strings == 2 and f.repo_list.labels[2] == "Starred Repositories (8)"
+
+
+@pytest.mark.parametrize("view, entry", [
+    (ghviewer.VIEW_STARRED, ghviewer.STARRED_ENTRY),
+    (ghviewer.VIEW_WATCHED, ghviewer.WATCHED_ENTRY),
+])
+def test_a_full_page_takes_the_fetched_count(call_later, view, entry):
+    f = _list_frame(view)
+    Frame._on_repo_list_loaded(f, 1, [STAR] * 100, 0, 250)
+    assert f._category_counts == {entry: 250}
+
+
+def test_a_full_page_fetches_the_count_in_the_worker(monkeypatch, inline_worker):
+    monkeypatch.setattr(ghviewer, "fetch_starred_repos", lambda limit: [STAR] * limit)
+    monkeypatch.setitem(ghviewer.COUNTED_ENTRIES, ghviewer.STARRED_ENTRY, lambda: 250)
+    f, _ = _load_frame(ghviewer.VIEW_STARRED)
+    landed = []
+    f._on_repo_list_loaded = lambda *a: landed.append(a)
+    Frame._load_items(f)
+    assert landed[-1][-1] == 250
+
+
+def test_a_short_list_needs_no_count_call(monkeypatch, inline_worker):
+    monkeypatch.setattr(ghviewer, "fetch_starred_repos", lambda limit: [STAR] * 3)
+    monkeypatch.setitem(ghviewer.COUNTED_ENTRIES, ghviewer.STARRED_ENTRY,
+                        lambda: pytest.fail("no count needed"))
+    f, _ = _load_frame(ghviewer.VIEW_STARRED)
+    landed = []
+    f._on_repo_list_loaded = lambda *a: landed.append(a)
+    Frame._load_items(f)
+    assert landed[-1][-1] is None

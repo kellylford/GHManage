@@ -41,8 +41,9 @@ The repository list now opens with four entries, in this order: **★ Favorites*
 **Activity**, **Starred Repositories** and **Watched Repositories**. Your own
 repositories follow, as before. Starred and Watched are also on View ▸ View Mode.
 
-Each lists its repositories with their description, language, stars and when
-they were last pushed. Starred puts your most recent stars first. Watched
+Each entry says how many repositories it holds, the way ★ Favorites does:
+"Starred Repositories (7)". Each lists its repositories with their description,
+language, stars and when they were last pushed. Starred puts your most recent stars first. Watched
 includes your own repositories, because GitHub watches those for you.
 
 | Key | Action |

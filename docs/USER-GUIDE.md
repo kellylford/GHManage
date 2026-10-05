@@ -220,12 +220,14 @@ It is in this order:
 
 1. **★ Favorites**, with how many you have, for example "★ Favorites (12)". See [Favorites](#favorites).
 2. **Activity**: your GitHub feed. See [Activity](#activity).
-3. **Starred Repositories**: the repositories you have starred. See [Starred and Watched Repositories](#starred-and-watched-repositories).
-4. **Watched Repositories**: the repositories you watch.
+3. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
+4. **Watched Repositories**: the repositories you watch, with how many.
 5. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
 6. **Your own repositories**, up to 100, each followed by its description.
 
 The first four are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
+
+The starred and watched counts are asked for once the list is up, so they appear a moment after the names, without moving you from the entry you are on. If GitHub can't be asked, the entry shows just its name rather than a number that might be wrong. Opening Starred or Watched, or pressing `R` in it, brings its count up to date, so a repository you starred on the web since GHManage started is counted then.
 
 Opening a repository shows its **Issues & PRs**. Use `Ctrl+2` through `Ctrl+0` to reach its other views.
 

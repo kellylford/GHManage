@@ -10,7 +10,8 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 ## Features
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
-  Above them sit **★ Favorites**, **Activity**, **Starred Repositories** and **Watched Repositories**
+  Above them sit **★ Favorites**, **Activity**, **Starred Repositories** and **Watched Repositories**,
+  the counted ones with how many they hold, e.g. "Starred Repositories (7)"
 - **Activity** — your GitHub feed: what happens in the repositories you star or watch and
   what the people you follow do, newest first, across every repository
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
