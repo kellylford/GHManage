@@ -501,3 +501,61 @@ def test_summaries_read_as_sentences(etype, payload, summary):
 
 def test_event_id_is_kept():
     assert parse_event({"id": 123, "type": "WatchEvent"}).event_id == "123"
+
+
+# ── Counting without fetching ──────────────────────────────────────────
+
+
+HEAD = "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n"
+
+
+@pytest.mark.parametrize("reply, count", [
+    # Seen on the real API: 7 starred, one per page, so the last page is 7
+    (HEAD + 'Link: <https://api.github.com/user/starred?per_page=1&page=2>; rel="next", '
+     '<https://api.github.com/user/starred?per_page=1&page=7>; rel="last"\r\n\r\n[{"id": 1}]', 7),
+    (HEAD + '\r\n[{"id": 1}]', 1),     # one page only: no Link header
+    (HEAD + "\r\n[]", 0),              # nothing starred
+])
+def test_count_reads_the_last_page(fake_gh, reply, count):
+    fake_gh.route("api -i user/starred?per_page=1", reply)
+    assert gh_data.count_starred_repos() == count
+
+
+def test_count_watched_uses_subscriptions(fake_gh):
+    fake_gh.route("api -i user/subscriptions?per_page=1", HEAD + "\r\n[{}, {}]")
+    assert gh_data.count_watched_repos() == 2
+
+
+def test_count_with_a_garbled_reply_is_an_error(fake_gh):
+    fake_gh.route("api -i", HEAD + "\r\nnot json")
+    with pytest.raises(GhError):
+        gh_data.count_starred_repos()
+
+
+@pytest.mark.parametrize("link, count", [
+    # page before per_page: read by name, not position
+    ('<https://api.github.com/user/starred?page=2&per_page=1>; rel="next", '
+     '<https://api.github.com/user/starred?page=12&per_page=1>; rel="last"', 12),
+    ('<https://api.github.com/user/starred?per_page=1&page=3>; rel="last"', 3),
+])
+def test_count_reads_page_by_name(fake_gh, link, count):
+    fake_gh.route("api -i", HEAD + f"Link: {link}\r\n\r\n[{{}}]")
+    assert gh_data.count_starred_repos() == count
+
+
+@pytest.mark.parametrize("reply", [
+    # A Link header with no last page: unknown, not "1"
+    HEAD + 'Link: <https://api.github.com/user/starred?page=2>; rel="next"\r\n\r\n[{}]',
+    # Headers that never end: unknown, not "0"
+    HEAD,
+])
+def test_count_that_cannot_be_read_is_an_error(fake_gh, reply):
+    fake_gh.route("api -i", reply)
+    with pytest.raises(GhError):
+        gh_data.count_starred_repos()
+
+
+def test_count_appends_to_an_existing_query(fake_gh):
+    fake_gh.route("api -i", HEAD + "\r\n[]")
+    gh_data._count_items("x?sort=updated")
+    assert fake_gh.calls[0] == ["api", "-i", "x?sort=updated&per_page=1"]
