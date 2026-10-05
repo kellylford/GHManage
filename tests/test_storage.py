@@ -93,22 +93,3 @@ def test_pinned_ignores_junk(app_data):
     (app_data / "pinned_repos.json").write_text("nope", encoding="utf-8")
     assert pinned_repos.load_pinned() == []
 
-
-def test_repo_sources_default_to_none(app_data):
-    import pinned_repos
-    assert pinned_repos.load_repo_sources() == set()
-
-
-def test_repo_sources_round_trip_in_a_fixed_order(app_data):
-    import pinned_repos
-    pinned_repos.save_repo_sources({"watched", "starred"})
-    assert pinned_repos.load_repo_sources() == {"starred", "watched"}
-    assert json.loads((app_data / "repo_sources.json").read_text()) == ["starred", "watched"]
-
-
-@pytest.mark.parametrize("content", ["not json", '{"starred": true}', '["starred", "bogus", 3]'])
-def test_bad_repo_sources_file_is_tolerated(app_data, content):
-    import pinned_repos
-    (app_data / "repo_sources.json").write_text(content, encoding="utf-8")
-    expected = {"starred"} if "bogus" in content else set()
-    assert pinned_repos.load_repo_sources() == expected

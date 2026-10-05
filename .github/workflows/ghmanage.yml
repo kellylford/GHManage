@@ -495,9 +495,42 @@ jobs:
   # is worse than a failed one, because the missing platform's users see a new
   # version they cannot get and the updater on that platform has nothing to
   # resolve.
+  # ══════════════════════════════════════════════════════════════════════
+  #  User guide — built on every run, published only after a release
+  # ══════════════════════════════════════════════════════════════════════
+  # Builds the whole site exactly as publish-user-guide.yml does, without
+  # deploying. The build fails on a pandoc warning, a link to a heading that
+  # does not exist, or a broken link between pages, so a guide edit that would
+  # break publishing fails its pull request instead of the release. The tests
+  # that need pandoc skip on the build jobs, which have none; here they run.
+  check-guide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the release history reads every tag
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Pandoc and pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+          python -m pip install pytest
+
+      - name: Build the site
+        run: python scripts/build_user_guide.py --out build/docs --version 0.0.0 --repo-root .
+
+      - name: Guide tests
+        run: python -m pytest -q -rs tests/test_build_user_guide.py
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-macos]
+    # check-guide too: a guide that cannot be built must stop the release
+    # before it is public, not fail the publish step after it.
+    needs: [build-windows, build-macos, check-guide]
     runs-on: ubuntu-latest
 
     steps:
@@ -542,3 +575,18 @@ jobs:
           files: release-assets/*
           fail_on_unmatched_files: true
           body_path: docs/release-notes-${{ github.ref_name }}.md
+
+  # Publish the user guide and release history to GitHub Pages once the
+  # release is out. Called here rather than triggered by the release event:
+  # a release created with GITHUB_TOKEN raises no event that starts a workflow.
+  # A called workflow's jobs cannot have more permission than the job calling
+  # it, and this workflow's top level grants neither pages nor a read-only
+  # contents, so the job sets exactly what publish-user-guide.yml needs.
+  publish-guide:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish-user-guide.yml

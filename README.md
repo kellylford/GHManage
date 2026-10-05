@@ -4,10 +4,13 @@ A **wxPython GUI** for viewing and managing GitHub issues, pull requests, and gi
 
 Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](https://cli.github.com/).
 
+**The full user guide is at <https://kellylford.github.io/GHManage/>**, and Help ▸
+User Guide (`F1`) opens it from the app. This README is a summary.
+
 ## Features
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
-  Turn on View ▸ Repository List to add the repositories you have starred or are watching
+  Above them sit **★ Favorites**, **Activity**, **Starred Repositories** and **Watched Repositories**
 - **Activity** — your GitHub feed: what happens in the repositories you star or watch and
   what the people you follow do, newest first, across every repository
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
@@ -20,8 +23,7 @@ Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](htt
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (100 at a time)
 - **View menu** with:
-  - **Show** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, GitHub Pages, and Activity
-  - **Repository List** — add your starred and watched repositories to the list on the left
+  - **View Mode** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, GitHub Pages, Activity, Starred Repositories and Watched Repositories
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
@@ -52,8 +54,7 @@ GHManage. Help ▸ Check for Updates checks on demand.
 **GHManage-win-Portable.zip** is also published for anyone who would rather not
 install. It does not update itself.
 
-Windows may show a SmartScreen "unknown publisher" warning until code signing is
-switched on. See [docs/INSTALLER.md](docs/INSTALLER.md).
+Releases are code-signed. See [docs/INSTALLER.md](docs/INSTALLER.md) for how.
 
 ### macOS
 
@@ -61,11 +62,10 @@ Apple Silicon (M1 or later), macOS 11 Big Sur or newer.
 
 Download **GHManage-osx.dmg** from the
 [latest release](https://github.com/kellylford/GHManage/releases), open it, and
-drag GHManage to Applications. **GHManage-osx-Setup.pkg** is also published if
-you would rather run an installer, and **GHManage-osx-Portable.zip** contains
-the same app if you prefer to unzip it yourself.
+drag GHManage to Applications. **GHManage-osx-Portable.zip** contains the same
+app if you prefer to unzip it yourself.
 
-All three update themselves — a macOS app bundle carries its own updater, so it
+Both update themselves — a macOS app bundle carries its own updater, so it
 keeps working wherever you put it. New versions download in the background and
 install the next time you start GHManage; Help ▸ Check for Updates checks on
 demand.
@@ -127,6 +127,7 @@ python ghviewer.py --repo owner/repo-name
 | `Alt+P` | Jump to the previous comment in the details box |
 | `Tab` | Move focus between the repo list, item list, and details panel |
 | `F6` / `Shift+F6` | Move focus to the next / previous pane: repo list, item list, details panel, status bar |
+| `F1` | Open the user guide in your browser |
 | `Ctrl+Q` | Quit |
 
 ### In the status bar
@@ -159,32 +160,33 @@ details panel).
 | `Ctrl+0` | GitHub Pages |
 | `Ctrl+Shift+A` | Activity |
 
-Every view except Favorites and Activity needs a repository, so with none
-selected the status bar says "Select a repository first" and the view is left
-alone.
+Every view except Favorites, Activity, Starred Repositories and Watched
+Repositories needs a repository, so with none selected the status bar says
+"Select a repository first" and the view is left alone. Those four don't change
+the repository you are in, so `Ctrl+1` takes you back to it.
 
 ### Starred and watched repositories
 
-The repository list starts with **★ Favorites** and **Activity**, then any
-repositories you opened by address, then your own. View ▸ Repository List adds
-two more lists after those, each switched on separately and remembered between
-sessions:
+The repository list starts with four entries that aren't single repositories:
+**★ Favorites**, **Activity**, **Starred Repositories** and **Watched
+Repositories**. After them come any repositories you opened by address, then
+your own. Starred and Watched are also on View ▸ View Mode.
 
-- **Show Starred Repositories** — the repositories you have starred, most
-  recently starred first.
-- **Show Watched Repositories** — the repositories you are watching. GitHub
-  watches your own repositories for you, so only the ones that belong to other
-  people are added.
+- **Starred Repositories** — the repositories you have starred, most recently
+  starred first.
+- **Watched Repositories** — the repositories you are watching. GitHub watches
+  your own repositories for you, so they are in this list as well.
 
-Each added repository says why it is there after its name, for example
-`nvaccess/nvda (starred) — NVDA, the free and open source screen reader`, or
-`(starred, watching)` when it is on both lists. Typing a letter still jumps by
-owner name. Up to 100 starred repositories are shown, your most recent stars,
-and the watched list looks through 300. The status bar says how many each list
-added, and says so when a list was cut off.
+Each row reads repository, description, language, stars and when it was last
+pushed; an archived repository or a fork says so at the start of its
+description. The details panel adds forks and open issues.
 
-Remove from List does not take a starred or watched repository out of the list;
-switch the list off instead.
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the repository here in GHManage; `Backspace` from its issues comes back to the same row |
+| `Ctrl+O` | Open the repository on GitHub |
+| `F` | Favorite the repository |
+| `Ctrl++` | Load 100 more |
 
 ### In the Activity view
 
@@ -357,7 +359,7 @@ Items are re-labelled and enabled for the current view, so **Delete** reads
 and is greyed out where nothing can be deleted. `Ctrl+D` follows the same rule;
 so does the bare `Delete` key, which additionally works from the details panel.
 
-### View menu → Show
+### View menu → View Mode
 
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
 (with download counts), **Workflows** (the workflow definitions, which you can run

@@ -61,6 +61,8 @@ def _frame(**attrs):
         _announce=announced.append, announced=announced,
     )
     frame._line_to_position = lambda line: Frame._line_to_position(frame, line)
+    frame._open_repo_from_list = lambda repo, item: Frame._open_repo_from_list(frame, repo, item)
+    frame._VIEW_LABELS = Frame._VIEW_LABELS
     for k, v in attrs.items():
         setattr(frame, k, v)
     return frame
@@ -304,7 +306,7 @@ def test_goto_missing_number_says_not_found(monkeypatch, inline_worker):
     assert "does not exist" in inline_worker[0]
 
 
-# ── Starred and watched repos in the repository list ───────────────────
+# ── The repository list: categories first, then repositories ──────────
 
 
 class FakeListBox:
@@ -332,16 +334,13 @@ class FakeListBox:
         return [label for label, _ in self.rows]
 
 
-def _repo_frame(sources=(), extras=None, pinned=(), repo=None, view=ghviewer.VIEW_ISSUES,
-                focus=None, loaded_once=False):
+def _repo_frame(pinned=(), repo=None, view=ghviewer.VIEW_ISSUES, focus=None, loaded_once=False):
     f = _frame(
         repo=repo, view_mode=view, repo_list=FakeListBox(),
-        _pinned_repos=list(pinned), _repo_sources=set(sources),
-        _extra_repos=dict(extras or {}), _all_repos=[],
+        _pinned_repos=list(pinned), _all_repos=[],
         _repo_token=0, _repos_loaded_once=loaded_once,
     )
-    for name in ("_extra_repo_rows", "_repos_loaded_message", "_restore_repo_selection"):
-        setattr(f, name, getattr(Frame, name).__get__(f))
+    f._restore_repo_selection = Frame._restore_repo_selection.__get__(f)
     f._current_focus = lambda: focus
     return f
 
@@ -350,193 +349,111 @@ def _row(name, desc=""):
     return {"nameWithOwner": name, "description": desc}
 
 
-def test_repo_list_without_extras_is_as_before():
-    f = _repo_frame()
-    Frame._on_repos_loaded(f, [_row("me/a", "Mine")], {}, [])
-    assert f.repo_list.labels == ["★ Favorites", "Activity", "me/a — Mine"]
-    assert f.repo_list.rows[1][1] == ghviewer.ACTIVITY_ENTRY
+CATEGORIES = ["★ Favorites", "Activity", "Starred Repositories", "Watched Repositories"]
+
+
+def test_categories_come_first_then_pinned_then_your_own():
+    f = _repo_frame(pinned=["p/pin"])
+    Frame._on_repos_loaded(f, [_row("me/a", "Mine"), _row("p/pin", "Pinned one")])
+    assert f.repo_list.labels == CATEGORIES + ["📌 p/pin — Pinned one", "me/a — Mine"]
+    assert [d for _, d in f.repo_list.rows] == [
+        ghviewer.FAVORITES_ENTRY, ghviewer.ACTIVITY_ENTRY, ghviewer.STARRED_ENTRY,
+        ghviewer.WATCHED_ENTRY, "p/pin", "me/a"]
     assert f.repo_list.selection == 0
-    assert f.announced[-1] == "Loaded 1 repositories. Select one to view issues and PRs."
+    assert f.announced[-1] == "Loaded 2 repositories. Select one to view issues and PRs."
 
 
-def test_starred_and_watched_follow_your_own_and_say_why():
-    extras = {
-        "starred": [_row("x/star", "S"), _row("x/both"), _row("me/a")],
-        "watched": [_row("x/both"), _row("x/watch"), _row("me/a")],
-    }
-    f = _repo_frame({"starred", "watched"}, extras, pinned=["p/pin"])
-    Frame._on_repos_loaded(f, [_row("me/a")], extras, [])
-    assert f.repo_list.labels == [
-        "★ Favorites", "Activity", "📌 p/pin", "me/a",
-        "x/star (starred) — S",
-        "x/both (starred, watching)",
-        "x/watch (watching)",
-    ]
-    # Every repo row carries just its name, for _select_repo
-    assert [d for _, d in f.repo_list.rows[2:]] == [
-        "p/pin", "me/a", "x/star", "x/both", "x/watch"]
-    # Counted as added: your own me/a is not counted again
-    assert f.announced[-1].startswith(
-        "Loaded 5 repositories, including 2 starred and 2 watched.")
+def test_every_category_entry_has_a_view_and_back():
+    for entry, _ in ghviewer.CATEGORY_ENTRIES:
+        view = ghviewer.ENTRY_VIEWS[entry]
+        assert ghviewer.VIEW_ENTRIES[view] == entry
+        assert view in ghviewer.REPOLESS_VIEWS and view in ghviewer.FEED_VIEWS
+        assert view in ghviewer.VIEW_COLUMNS and view in Frame._VIEW_LABELS
 
 
-def test_a_list_cut_off_at_its_limit_says_so():
-    starred = [_row(f"x/s{i}") for i in range(ghviewer.STARRED_LIMIT)]
-    f = _repo_frame({"starred"}, {"starred": starred})
-    Frame._on_repos_loaded(f, [], {"starred": starred}, [])
-    assert "100 starred (from your latest 100)" in f.announced[-1]
-
-
-def test_own_repos_first_while_extras_load():
-    f = _repo_frame({"starred"})
-    Frame._on_repos_loaded(f, [_row("me/a")], None, None, token=0)
-    assert f.repo_list.labels[-1] == "me/a"
-    assert f.announced[-1] == "Loaded 1 repositories. Loading starred repositories…"
-
-
-def test_a_switched_off_list_is_not_shown_even_if_cached():
-    extras = {"starred": [_row("x/star")], "watched": [_row("x/watch")]}
-    f = _repo_frame({"watched"}, extras)
-    Frame._on_repos_loaded(f, [], None, None)
-    assert f.repo_list.labels[2:] == ["x/watch (watching)"]
-
-
-def test_extra_list_failure_is_reported_alongside_the_rest():
-    f = _repo_frame({"starred"})
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, ["starred repositories: HTTP 403"])
-    assert f.repo_list.labels[-1] == "me/a"
-    assert f.announced[-1] == (
-        "Loaded 1 repositories, including 0 starred, "
-        "but couldn't load starred repositories: HTTP 403")
+@pytest.mark.parametrize("entry, view", [
+    (ghviewer.ACTIVITY_ENTRY, ghviewer.VIEW_ACTIVITY),
+    (ghviewer.STARRED_ENTRY, ghviewer.VIEW_STARRED),
+    (ghviewer.WATCHED_ENTRY, ghviewer.VIEW_WATCHED),
+])
+def test_enter_on_a_category_opens_its_view(entry, view):
+    f = _repo_frame()
+    f.repo_list.Append("x", entry)
+    f.repo_list.SetSelection(0)
+    opened = []
+    f._select_category = opened.append
+    Frame._activate_repo_entry(f)
+    assert opened == [view]
 
 
 def test_a_superseded_repo_load_is_dropped():
-    f = _repo_frame({"starred", "watched"})
+    f = _repo_frame()
     f._repo_token = 2
-    Frame._on_repos_loaded(f, [_row("me/a")], {"starred": [_row("x/s")]}, [], token=1)
-    assert f.repo_list.rows == [] and f._extra_repos == {}
+    Frame._on_repos_loaded(f, [_row("me/a")], token=1)
+    assert f.repo_list.rows == []
 
 
 def test_rebuilt_list_keeps_the_current_repo_selected():
-    extras = {"starred": [_row("x/star")]}
-    f = _repo_frame({"starred"}, extras, repo="x/star")
-    Frame._on_repos_loaded(f, [_row("me/a")], extras, [])
-    assert f.repo_list.GetClientData(f.repo_list.selection) == "x/star"
+    f = _repo_frame(repo="me/b")
+    Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")])
+    assert f.repo_list.GetClientData(f.repo_list.selection) == "me/b"
 
 
 def test_rebuilt_list_keeps_the_row_you_were_on():
-    # Arrowing through the list when the starred repos arrive: stay put
-    f = _repo_frame({"starred"})
-    Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")], None, None)
-    f.repo_list.SetSelection(3)  # me/b
-    Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")], {"starred": [_row("x/s")]}, [])
+    f = _repo_frame()
+    Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")])
+    f.repo_list.SetSelection(5)  # me/b
+    Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")])
     assert f.repo_list.GetClientData(f.repo_list.selection) == "me/b"
 
 
 def test_rebuilt_list_selects_nothing_when_the_shown_repo_is_gone():
-    # Viewing a starred repo, then switching starred off
-    f = _repo_frame(repo="x/star")
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
+    # Viewing a pinned repo, then removing it from the list
+    f = _repo_frame(repo="p/gone")
+    Frame._on_repos_loaded(f, [_row("me/a")])
     assert f.repo_list.selection == ghviewer.wx.NOT_FOUND
 
 
-def test_rebuilt_list_keeps_activity_selected_in_the_activity_view():
-    f = _repo_frame(view=ghviewer.VIEW_ACTIVITY, repo="me/a")
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
-    assert f.repo_list.selection == 1
+@pytest.mark.parametrize("view, row", [
+    (ghviewer.VIEW_ACTIVITY, 1), (ghviewer.VIEW_STARRED, 2), (ghviewer.VIEW_WATCHED, 3),
+])
+def test_rebuilt_list_keeps_the_category_selected(view, row):
+    f = _repo_frame(view=view, repo="me/a")
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    assert f.repo_list.selection == row
 
 
 def test_first_load_takes_focus():
     f = _repo_frame(focus=object())
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
+    Frame._on_repos_loaded(f, [_row("me/a")])
     assert f.repo_list.focused == 1 and f._repos_loaded_once
 
 
 def test_a_later_load_leaves_focus_alone_while_the_app_is_in_the_background():
     # No focused window: what the app sees after Enter opened the browser
     f = _repo_frame(focus=None, loaded_once=True)
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
+    Frame._on_repos_loaded(f, [_row("me/a")])
     assert f.repo_list.focused == 0
 
 
 def test_a_later_load_leaves_focus_where_you_are():
-    # A list switched on from the menu lands while you read something else
     f = _repo_frame(focus=object(), loaded_once=True)
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
+    Frame._on_repos_loaded(f, [_row("me/a")])
     assert f.repo_list.focused == 0
 
 
 def test_a_later_load_keeps_focus_in_the_repo_list():
     f = _repo_frame(loaded_once=True)
     f._current_focus = lambda: f.repo_list
-    Frame._on_repos_loaded(f, [_row("me/a")], {}, [])
+    Frame._on_repos_loaded(f, [_row("me/a")])
     assert f.repo_list.focused == 1
-
-
-def _loader(f):
-    f._on_repos_loaded = lambda *a, **k: Frame._on_repos_loaded(f, *a, **k)
-
-
-def test_load_repos_fetches_only_the_lists_switched_on(monkeypatch, inline_worker):
-    calls = []
-    monkeypatch.setattr(ghviewer, "list_repos", lambda limit: [_row("me/a")])
-    monkeypatch.setattr(ghviewer, "list_starred_repos",
-                        lambda limit: calls.append(("starred", limit)) or [_row("x/s")])
-    monkeypatch.setattr(ghviewer, "list_watched_repos",
-                        lambda limit: calls.append(("watched", limit)) or [])
-    f = _repo_frame({"starred"})
-    _loader(f)
-    Frame._load_repos(f)
-    assert calls == [("starred", 100)]
-    assert f.repo_list.labels[-1] == "x/s (starred)"
-
-
-def test_watched_looks_deeper_than_starred(monkeypatch, inline_worker):
-    calls = []
-    monkeypatch.setattr(ghviewer, "list_repos", lambda limit: [])
-    monkeypatch.setattr(ghviewer, "list_watched_repos",
-                        lambda limit: calls.append(limit) or [])
-    f = _repo_frame({"watched"})
-    _loader(f)
-    Frame._load_repos(f)
-    assert calls == [ghviewer.WATCHED_LIMIT] and ghviewer.WATCHED_LIMIT > 100
-
-
-def test_load_repos_survives_a_failing_extra_list(monkeypatch, inline_worker):
-    def boom(limit):
-        raise ghviewer.GhError("HTTP 403")
-    monkeypatch.setattr(ghviewer, "list_repos", lambda limit: [_row("me/a")])
-    monkeypatch.setattr(ghviewer, "list_watched_repos", boom)
-    f = _repo_frame({"watched"})
-    _loader(f)
-    Frame._load_repos(f)
-    assert f.repo_list.labels[-1] == "me/a"
-    assert "couldn't load watched repositories: HTTP 403" in f.announced[-1]
-
-
-def test_toggling_a_list_saves_it_and_reloads(app_data):
-    import pinned_repos
-    f = _repo_frame()
-    reloads = []
-    f._update_menu_checks = lambda: None
-    f._load_repos = lambda: reloads.append("load")
-    f._refresh_repo_list = lambda: reloads.append("refresh")
-    Frame._toggle_repo_source(f, "starred")
-    assert pinned_repos.load_repo_sources() == {"starred"}
-    assert reloads == ["load"]
-    # Turning it off needs no fetch, only a rebuild
-    f._extra_repos = {"starred": [_row("x/s")]}
-    Frame._toggle_repo_source(f, "starred")
-    assert pinned_repos.load_repo_sources() == set()
-    assert reloads == ["load", "refresh"]
-    assert "starred" not in f._extra_repos
-    assert f.announced[-1] == "Hiding starred repositories in the repository list."
 
 
 @pytest.mark.parametrize("name, spoken", [
     ("me/a", "me/a is one of your own repositories"),
-    ("x/s", "x/s is in the list because you star or watch it"),
     (ghviewer.ACTIVITY_ENTRY, "That entry is always in the list."),
+    (ghviewer.STARRED_ENTRY, "That entry is always in the list."),
+    (ghviewer.FAVORITES_ENTRY, "That entry is always in the list."),
 ])
 def test_remove_from_list_explains_what_it_cannot_remove(name, spoken):
     f = _repo_frame()
@@ -545,6 +462,203 @@ def test_remove_from_list_explains_what_it_cannot_remove(name, spoken):
     f.repo_list.SetSelection(0)
     Frame.on_remove_repo(f, None)
     assert f.announced[-1].startswith(spoken)
+
+
+def test_user_guide_opens_in_the_browser(monkeypatch):
+    opened = []
+    monkeypatch.setattr(ghviewer.webbrowser, "open", lambda url: opened.append(url) or True)
+    f = _frame()
+    Frame.on_user_guide(f, None)
+    assert opened == ["https://kellylford.github.io/GHManage/"]
+    assert f.announced[-1] == "Opened the user guide in your browser."
+
+
+def test_user_guide_without_a_browser_says_where_it_is(monkeypatch):
+    monkeypatch.setattr(ghviewer.webbrowser, "open", lambda url: False)
+    f = _frame()
+    Frame.on_user_guide(f, None)
+    assert f.announced[-1].endswith("https://kellylford.github.io/GHManage/")
+
+
+class StrictListBox(FakeListBox):
+    """Asserts on a bad index, as the real wx.ListBox does."""
+
+    def SetSelection(self, i):
+        if i != ghviewer.wx.NOT_FOUND and not 0 <= i < len(self.rows):
+            raise AssertionError("invalid index in wxListBox::SetSelection")
+        super().SetSelection(i)
+
+
+@pytest.mark.parametrize("view", [ghviewer.VIEW_FAVORITES, ghviewer.VIEW_ACTIVITY,
+                                  ghviewer.VIEW_STARRED])
+def test_switching_view_before_the_repo_list_loads(view):
+    # Ctrl+9 at startup, or after `gh` failed: the repo list is empty
+    f = _repo_frame()
+    f.repo_list = StrictListBox()
+    f.page_size, f.current_limit, f._return_to = 100, 100, None
+    loads = []
+    for name in ("_rebuild_columns", "_rebuild_columns_menu", "_update_menu_checks"):
+        setattr(f, name, lambda: None)
+    f._load_items = lambda: loads.append("items")
+    f._load_favorites_view = lambda: loads.append("favorites")
+    Frame._switch_view(f, view)
+    assert f.view_mode == view and len(loads) == 1
+
+
+@pytest.mark.parametrize("n, spoken", [(7, "That is all your starred repositories."), (100, None)])
+def test_view_more_in_a_repo_list_stops_when_there_is_no_more(n, spoken):
+    f = _list_frame()
+    f.git_items = f._shown = [STAR] * n
+    loads = []
+    f._load_items = lambda: loads.append(f.current_limit)
+    Frame.on_view_more(f, None)
+    if spoken:
+        assert loads == [] and f.announced[-1] == spoken
+    else:
+        assert loads == [200]
+
+
+def test_f_puts_the_star_on_every_row_about_it(app_data):
+    class Rows:
+        def __init__(self): self.cells = {}
+        def SetItem(self, row, col, text): self.cells[(row, col)] = text
+    a, b = _event("o/r", 4), _event("o/r", 4)   # two events about issue #4
+    c = ghviewer.ActivityEvent("WatchEvent", "x", "o/r", "starred")
+    f = _frame(view_mode=ghviewer.VIEW_ACTIVITY, columns=["actor"], list_mode="quick",
+               _shown=[a, b, c], list_ctrl=Rows())
+    for name in ("_item_label", "_favorite_prefix", "_redraw_favorite_marks",
+                 "_build_favorite_entry"):
+        setattr(f, name, getattr(Frame, name).__get__(f))
+    f._refresh_repo_list_fav_count = lambda: None
+    f._focused_item = lambda: a
+    Frame._toggle_favorite(f)
+    assert f.list_ctrl.cells == {(0, 0): "★ a", (1, 0): "★ a", (2, 0): "x"}
+
+
+# ── Starred and Watched repositories ───────────────────────────────────
+
+
+STAR = ghviewer.RepoEntry(
+    "nvaccess/nvda", "NVDA, the free screen reader", url="https://github.com/nvaccess/nvda",
+    language="Python", stars=2345, forks=600, open_issues=2500,
+    pushed_at="2026-10-04T12:00:00Z")
+
+
+def test_repo_details():
+    f = _frame(git_items=[STAR])
+    Frame._show_git_details(f, 0)
+    lines = f.details_text.lines
+    assert lines[:2] == ["nvaccess/nvda", "NVDA, the free screen reader"]
+    assert _address_after(lines, "URL:") == STAR.url
+    for line in ("Language: Python", "Stars: 2,345", "Forks: 600",
+                 "Open issues and pull requests: 2,500", "Last pushed: 2026-10-04"):
+        assert line in lines
+    assert lines[-1] == "Press Ctrl+O to open it on GitHub."
+    assert not any(line.startswith("Archived") for line in lines)
+
+
+def test_repo_details_name_its_flags():
+    repo = ghviewer.RepoEntry("o/r", archived=True, fork=True, private=True)
+    f = _frame(git_items=[repo])
+    Frame._show_git_details(f, 0)
+    assert {"Archived (read-only)", "A fork", "Private"} <= set(f.details_text.lines)
+
+
+def test_repo_favorite():
+    entry = Frame._build_favorite_entry(_frame(repo=None), STAR)
+    assert (entry.repo, entry.item_type, entry.title, entry.subtitle, entry.url) == (
+        "nvaccess/nvda", "repository", "nvaccess/nvda", "NVDA, the free screen reader",
+        STAR.url)
+
+
+def _list_frame(view=ghviewer.VIEW_STARRED, limit=100):
+    f = _activity_frame(limit)
+    f.view_mode = view
+    f._VIEW_LABELS = Frame._VIEW_LABELS
+    f._row_of = lambda item: Frame._row_of(f, item)
+    return f
+
+
+@pytest.mark.parametrize("view, n, limit, message", [
+    (ghviewer.VIEW_STARRED, 3, 100, "Starred Repositories — 3 repositories."),
+    (ghviewer.VIEW_STARRED, 1, 100, "Starred Repositories — 1 repository."),
+    (ghviewer.VIEW_WATCHED, 100, 100, "Watched Repositories — 100 repositories. Ctrl++ loads more."),
+    (ghviewer.VIEW_STARRED, 0, 100, "Starred Repositories — you haven't starred any repositories."),
+    (ghviewer.VIEW_WATCHED, 0, 100, "Watched Repositories — you aren't watching any repositories."),
+])
+def test_repo_list_status(call_later, view, n, limit, message):
+    f = _list_frame(view, limit)
+    Frame._on_repo_list_loaded(f, 1, [STAR] * n)
+    msg, keys = f.statuses[-1]
+    assert msg == message
+    assert "Enter=open here" in keys and "Ctrl+O=open on GitHub" in keys
+
+
+def test_stale_repo_list_is_dropped():
+    f = _list_frame()
+    Frame._on_repo_list_loaded(f, 0, [STAR])
+    assert f.statuses == [] and f.git_items == []
+
+
+def test_load_items_fetches_the_list_for_the_view(monkeypatch, inline_worker):
+    calls = []
+    monkeypatch.setattr(ghviewer, "fetch_starred_repos", lambda limit: calls.append(("s", limit)) or [STAR])
+    monkeypatch.setattr(ghviewer, "fetch_watched_repos", lambda limit: calls.append(("w", limit)) or [])
+    for view in (ghviewer.VIEW_STARRED, ghviewer.VIEW_WATCHED):
+        f, _ = _load_frame(view)
+        landed = []
+        f._on_repo_list_loaded = lambda *a: landed.append(a)
+        f._pending_focus_row = 7
+        Frame._load_items(f)
+        assert landed[-1][-1] == 7
+    assert calls == [("s", 100), ("w", 100)]
+
+
+def test_enter_on_a_starred_repo_opens_it_and_remembers_the_way_back():
+    f = _repo_frame(view=ghviewer.VIEW_STARRED)
+    f.repo_list.Append("nvaccess/nvda", "nvaccess/nvda")
+    f.list_ctrl = FakeItemList(0)
+    f.git_items, f._activity_more, f.current_limit = [STAR], False, 200
+    f._focused_item = lambda: STAR
+    opened = []
+    f._select_repo = opened.append
+    f._open_repo_from_list = lambda repo, item: Frame._open_repo_from_list(f, repo, item)
+    Frame.on_item_activated(f, None)
+    assert opened == ["nvaccess/nvda"] and f.repo_list.selection == 0
+    assert f._return_to == (ghviewer.VIEW_STARRED, [STAR], False, STAR, 200)
+
+
+def test_backspace_returns_to_the_starred_list_on_the_same_repo(call_later):
+    other = ghviewer.RepoEntry("o/other")
+    f = _list_frame()
+    f.view_mode, f.repo, f.repo_list = ghviewer.VIEW_ISSUES, "nvaccess/nvda", FakeListBox()
+    f._return_to = (ghviewer.VIEW_STARRED, [other, STAR], False, STAR, 200)
+    f._switch_view = lambda mode, load=True: setattr(f, "view_mode", mode)
+    f._begin_fetch = lambda: 1
+    f._restore_repo_selection = lambda prev: None
+    f._on_repo_list_loaded = lambda *a: Frame._on_repo_list_loaded(f, *a)
+    Frame._return_to_list(f)
+    assert f.view_mode == ghviewer.VIEW_STARRED and f.git_items == [other, STAR]
+    assert f.current_limit == 200
+    assert call_later[-1][1] == (1,)
+    assert f.announced[-1] == "Back to starred repositories"
+
+
+def test_view_more_in_a_repo_list_lands_on_the_first_new_row():
+    f = _list_frame()
+    f.git_items = f._shown = [STAR] * 100
+    loads = []
+    f._load_items = lambda: loads.append(f.current_limit)
+    Frame.on_view_more(f, None)
+    assert loads == [200] and f._pending_focus_row == 100
+
+
+@pytest.mark.parametrize("view", [ghviewer.VIEW_STARRED, ghviewer.VIEW_WATCHED])
+def test_category_views_keep_the_current_repo(view):
+    f = _frame(view_mode=ghviewer.VIEW_ISSUES, repo="o/r")
+    f._switch_view = lambda mode: setattr(f, "view_mode", mode)
+    Frame._select_category(f, view)
+    assert f.view_mode == view and f.repo == "o/r"
 
 
 # ── Rows and items with a quick filter on ──────────────────────────────
@@ -626,6 +740,7 @@ def test_two_events_sharing_an_address_do_not_unfavorite_each_other(app_data):
     f = _frame(view_mode=ghviewer.VIEW_ACTIVITY, repo=None)
     f._refresh_repo_list_fav_count = lambda: None
     f._build_favorite_entry = lambda item: Frame._build_favorite_entry(f, item)
+    f._redraw_favorite_marks = lambda: None
     f._focused_item = lambda: issue
     Frame._toggle_favorite(f)
     assert [fav.url for fav in f.favorites] == [issue.subject_url]
@@ -680,7 +795,7 @@ def test_activity_details_without_title_or_body():
 def _activity_frame(limit=100):
     f = _frame(
         view_mode=ghviewer.VIEW_ACTIVITY, repo=None, current_limit=limit,
-        page_size=100, _fetch_token=1, filter_text="", _activity_focus_row=0,
+        page_size=100, _fetch_token=1, filter_text="", _pending_focus_row=0,
         _activity_more=False, _shown=[],
     )
     f._fetch_is_current = lambda t: t == f._fetch_token
@@ -757,7 +872,7 @@ def test_view_more_lands_on_the_first_older_event(call_later):
     loads = []
     f._load_items = lambda: loads.append(f.current_limit)
     Frame.on_view_more(f, None)
-    assert loads == [200] and f._activity_focus_row == 96
+    assert loads == [200] and f._pending_focus_row == 96
     Frame._on_activity_loaded(f, 1, [EVENT] * 196, True, 96)
     assert call_later[-1][1] == (96,)
 
@@ -782,9 +897,9 @@ def test_the_focus_row_goes_to_one_load_only(monkeypatch, inline_worker):
     # that never lands can't leave it for the next one.
     monkeypatch.setattr(ghviewer, "fetch_activity", lambda limit: ([EVENT], True))
     f, landed = _load_frame()
-    f._activity_focus_row = 96
+    f._pending_focus_row = 96
     Frame._load_items(f)
-    assert landed[-1][-1] == 96 and f._activity_focus_row == 0
+    assert landed[-1][-1] == 96 and f._pending_focus_row == 0
     Frame._load_items(f)
     assert landed[-1][-1] == 0
 
@@ -811,7 +926,7 @@ def test_go_to_event_repo_opens_it_and_selects_it_in_the_list():
     Frame._go_to_event_repo(f)
     assert opened == ["x/proj"] and f.repo_list.selection == 0
     # Remembered for Backspace: the events, whether there are more, the event
-    assert f._activity_return == ([EVENT], True, EVENT, 200)
+    assert f._return_to == (ghviewer.VIEW_ACTIVITY, [EVENT], True, EVENT, 200)
 
 
 def test_go_to_a_repo_not_in_the_list_deselects_activity():
@@ -831,7 +946,7 @@ def test_backspace_returns_to_the_feed_without_fetching(call_later):
     f.view_mode = ghviewer.VIEW_ISSUES
     f.repo, f.repo_list = "x/proj", FakeListBox()
     other = ghviewer.ActivityEvent("WatchEvent", "b", "o/r", "starred")
-    f._activity_return = ([EVENT, other], True, other, 200)
+    f._return_to = (ghviewer.VIEW_ACTIVITY, [EVENT, other], True, other, 200)
     switched = []
     f._switch_view = lambda mode, load=True: (switched.append((mode, load)),
                                                setattr(f, "view_mode", mode))
@@ -839,11 +954,11 @@ def test_backspace_returns_to_the_feed_without_fetching(call_later):
     f._restore_repo_selection = lambda prev: None
     f._row_of = lambda item: Frame._row_of(f, item)
     f._on_activity_loaded = lambda *a: Frame._on_activity_loaded(f, *a)
-    Frame._return_to_activity(f)
+    Frame._return_to_list(f)
     assert switched == [(ghviewer.VIEW_ACTIVITY, False)]
     assert f.git_items == [EVENT, other] and f.current_limit == 200
     assert call_later[-1][1] == (1,)  # back on the event you left
-    assert f._activity_return is None
+    assert f._return_to is None
     assert f.announced[-1] == "Back to activity"
 
 
@@ -856,9 +971,10 @@ def test_backspace_returns_to_the_feed_without_fetching(call_later):
 def test_switch_view_loads_activity_without_a_repo(mode, repo, loads):
     loaded = []
     f = _frame(view_mode=ghviewer.VIEW_ISSUES, repo=repo, page_size=100, current_limit=100,
-               _activity_return=None)
+               _return_to=None)
     for name in ("_rebuild_columns", "_rebuild_columns_menu", "_update_menu_checks"):
         setattr(f, name, lambda: None)
+    f._restore_repo_selection = lambda previous: None
     f._load_items = lambda: loaded.append("items")
     f._load_favorites_view = lambda: loaded.append("favorites")
     Frame._switch_view(f, mode)
@@ -867,21 +983,22 @@ def test_switch_view_loads_activity_without_a_repo(mode, repo, loads):
 
 def test_switch_view_without_load():
     f = _frame(view_mode=ghviewer.VIEW_ISSUES, repo="o/r", page_size=100, current_limit=100,
-               _activity_return=("kept",))
+               _return_to=("kept",))
     for name in ("_rebuild_columns", "_rebuild_columns_menu", "_update_menu_checks"):
         setattr(f, name, lambda: None)
+    f._restore_repo_selection = lambda previous: None
     f._load_items = lambda: pytest.fail("should not load")
     Frame._switch_view(f, ghviewer.VIEW_ACTIVITY, load=False)
     assert f.view_mode == ghviewer.VIEW_ACTIVITY
     # Leaving the issues list for anything else forgets the way back
-    assert f._activity_return is None
+    assert f._return_to is None
 
 
 def test_activity_keeps_the_current_repo():
     # Ctrl+Shift+A for a glance, then Ctrl+1 goes straight back
     f = _frame(view_mode=ghviewer.VIEW_ISSUES, repo="o/r")
     f._switch_view = lambda mode: setattr(f, "view_mode", mode)
-    Frame._select_activity(f)
+    Frame._select_category(f, ghviewer.VIEW_ACTIVITY)
     assert f.view_mode == ghviewer.VIEW_ACTIVITY and f.repo == "o/r"
 
 
@@ -918,5 +1035,84 @@ def test_backspace_after_g_with_a_filter_lands_on_that_event(call_later):
     f._restore_repo_selection = lambda prev: None
     f._row_of = lambda item: Frame._row_of(f, item)
     f._on_activity_loaded = lambda *args: Frame._on_activity_loaded(f, *args)
-    Frame._return_to_activity(f)
+    Frame._return_to_list(f)
     assert call_later[-1][1] == (2,)  # c's row in the unfiltered feed
+
+
+@pytest.mark.parametrize("view, row", [
+    (ghviewer.VIEW_WATCHED, 3), (ghviewer.VIEW_ACTIVITY, 1), (ghviewer.VIEW_ISSUES, 4),
+])
+def test_switching_view_moves_the_repo_list_selection_with_it(view, row):
+    # Watched from the View menu while Starred was selected in the list
+    f = _repo_frame(view=ghviewer.VIEW_STARRED, repo="me/a")
+    Frame._on_repos_loaded(f, [_row("me/a")])
+    f.repo_list.SetSelection(2)
+    f.page_size, f.current_limit, f._return_to = 100, 100, None
+    for name in ("_rebuild_columns", "_rebuild_columns_menu", "_update_menu_checks",
+                 "_load_items", "_load_favorites_view"):
+        setattr(f, name, lambda: None)
+    Frame._switch_view(f, view)
+    assert f.repo_list.selection == row
+
+
+class FakeListKey(ghviewer.wx.ListEvent):
+    """A real wx.ListEvent — what the list sends on Windows — with a key code.
+
+    Real, so that the handler can only use what a ListEvent really has: it has
+    no modifier state, which is exactly what broke every list key once.
+    """
+
+    def __init__(self, key):
+        super().__init__()
+        self.key, self.skipped = key, False
+
+    def GetKeyCode(self): return self.key
+    def Skip(self, skip=True): self.skipped = True
+
+
+class MouseState:
+    def __init__(self, modifiers): self.modifiers = modifiers
+    def HasAnyModifiers(self): return self.modifiers
+
+
+def _key_frame(monkeypatch, modifiers):
+    monkeypatch.setattr(ghviewer.wx, "GetMouseState", lambda: MouseState(modifiers))
+    f = _frame(view_mode=ghviewer.VIEW_ISSUES, label_filter="", _return_to=None)
+    f._modifiers_down = Frame._modifiers_down
+    acted = []
+    for name in ("_do_close", "_do_reopen", "_do_comment", "_toggle_favorite", "_load_items",
+                 "_clear_filter"):
+        setattr(f, name, lambda name=name: acted.append(name))
+    f.on_refresh = lambda event: acted.append("refresh")
+    return f, acted
+
+
+@pytest.mark.parametrize("letter", ["C", "O", "M", "F", "R"])
+def test_letter_keys_with_a_modifier_are_left_alone(monkeypatch, letter):
+    # Ctrl+C in the issues list is copy; it must not start closing the issue
+    f, acted = _key_frame(monkeypatch, modifiers=True)
+    key = FakeListKey(ord(letter))
+    Frame.on_list_key_down(f, key)
+    assert acted == [] and key.skipped
+
+
+@pytest.mark.parametrize("key, action", [
+    (ord("C"), "_do_close"), (ord("O"), "_do_reopen"), (ord("M"), "_do_comment"),
+    (ord("F"), "_toggle_favorite"), (ord("R"), "refresh"),
+    (ghviewer.wx.WXK_ESCAPE, "_clear_filter"),
+])
+def test_bare_keys_work_from_a_real_list_event(monkeypatch, key, action):
+    # The Windows path: a wx.ListEvent, not a wx.KeyEvent
+    f, acted = _key_frame(monkeypatch, modifiers=False)
+    Frame.on_list_key_down(f, FakeListKey(key))
+    assert acted == [action]
+
+
+def test_modifiers_from_a_key_event_come_from_the_event():
+    # The macOS path: an ordinary wx.KeyEvent knows its own modifiers
+    event = ghviewer.wx.KeyEvent(ghviewer.wx.wxEVT_KEY_DOWN)
+    event.SetControlDown(True)
+    assert Frame._modifiers_down(event) is True
+    assert Frame._modifiers_down(ghviewer.wx.KeyEvent(ghviewer.wx.wxEVT_KEY_DOWN)) is False
+
+

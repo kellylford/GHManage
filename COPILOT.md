@@ -249,8 +249,8 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Pages deployments (Actions sites) | `repos/{owner}/{repo}/deployments?environment=github-pages` |
 | Deployment state | `repos/{owner}/{repo}/deployments/{id}/statuses` |
 | Published file list | `repos/{owner}/{repo}/git/trees/{branch}?recursive=1` |
-| Starred repos | `user/starred?per_page=&page=` |
-| Watched repos | `user/subscriptions?per_page=&page=` |
+| Starred repos (Starred view) | `user/starred?per_page=&page=` |
+| Watched repos (Watched view) | `user/subscriptions?per_page=&page=` |
 | Signed-in login | `user` (`-q .login`, cached) |
 | Activity feed | `users/{login}/received_events?per_page=100&page=` (max 3 pages; page 4 is HTTP 422; pages are not reliably full) |
 | PR titles for the feed | GraphQL `repository(owner,name){ pN: pullRequest(number:N){title body} }`, batched, per repo on error |
@@ -318,7 +318,7 @@ including the checks either side. The short version:
   you arrow between, with a persistent update button
 - v0.8.1 — web addresses in the details panel on a line of their own; comment navigation lands on the right comment
 - v0.8.2 — Go To Issue fetches items not in the list (it never finished before), PRs as PRs, real errors instead of "not found"; first test suite, run in CI
-- v0.9.0 — Activity view (Ctrl+Shift+A, and an entry in the repo list): your received-events feed; View ▸ Repository List adds starred and watched repos
+- v0.8.5 — Activity view (Ctrl+Shift+A) plus Starred and Watched Repositories, each an entry at the top of the repo list; user guide published to GitHub Pages (Help ▸ User Guide, F1); quick-filter rows now map to the right item
 
 ## Roadmap
 
