@@ -2729,7 +2729,24 @@ class Account:
 
 def list_accounts() -> list[Account]:
     """The github.com accounts gh is signed in to, the one in use first."""
-    raw = _run_gh(["auth", "status", "--json", "hosts"])
+    # gh exits non-zero when any stored account's token has gone bad, but
+    # still prints the list; that list is what is needed, bad entry and all.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [_find_gh(), "auth", "status", "--json", "hosts"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise GhError(str(exc))
+    raw = result.stdout
+    if not raw.strip():
+        err = result.stderr.strip()
+        if "unknown flag" in err:
+            raise GhError("Switching accounts needs a newer gh. Update it from "
+                          "https://cli.github.com/ and try again.")
+        raise GhError(err or "gh didn't list its accounts.")
     try:
         hosts = (json.loads(raw) or {}).get("hosts") or {}
     except ValueError:
@@ -2791,7 +2808,12 @@ def get_watch_level(repo: str) -> str:
         if _is_not_found(exc):
             return WATCH_PARTICIPATING  # no subscription: the default
         raise
-    data = json.loads(raw) if raw.strip() else {}
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        raise GhError(f"Unexpected reply about watching {repo}")
+    if not isinstance(data, dict):
+        data = {}
     if data.get("ignored"):
         return WATCH_IGNORE
     return WATCH_ALL if data.get("subscribed") else WATCH_PARTICIPATING

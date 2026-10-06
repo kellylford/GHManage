@@ -113,6 +113,7 @@ def _frame(view, target, items, token=1):
         _shown=list(items), _announce=lambda m: None, _goto_issue=lambda n: None,
         _goto_commit=lambda sha: None,
     )
+    frame._if_still_current = "if_still_current"
     frame._row_of = lambda it: Frame._row_of(frame, it)
     frame._describe_landing = Frame._describe_landing
     return frame
@@ -130,7 +131,7 @@ def test_lands_on_the_issue(later):
 def test_missing_issue_is_fetched_by_number(later):
     f = _frame(ghviewer.VIEW_ISSUES, (ghviewer.VIEW_ISSUES, "item", "99"), ISSUES)
     assert Frame._take_pending_row(f, ISSUES, 1) == 0
-    assert (f._goto_issue, (99,)) in later.calls
+    assert ("if_still_current", (1, f._goto_issue, 99)) in later.calls
 
 
 def test_issue_hidden_by_the_filter_is_fetched_by_number(later):
@@ -138,7 +139,7 @@ def test_issue_hidden_by_the_filter_is_fetched_by_number(later):
     f = _frame(ghviewer.VIEW_ISSUES, (ghviewer.VIEW_ISSUES, "item", "4"), ISSUES)
     f._shown = [ISSUES[0]]
     assert Frame._take_pending_row(f, ISSUES, 1) == 0
-    assert (f._goto_issue, (4,)) in later.calls
+    assert ("if_still_current", (1, f._goto_issue, 4)) in later.calls
 
 
 def test_a_target_only_lands_on_its_own_load(later):
@@ -172,7 +173,7 @@ def test_missing_commit_is_fetched(later):
     commits = [Commit("a" * 40, "aaaaaaa", "m", "me", "")]
     f = _frame(ghviewer.VIEW_COMMITS, (ghviewer.VIEW_COMMITS, "commit", "c0ffee"), commits)
     assert Frame._take_pending_row(f, commits, 1) == 0
-    assert (f._goto_commit, ("c0ffee",)) in later.calls
+    assert ("if_still_current", (1, f._goto_commit, "c0ffee")) in later.calls
 
 
 def test_release_and_run(later):
@@ -253,3 +254,12 @@ def test_a_commit_row_reads_only_the_first_line():
 ])
 def test_first_github_url(text, url):
     assert ghviewer.first_github_url(text) == url
+
+
+def test_a_scheduled_fallback_runs_only_for_the_list_it_was_for():
+    ran = []
+    f = SimpleNamespace(_fetch_token=2)
+    f._fetch_is_current = lambda t: t == f._fetch_token
+    Frame._if_still_current(f, 1, ran.append, "stale")
+    Frame._if_still_current(f, 2, ran.append, "current")
+    assert ran == ["current"]

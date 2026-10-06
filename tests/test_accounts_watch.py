@@ -10,8 +10,15 @@ import pytest
 import gh_data
 
 
-def test_list_accounts_github_com_only_in_use_first(fake_gh):
-    fake_gh.route("auth status --json hosts", {"hosts": {
+def _status(monkeypatch, stdout, stderr="", code=0):
+    import json as _json
+    out = stdout if isinstance(stdout, str) else _json.dumps(stdout)
+    monkeypatch.setattr(gh_data.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        stdout=out, stderr=stderr, returncode=code))
+
+
+def test_list_accounts_github_com_only_in_use_first(monkeypatch):
+    _status(monkeypatch, {"hosts": {
         "github.com": [
             {"login": "work", "active": False},
             {"login": "me", "active": True},
@@ -20,6 +27,20 @@ def test_list_accounts_github_com_only_in_use_first(fake_gh):
     }})
     accounts = gh_data.list_accounts()
     assert [(a.login, a.active) for a in accounts] == [("me", True), ("work", False)]
+
+
+def test_list_accounts_survives_a_stale_account(monkeypatch):
+    # gh exits 1 when one stored token is bad, but still prints the list.
+    _status(monkeypatch, {"hosts": {"github.com": [
+        {"login": "me", "active": True}, {"login": "old", "active": False, "state": "error"},
+    ]}}, stderr="token invalid", code=1)
+    assert [a.login for a in gh_data.list_accounts()] == ["me", "old"]
+
+
+def test_list_accounts_on_an_old_gh(monkeypatch):
+    _status(monkeypatch, "", stderr="unknown flag: --json", code=1)
+    with pytest.raises(gh_data.GhError, match="newer gh"):
+        gh_data.list_accounts()
 
 
 def test_switch_account_forgets_who_was_signed_in(fake_gh, monkeypatch):
@@ -133,7 +154,7 @@ def test_after_switching_everything_of_the_old_account_goes(monkeypatch):
     f = SimpleNamespace(
         repo="o/r", _return_to=("x",), _pending_target=(1, "v", "k", "r"),
         _issue_drafts={"o/r": ("t", "b")}, _category_counts={"x": 1},
-        view_mode=ghviewer.VIEW_ISSUES, current_limit=200, page_size=100,
+        view_mode=ghviewer.VIEW_ISSUES, current_limit=200, page_size=100, _account_gen=0,
     )
     f._load_repos = lambda: events.append("repos")
     f._switch_view = lambda v: events.append(("switch", v))
@@ -143,3 +164,4 @@ def test_after_switching_everything_of_the_old_account_goes(monkeypatch):
     assert f.repo is None and f._return_to is None and f._pending_target is None
     assert f._issue_drafts == {} and f._category_counts == {}
     assert events == ["repos", ("switch", ghviewer.VIEW_NOTIFICATIONS)]
+    assert f._account_gen == 1

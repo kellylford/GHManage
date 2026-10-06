@@ -212,7 +212,8 @@ _SITE_PAGES = {
 }
 
 _GITHUB_HOSTS = ("github.com", "www.github.com")
-_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+# Underscores appear in Enterprise Managed User logins (name_shortcode).
+_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
 # Pasted from email, chat or Markdown, an address arrives wrapped or followed
@@ -352,6 +353,11 @@ class CopyValues:
         for ch in ("\\", "[", "]"):
             label = label.replace(ch, "\\" + ch)
         return f"[{label}]({self.link})"
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _first_line(text: str) -> str:
@@ -1195,6 +1201,10 @@ class GhViewerFrame(wx.Frame):
         # True from Ctrl+N until the issue exists or the form is abandoned, so
         # a second Ctrl+N can't open the same draft and file it twice.
         self._issue_busy: bool = False
+        # Bumped on every account switch. Work started as one account checks
+        # it when it lands, so a late reply can't touch the next account's
+        # counts or lists.
+        self._account_gen: int = 0
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -1357,7 +1367,7 @@ class GhViewerFrame(wx.Frame):
             # carries a time, and the title shares the row with an action.
             widths.update({"actor": 130, "action": 240, "title": 300, "date": 130})
         elif self.view_mode == VIEW_NOTIFICATIONS:
-            widths.update({"unread": 60, "reason": 130, "type": 80, "title": 420,
+            widths.update({"status": 70, "reason": 130, "type": 80, "title": 420,
                            "repo": 220, "updated": 130})
         elif self.view_mode in REPO_LIST_VIEWS:
             widths.update({"repo": 240, "description": 380, "language": 100,
@@ -1745,7 +1755,9 @@ class GhViewerFrame(wx.Frame):
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
         self._act_new_issue.Enable(in_repo)
-        self._act_watch.Enable(in_repo or self.view_mode in REPO_LIST_VIEWS)
+        # Always on: it can act on the repo selected in the repo list from any
+        # view, and says "Select a repository first" when there is none.
+        self._act_watch.Enable(True)
         self._act_go_to_repo.Enable(self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS))
         self._act_go_to_repo.SetItemLabel(
             "Go to Notification's Repository\tCtrl+Shift+G"
@@ -2557,7 +2569,7 @@ class GhViewerFrame(wx.Frame):
             wx.CallLater(100, self._focus_list, row)
 
     def _on_notifications_loaded(
-        self, token: int, notes: list, more: bool = False, focus=0,
+        self, token: int, notes: list, more: bool = False, focus=0, fresh: bool = True,
     ) -> None:
         """Notifications view: newest first, unread only unless asked.
 
@@ -2567,14 +2579,19 @@ class GhViewerFrame(wx.Frame):
         """
         if not self._fetch_is_current(token):
             return  # the user has moved on; these belong to a view they left
-        from datetime import datetime, timezone
         self._notif_more = more
-        self._notif_loaded_include = self._include_read
-        self._notif_loaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if fresh:
+            # What this list is, and how far it reaches: Mark All Read marks
+            # read only up to the newest thing in it, so nothing that arrived
+            # since — unseen — is marked. Not on a restore from Backspace, whose
+            # list is as old as when you left it.
+            self._notif_loaded_include = self._include_read
+            self._notif_loaded_at = max((n.updated_at for n in notes), default="") or \
+                _utc_now_iso()
         self.git_items = notes
         self.items = []
         filtered = self._populate_filtered_list(notes, use_favorite_prefix=True)
-        if not self._include_read and not more:
+        if fresh and not self._include_read and not more:
             # Every unread one is here, so the count is known exactly.
             self._category_counts[NOTIFICATIONS_ENTRY] = sum(1 for x in notes if x.unread)
             self._refresh_category_labels()
@@ -2707,12 +2724,13 @@ class GhViewerFrame(wx.Frame):
         if row >= 0:
             wx.CallLater(150, self._announce, self._describe_landing(found))
             return row
+        # After the list has settled on its first row, or that would land on
+        # top of the item these select — and only if that list is still the
+        # one on screen when they run.
         if kind == "item":
-            # After the list has settled on its first row, or that would
-            # land on top of the item Go To selects.
-            wx.CallLater(150, self._goto_issue, int(ref))
+            wx.CallLater(150, self._if_still_current, token, self._goto_issue, int(ref))
         elif kind == "commit":
-            wx.CallLater(150, self._goto_commit, ref)
+            wx.CallLater(150, self._if_still_current, token, self._goto_commit, ref)
         elif kind in ("release", "run"):
             what = f"Release {ref}" if kind == "release" else f"Run {ref}"
             plural = "releases" if kind == "release" else "workflow runs"
@@ -2724,6 +2742,10 @@ class GhViewerFrame(wx.Frame):
                 said = f"{what} wasn't found: there are no {plural} to show."
             wx.CallLater(150, self._announce, said)
         return 0
+
+    def _if_still_current(self, token: int, fn, *args) -> None:
+        if self._fetch_is_current(token):
+            fn(*args)
 
     @staticmethod
     def _describe_landing(item) -> str:
@@ -2748,7 +2770,7 @@ class GhViewerFrame(wx.Frame):
             try:
                 commit = fetch_commit_detail(repo, sha)
             except GhError as exc:
-                wx.CallAfter(self._on_items_error, f"Couldn't fetch commit {sha[:7]}: {exc}")
+                wx.CallAfter(self._on_fetch_error, token, f"Couldn't fetch commit {sha[:7]}: {exc}")
                 return
             wx.CallAfter(self._on_commit_fetched, commit, repo, token)
 
@@ -3822,7 +3844,7 @@ class GhViewerFrame(wx.Frame):
                 self._pending_focus_row = 0
                 self._load_items()
             else:
-                self._on_notifications_loaded(token, items, more, item)
+                self._on_notifications_loaded(token, items, more, item, fresh=False)
         else:
             self._on_repo_list_loaded(token, items, item)
         self._announce(f"Back to {self._VIEW_LABELS.get(view, view).lower()}")
@@ -4890,7 +4912,10 @@ class GhViewerFrame(wx.Frame):
         self._announce("Preparing a new issue…")
 
         def worker() -> None:
-            target = parent_repo(repo) or repo
+            try:
+                target = parent_repo(repo) or repo
+            except Exception:  # noqa: BLE001 — never leave Ctrl+N stuck "busy"
+                target = repo
             wx.CallAfter(self._show_new_issue_dialog, repo, target)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -4943,11 +4968,12 @@ class GhViewerFrame(wx.Frame):
 
     def _on_issue_error(self, msg: str) -> None:
         self._issue_busy = False
-        self._announce(f"Couldn't create the issue: {msg} What you typed is kept; "
-                       "Ctrl+N opens it again.")
+        kept = bool(self._issue_drafts)  # gone if the account was switched meanwhile
+        tail = " What you typed is kept; Ctrl+N opens it again." if kept else ""
+        self._announce(f"Couldn't create the issue: {msg}{tail}")
         wx.MessageBox(
-            f"The issue was not created.\n\n{msg}\n\n"
-            "What you typed is kept. Press Ctrl+N to try again.",
+            f"The issue was not created.\n\n{msg}"
+            + ("\n\nWhat you typed is kept. Press Ctrl+N to try again." if kept else ""),
             "New Issue", wx.OK | wx.ICON_WARNING, self,
         )
 
@@ -5051,6 +5077,7 @@ class GhViewerFrame(wx.Frame):
         """Mark read, done or unsubscribe, in the background, then show it."""
         name, said = self._NOTIFICATION_CHANGES[change]
         call = globals()[name]
+        gen = getattr(self, "_account_gen", 0)
 
         def worker() -> None:
             try:
@@ -5059,17 +5086,20 @@ class GhViewerFrame(wx.Frame):
                 wx.CallAfter(self._announce, f"Couldn't update the notification: {exc}")
                 return
             wx.CallAfter(self._on_notification_changed, note, change,
-                         f"{said}: {note.title}" if announce else "")
+                         f"{said}: {note.title}" if announce else "", gen)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_notification_changed(self, note: Notification, change: str, said: str) -> None:
+    def _on_notification_changed(self, note: Notification, change: str, said: str,
+                                 gen: int | None = None) -> None:
         """Show a change GitHub has accepted, wherever that thread is listed.
 
         Matched by id, not by object: a reload while the request was out
         brings new objects for the same threads, and the list you left to
         open one (kept for Backspace) has its own copy too.
         """
+        if gen is not None and gen != getattr(self, "_account_gen", 0):
+            return  # made as an account you have since switched away from
         copies = [n for n in self.git_items if isinstance(n, Notification) and n.id == note.id]
         if self._return_to and self._return_to[0] == VIEW_NOTIFICATIONS:
             copies += [n for n in self._return_to[1] if n.id == note.id]
@@ -5145,6 +5175,7 @@ class GhViewerFrame(wx.Frame):
         self._announce("Marking all notifications read…")
 
         since = self._notif_loaded_at
+        gen = self._account_gen
 
         def worker() -> None:
             try:
@@ -5152,16 +5183,18 @@ class GhViewerFrame(wx.Frame):
             except GhError as exc:
                 wx.CallAfter(self._announce, f"Couldn't mark them read: {exc}")
                 return
-            wx.CallAfter(self._on_all_read)
+            wx.CallAfter(self._on_all_read, gen)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_all_read(self) -> None:
+    def _on_all_read(self, gen: int | None = None) -> None:
         """Show everything read, without asking GitHub again straight away.
 
         A large inbox is marked in the background (HTTP 202), so a reload
         now could bring back unread ones and contradict what was just said.
         """
+        if gen is not None and gen != self._account_gen:
+            return
         self._category_counts[NOTIFICATIONS_ENTRY] = 0
         self._refresh_category_labels()
         lists = [self.git_items if self.view_mode == VIEW_NOTIFICATIONS else []]
@@ -5278,14 +5311,19 @@ class GhViewerFrame(wx.Frame):
     def _on_watch_set(self, repo: str, name: str) -> None:
         self._announce(f"{repo} is now {name}.")
         # Watching or not changes how many Watched holds; ask again.
-        threading.Thread(target=self._recount_watched, daemon=True).start()
+        threading.Thread(target=self._recount_watched, args=(self._account_gen,),
+                         daemon=True).start()
 
-    def _recount_watched(self) -> None:
+    def _recount_watched(self, gen: int) -> None:
         try:
             n = COUNTED_ENTRIES[WATCHED_ENTRY]()
         except GhError:
             return
-        wx.CallAfter(self._on_category_counts, {WATCHED_ENTRY: n})
+        wx.CallAfter(self._on_watched_recounted, n, gen)
+
+    def _on_watched_recounted(self, n: int, gen: int) -> None:
+        if gen == self._account_gen:
+            self._on_category_counts({WATCHED_ENTRY: n})
 
     # ── Accounts ────────────────────────────────────────────────────────
 
@@ -5350,6 +5388,7 @@ class GhViewerFrame(wx.Frame):
         Favorites and pinned repositories stay — they are this computer's,
         not the account's.
         """
+        self._account_gen += 1
         self.repo = None
         self._return_to = None
         self._pending_target = None

@@ -496,7 +496,7 @@ Why you were told is GitHub's reason in words: review requested, mention, team m
 
 | Key | Action |
 |-----|--------|
-| `Enter` | An issue or pull request opens here in GHManage, selected in its repository's list. A discussion, commit, release or security advisory opens on its own page on GitHub; a workflow run, which notifications don't identify, opens the repository's Actions page. Either way it is marked read |
+| `Enter` | An issue or pull request opens here in GHManage, selected in its repository's list. A discussion, commit, release or security advisory opens on its own page on GitHub (a discussion GitHub doesn't give an address for opens the repository's discussions); a workflow run, which notifications don't identify, opens the repository's Actions page. Either way it is marked read |
 | `Backspace` | From the issue or pull request, come back to the same notification |
 | `M` | Mark it read |
 | `Delete` or `Ctrl+D` | Mark it done: it leaves your inbox, as the Done button on github.com does. GHManage can't bring it back; github.com's **Done** tab can |
@@ -781,6 +781,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl++` | Load more |
 | `Ctrl+F` | Quick filter |
 | `Ctrl+G` | Go to an issue or pull request by number |
+| `Ctrl+N` | New issue in the current repository |
 | `Ctrl+O` | Open the selected item on GitHub |
 | `Ctrl+Shift+C` | Copy the selected item's link |
 | `Ctrl+Shift+L` | Copy a Markdown link to it |
@@ -809,6 +810,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `C` or `Ctrl+W` | Close |
 | `O` or `Ctrl+Shift+W` | Reopen |
 | `M` or `Ctrl+M` | Add a comment |
+| `N` or `Ctrl+N` | New issue |
 | `Backspace` | Back to the labels, Notifications, the Activity feed, or the Starred or Watched list, when you came from one |
 
 ### In Branches and Commits

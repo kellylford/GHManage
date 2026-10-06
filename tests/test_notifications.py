@@ -395,3 +395,29 @@ def test_ctrl_d_from_the_repo_list_does_nothing():
     f._mark_notification_done = lambda: pytest.fail("not from the repo list")
     Frame._delete_focused_item(f)
     assert f.announced == ["Move to the list to delete or mark done (F6)."]
+
+
+def test_a_restore_from_backspace_keeps_what_the_list_was_loaded_with(monkeypatch):
+    # Mark All Read must reach only as far as the list you saw, not to the
+    # moment you came back to it.
+    monkeypatch.setattr(ghviewer.wx, "CallLater", lambda *a: None)
+    f = _frame([])
+    f._fetch_is_current = lambda t: True
+    f._update_title = lambda: None
+    old = _note(1)
+    old.updated_at = "2026-10-06T10:00:00Z"
+    Frame._on_notifications_loaded(f, 1, [old], False)
+    assert f._notif_loaded_at == "2026-10-06T10:00:00Z"
+    f._category_counts[ghviewer.NOTIFICATIONS_ENTRY] = 7
+    Frame._on_notifications_loaded(f, 2, [old], False, old, fresh=False)
+    assert f._notif_loaded_at == "2026-10-06T10:00:00Z"
+    assert f._category_counts[ghviewer.NOTIFICATIONS_ENTRY] == 7
+
+
+def test_a_reply_from_the_previous_account_is_ignored():
+    notes = [_note(1)]
+    f = _frame(notes)
+    f._account_gen = 2
+    Frame._on_notification_changed(f, notes[0], "read", "", gen=1)
+    assert notes[0].unread is True
+    assert f._category_counts[ghviewer.NOTIFICATIONS_ENTRY] == 10
