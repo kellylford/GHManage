@@ -1,0 +1,179 @@
+"""Context menus: the item list's mirrors the Actions menu; the repo list has its own."""
+
+from __future__ import annotations
+
+import os
+from types import SimpleNamespace
+
+import pytest
+
+if os.environ.get("CI"):
+    import wx  # noqa: F401
+else:
+    pytest.importorskip("wx")
+
+import ghviewer  # noqa: E402
+from gh_data import Branch, Item  # noqa: E402
+
+Frame = ghviewer.GhViewerFrame
+
+
+class FakeItem:
+    def __init__(self, id=0, label="", enabled=True, sep=False, sub=None):
+        self.id, self.label, self.enabled, self.sep, self.sub = id, label, enabled, sep, sub
+
+    def IsSeparator(self): return self.sep
+    def IsEnabled(self): return self.enabled
+    def GetSubMenu(self): return self.sub
+    def GetItemLabel(self): return self.label
+    def GetId(self): return self.id
+
+
+class FakeMenu:
+    def __init__(self, *items):
+        self.items = list(items)
+
+    def GetMenuItems(self): return self.items
+
+
+SEP = FakeItem(sep=True)
+
+
+def _frame(view, item, actions):
+    f = SimpleNamespace(view_mode=view, _actions_menu=actions, announced=[])
+    f._update_actions_menu = lambda: None
+    f._focused_item = lambda: item
+    f._OPEN_LABELS = Frame._OPEN_LABELS
+    f._announce = f.announced.append
+    return f
+
+
+def test_entries_mirror_the_enabled_actions():
+    actions = FakeMenu(
+        FakeItem(1, "Open in Browser\tCtrl+O"),
+        FakeItem(2, "Copy", sub=FakeMenu(FakeItem(3, "Copy Link"), FakeItem(4, "Copy X", enabled=False))),
+        SEP,
+        FakeItem(5, "Close Issue/PR", enabled=False),
+        SEP,
+        SEP,
+        FakeItem(6, "New Issue…"),
+        SEP,
+        FakeItem(7, "Run Workflow", enabled=False),
+    )
+    f = _frame(ghviewer.VIEW_ISSUES, Item(1, "T", "OPEN", "u", False), actions)
+    assert Frame._context_entries(f) == [
+        ("item", 1, "Open in Browser\tCtrl+O"),
+        ("sub", "Copy", [("item", 3, "Copy Link")]),
+        ("sep",),
+        ("item", 6, "New Issue…"),
+    ]
+
+
+def test_enter_s_action_comes_first_where_it_is_not_the_browser():
+    actions = FakeMenu(FakeItem(1, "Open in Browser"))
+    f = _frame(ghviewer.VIEW_BRANCHES, Branch("main", "s", "m", "a", "d"), actions)
+    entries = Frame._context_entries(f)
+    assert entries[0] == ("item", ghviewer.ID_CTX_OPEN, "Show Commits\tEnter")
+    assert entries[1] == ("sep",)
+
+
+def test_no_open_entry_without_a_selection():
+    f = _frame(ghviewer.VIEW_BRANCHES, None, FakeMenu(FakeItem(1, "Compare")))
+    assert Frame._context_entries(f) == [("item", 1, "Compare")]
+
+
+def test_an_empty_submenu_is_left_out():
+    actions = FakeMenu(FakeItem(2, "Pull Request", sub=FakeMenu(FakeItem(3, "Merge", enabled=False))))
+    f = _frame(ghviewer.VIEW_ISSUES, None, actions)
+    assert Frame._context_entries(f) == []
+
+
+def test_every_open_label_is_for_a_real_view():
+    assert set(Frame._OPEN_LABELS) <= set(ghviewer.VIEW_COLUMNS)
+
+
+def test_the_real_actions_menu_offers_new_issue_in_a_repo():
+    # The thing asked for: New Issue on the context menu of a repo's lists.
+    labels = []
+
+    def flatten(entries):
+        for e in entries:
+            if e[0] == "item":
+                labels.append(e[2])
+            elif e[0] == "sub":
+                flatten(e[2])
+    f = _frame(ghviewer.VIEW_BRANCHES, Branch("main", "s", "m", "a", "d"),
+               FakeMenu(FakeItem(ghviewer.ID_NEW_ISSUE, "New Issue…\tCtrl+N")))
+    flatten(Frame._context_entries(f))
+    assert "New Issue…\tCtrl+N" in labels
+
+
+# ── The repository list ─────────────────────────────────────────────────
+
+
+def _repo_frame(pinned=()):
+    return SimpleNamespace(_pinned_repos=list(pinned))
+
+
+def _ids(entries):
+    out = []
+    for e in entries:
+        if e[0] == "item":
+            out.append(e[1])
+        elif e[0] == "sub":
+            out += _ids(e[2])
+    return out
+
+
+def test_a_repository_s_menu():
+    ids = _ids(Frame._repo_context_entries(_repo_frame(), "o/r"))
+    for wanted in (ghviewer.ID_REPO_OPEN, ghviewer.ID_REPO_BROWSER, ghviewer.ID_REPO_NEW_ISSUE,
+                   ghviewer.ID_REPO_SEARCH, ghviewer.ID_WATCH_SETTINGS, ghviewer.ID_COPY_LINK):
+        assert wanted in ids
+    assert ghviewer.ID_REMOVE_REPO not in ids      # one of your own: can't be removed
+
+
+def test_a_pinned_repository_can_be_removed():
+    assert ghviewer.ID_REMOVE_REPO in _ids(Frame._repo_context_entries(_repo_frame(["o/r"]), "o/r"))
+
+
+def test_a_saved_search_s_menu():
+    entries = Frame._repo_context_entries(_repo_frame(), ghviewer.SEARCH_ENTRY_PREFIX + "Bugs")
+    assert [e[2] for e in entries] == ["Run Search\tEnter", "Remove Saved Search"]
+
+
+def test_a_category_just_opens():
+    assert Frame._repo_context_entries(_repo_frame(), ghviewer.ACTIVITY_ENTRY) == [
+        ("item", ghviewer.ID_REPO_OPEN, "Open\tEnter")]
+
+
+class RepoList:
+    def __init__(self, data):
+        self.data = data
+
+    def GetSelection(self): return 0
+    def GetClientData(self, i): return self.data
+
+
+def test_new_issue_from_the_repo_list_opens_that_repo_first():
+    events = []
+    f = SimpleNamespace(repo="o/other", view_mode=ghviewer.VIEW_ISSUES, repo_list=RepoList("o/r"))
+    f._select_repo = lambda r: events.append(("open", r))
+    f._do_new_issue = lambda: events.append("new issue")
+    Frame._repo_entry_action(f, "new_issue")
+    assert events == [("open", "o/r"), "new issue"]
+
+
+def test_search_this_repository_starts_the_query(monkeypatch):
+    got = []
+    f = SimpleNamespace(repo_list=RepoList("o/r"))
+    f._search_flow = lambda prefill=None: got.append(prefill)
+    Frame._repo_entry_action(f, "search")
+    assert got == [(ghviewer.KIND_ISSUES, "repo:o/r ")]
+
+
+def test_repo_actions_on_a_category_entry_say_so():
+    f = SimpleNamespace(repo_list=RepoList(ghviewer.MY_WORK_ENTRY), announced=[])
+    f._announce = f.announced.append
+    Frame._repo_entry_action(f, "browser")
+    assert f.announced == ["Select a repository first."]
