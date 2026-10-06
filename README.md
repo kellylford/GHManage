@@ -10,13 +10,20 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 ## Features
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
-  Above them sit **★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
-  **Watched Repositories**, the counted ones with how many they hold, e.g. "Notifications (12 unread)"
+  Above them sit **★ Favorites**, **Activity**, **Starred Repositories**, **Watched Repositories**,
+  **Notifications**, **My Work** and your saved searches, the counted ones with how many they hold,
+  e.g. "Notifications (12 unread)"
 - **Notifications** — your GitHub inbox: why you were told, what it is, mark read, mark done,
   unsubscribe; Enter opens an issue or PR right here, and Backspace comes back
+- **Search GitHub** — Ctrl+Shift+F searches issues and PRs, or repositories, across all of GitHub
+  with GitHub's own qualifiers (`is:open label:bug author:@me …`); save a search and it sits in the
+  repo list, one Enter away
+- **My Work** — open issues and PRs that need you, everywhere: review requests, assigned, your
+  own, mentions
 - **Open any GitHub address** — paste a link to an issue, PR, commit, release, workflow run or
   branch into Ctrl+Shift+O and it opens in its own view with that item selected
 - **New issue** — Ctrl+N, a title and a Markdown description
+- **Pull requests** — checks (K), review (V), draft/ready (D), merge, request reviewers, update branch
 - **Copy** — the link, a Markdown link, the title, the number/SHA/tag, or the details, for anything
 - **Watch settings and account switching** — Participating, All Activity or Ignore for a
   repository; switch between the github.com accounts gh is signed in to
@@ -132,6 +139,7 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+Shift+C` / `Ctrl+Shift+L` | Copy the selected item's link / a Markdown link to it |
 | `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
 | `Ctrl+N` | New issue in the current repository |
+| `Ctrl+Shift+F` | Search GitHub; `Ctrl+S` in the results saves the search |
 | `Ctrl+Shift+U` | Watch settings for the repository |
 | `Ctrl+Shift+K` | Switch GitHub account |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
@@ -175,19 +183,20 @@ details panel).
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
 | `Ctrl+Shift+N` | Notifications |
+| `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
 
-Every view except Favorites, Notifications, Activity, Starred Repositories and
-Watched Repositories needs a repository, so with none selected the status bar says
-"Select a repository first" and the view is left alone. Those five don't change
+Every view except Favorites, Activity, Starred Repositories, Watched Repositories,
+Notifications, My Work and search results needs a repository, so with none selected
+the status bar says "Select a repository first" and the view is left alone. Those don't change
 the repository you are in, so `Ctrl+1` takes you back to it.
 
 ### Starred and watched repositories
 
-The repository list starts with five entries that aren't single repositories:
-**★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
-**Watched Repositories**. After them come any repositories you opened by address, then
-your own. Starred and Watched are also on View ▸ View Mode.
+The repository list starts with six entries that aren't single repositories:
+**★ Favorites**, **Activity**, **Starred Repositories**, **Watched Repositories**,
+**Notifications** and **My Work**. After them come your saved searches, any
+repositories you opened by address, then your own. Starred and Watched are also on View ▸ View Mode.
 
 - **Starred Repositories** — the repositories you have starred, most recently
   starred first.
@@ -217,7 +226,7 @@ description. The details panel adds forks and open issues.
 | `G` or `Ctrl+Shift+G` | Open its repository here |
 | `Ctrl++` | Load more |
 
-Choose **Notifications** near the top of the repository list, press
+Choose **Notifications** in the repository list, press
 `Ctrl+Shift+N`, or use View ▸ View Mode ▸ Notifications. Each row reads why
 GitHub told you, what it is, its title, the repository, when it changed, and
 whether it is read. **Actions ▸ Mark All as Read** asks first.
@@ -262,6 +271,9 @@ from the details panel as well as the list.
 | `O` | Reopen the selected issue/PR |
 | `M` or `Ctrl+M` | Add a comment to the selected item |
 | `N` or `Ctrl+N` | New issue |
+| `K` | Checks on the selected pull request |
+| `V` | Review it: approve, request changes, comment |
+| `D` | Draft ⇄ ready for review |
 | `Backspace` | Return to the labels list (only when the list is restricted to a label) |
 
 ### In the branches view
@@ -311,6 +323,10 @@ After a run starts, switch to **Workflow Runs** and refresh to watch it.
 |-----|--------|
 | `Enter` | Drill into the selected run's artifacts (shown in the same list) |
 | `Ctrl+D` or `Delete` | Delete the selected run (asks first) |
+| `J` | List the run's jobs and steps; `Enter` on a job reads its log, opening at the first error |
+| `L` | Show what failed: GitHub's errors and the end of each failed step's log |
+| `E` | Rerun: all jobs, or only the failed ones |
+| `X` | Cancel a queued or running run |
 
 From a run's **Artifacts** list, press `Enter` (or right-click → Download…) on an
 artifact to download it into a folder you choose, and `Backspace` to return to the

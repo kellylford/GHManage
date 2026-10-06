@@ -3,16 +3,23 @@
 GHManage is a desktop app for reading and managing your GitHub repositories from
 a fast, keyboard-driven list.
 
-This release brings your GitHub notifications into GHManage, opens any GitHub
-link you paste in its own view, and adds new issues, copy commands, watch
-settings and switching between GitHub accounts.
+This release reaches beyond the repository you have open. Your notifications,
+a list of everything that needs you, and search across all of GitHub are in
+GHManage now, and any GitHub link you paste opens in its own view. Pull
+requests can be reviewed and merged, a failed workflow run says what failed,
+and there are new issues, copy commands, watch settings and switching between
+GitHub accounts.
+
+The repository list keeps its familiar start — Favorites, Activity, Starred
+Repositories, Watched Repositories — with the new Notifications and My Work
+after them, then your saved searches.
 
 ## Notifications
 
 **Notifications** is your GitHub inbox: the issues, pull requests, releases,
 discussions and workflow runs GitHub has told you about, across every
-repository. It is second in the repository list, with how many are unread, for
-example "Notifications (12 unread)". You can also press `Ctrl+Shift+N`
+repository. It is in the repository list after Watched Repositories, with how
+many are unread, for example "Notifications (12 unread)". You can also press `Ctrl+Shift+N`
 (`Cmd+Shift+N` on a Mac).
 
 Each row says why you were told (review requested, mention, assigned, CI
@@ -31,6 +38,43 @@ it last changed, and whether it is read.
 **Actions ▸ Mark All as Read** asks first. To see only some notifications, use
 the quick filter (`Ctrl+F`): it matches the reason and the repository as well as
 the title.
+
+## My Work
+
+**My Work** (`Ctrl+Shift+M`, and in the repository list after Notifications)
+answers "what on GitHub needs me?": the open issues and pull requests, in every
+repository, where your review is requested, you are assigned, you opened them,
+or you are mentioned, each listed once under the first reason that applies.
+`Enter` opens one here; `Backspace` comes back.
+
+## Search GitHub
+
+**File ▸ Search GitHub** (`Ctrl+Shift+F`) searches issues and pull requests, or
+repositories, across all of GitHub. Type GitHub's own search language, so every
+qualifier works: `is:open label:bug repo:nvaccess/nvda`, `review-requested:@me`,
+`updated:>2026-01-01`, `language:python stars:>50`. The results are a list like
+any other: `Enter` opens one here and `Backspace` comes back, `Ctrl++` loads
+more.
+
+`Ctrl+S` saves a search. It goes in the repository list, marked 🔍, where
+`Enter` runs it again.
+
+## Pull requests
+
+On a pull request in the issues list, `K` lists its checks, failures first; `V`
+reviews it — approve, request changes or comment — and `D` marks a draft ready
+for review, or back to a draft. **Actions ▸ Pull Request** adds **Merge**,
+offering only the ways the repository allows, and Request Reviewers and Update
+Branch.
+
+## What failed, in a workflow run
+
+In Workflow Runs, `L` on a failed run gathers what failed into one text to read
+from the top: which jobs failed and at which step, the errors GitHub flagged,
+and the last 40 lines of each failed step's log, with colour codes and
+timestamps taken out. `J` lists a run's jobs and their steps, and `Enter` on a
+job opens its whole log at the first error. `E` reruns a run — all of it, or
+only what failed — and `X` cancels one that is running.
 
 ## Open any GitHub address
 

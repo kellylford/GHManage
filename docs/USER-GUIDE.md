@@ -18,6 +18,8 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 - [Workflows and Workflow Runs](#workflows-and-workflow-runs)
 - [GitHub Pages](#github-pages)
 - [Notifications](#notifications)
+- [My Work](#my-work)
+- [Searching GitHub](#searching-github)
 - [Activity](#activity)
 - [Starred and Watched Repositories](#starred-and-watched-repositories)
 - [Favorites](#favorites)
@@ -160,7 +162,7 @@ If `gh` is installed but signed out, or its sign-in has expired, the error `gh` 
 
 The window has three panes and a status bar:
 
-1. **Repositories**, on the left: the repository list, with Favorites, Notifications, Activity, Starred Repositories and Watched Repositories at the top. See [The Repository List](#the-repository-list).
+1. **Repositories**, on the left: the repository list, with Favorites, Activity, Starred Repositories, Watched Repositories, Notifications, My Work and your saved searches at the top. See [The Repository List](#the-repository-list).
 2. **The item list**, top right: whatever the current view shows, such as issues and pull requests, branches, or releases. Its label, and the name your screen reader announces for it, is the name of the view, for example "Issues", "Branches" or "Release Assets", so you hear where you are as you move into it.
 3. **Details**, bottom right: everything about the item you are on in the list, as read-only text you can move through line by line. See [The Details Panel and Comment Navigation](#the-details-panel-and-comment-navigation).
 4. **The status bar**, at the bottom: what the view is showing, the keys that work in it, and anything GHManage has just done.
@@ -190,11 +192,12 @@ Each repository has several views. `Ctrl` and a number jumps straight to one fro
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
 | `Ctrl+Shift+N` | Notifications |
+| `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
 
 **Starred Repositories** and **Watched Repositories** are on the same menu, after Activity.
 
-Favorites, Notifications, Activity, Starred Repositories and Watched Repositories are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
+Favorites, Notifications, My Work, Activity, Starred Repositories, Watched Repositories and search results are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
 
 Several views lead into others. `Enter` on a branch shows its commits, on a release its files, on a workflow run its artifacts, on a label the issues that carry it. `Backspace` steps back up to where you came from.
 
@@ -222,7 +225,7 @@ Lists load 100 items to begin with. `Ctrl++` (**File → View More**) loads the 
 
 | Menu | What is on it |
 |------|---------------|
-| **File** | Open Repository or Address, Remove from List, Switch GitHub Account, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
+| **File** | Open Repository or Address, Remove from List, Switch GitHub Account, Refresh, Search GitHub, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
 | **Actions** | Everything that acts on the item you are on. See [The Actions Menu](#the-actions-menu). |
 | **View** | View Mode, List Mode, Sort Order, Columns, State, Filter |
 | **Help** | User Guide, Check for Updates, About GHManage |
@@ -238,14 +241,16 @@ The list on the left is where you choose what to look at. Arrow to an entry and 
 It is in this order:
 
 1. **★ Favorites**, with how many you have, for example "★ Favorites (12)". See [Favorites](#favorites).
-2. **Notifications**, with how many are unread, for example "Notifications (12 unread)". See [Notifications](#notifications).
-3. **Activity**: your GitHub feed. See [Activity](#activity).
-4. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
-5. **Watched Repositories**: the repositories you watch, with how many.
-6. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
-7. **Your own repositories**, up to 100, each followed by its description.
+2. **Activity**: your GitHub feed. See [Activity](#activity).
+3. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
+4. **Watched Repositories**: the repositories you watch, with how many.
+5. **Notifications**, with how many are unread, for example "Notifications (12 unread)". See [Notifications](#notifications).
+6. **My Work**: open issues and pull requests that need you, with how many once it has loaded. See [My Work](#my-work).
+7. **Your saved searches**, each marked with a magnifying glass, for example "🔍 NVDA braille bugs". See [Saved searches](#saved-searches).
+8. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
+9. **Your own repositories**, up to 100, each followed by its description.
 
-The first five are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
+The first six are always there, so the same keystrokes from the top of the list always reach them. The first four are where they were before Notifications and My Work arrived. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
 
 The notification, starred and watched counts are asked for once the list is up, so they appear a moment after the names, without moving you from the entry you are on. If GitHub can't be asked, the entry shows just its name rather than a number that might be wrong. Opening Starred or Watched, or pressing `R` in it, brings its count up to date, so a repository you starred on the web since GHManage started is counted then.
 
@@ -275,7 +280,7 @@ A person's or organisation's address says so on the status bar; GHManage has no 
 
 **File → Remove from List…** removes the selected repository from the list. It applies to repositories you opened by address; the status bar confirms with "Removed owner/name from the pinned list." It does not delete anything on GitHub.
 
-Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The five entries at the top are always there too.
+Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The six entries at the top are always there too. A saved search can be removed the same way.
 
 ### Forks
 
@@ -320,6 +325,26 @@ Closing and reopening ask first, naming the item: "Close issue #12?" with its ti
 The form names the repository the issue goes to. On a fork that is the upstream repository, since that is where the issues you see in the list live.
 
 Once GitHub has it, the issues list reloads with the new issue selected, unless you have moved to another view or repository in the meantime; then the status bar just says it was created. While one issue is being created, `Ctrl+N` waits for it, so the same text can't be filed twice. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
+
+### Pull requests
+
+On a pull request in the issues list:
+
+| Key | Action |
+|-----|--------|
+| `K` | Its checks: how many passed, failed or are still running, then each one, failures first, with its link |
+| `V` | Review it: approve, request changes, or comment, with a message |
+| `D` | Mark a draft ready for review, or an open pull request back to a draft, after asking |
+
+**Actions → Pull Request** has those three, and:
+
+- **Merge…** offers the ways the repository allows (a merge commit, squash, rebase) and whether to delete the branch afterwards. A draft has to be marked ready first. The status bar then says what happened: merged; or, when required checks are still running, that GitHub turned on auto-merge and will merge it when they pass; or that it accepted the merge but hasn't done it yet, as with a merge queue. If GitHub won't merge it at all, because a required review is missing say, the status bar gives GitHub's reason.
+- **Request Reviewers…** takes GitHub logins separated by commas, or a team as `org/team-name`.
+- **Update Branch…** merges the base branch into the pull request's branch, as the button on github.com does, after asking.
+
+`K`, `V` and `D` work from the details panel too. The review form works like New Issue: `Ctrl+Enter` submits it from the message. Requesting changes or commenting needs a message; approving doesn't. After a review, merge or change, the list reloads.
+
+When a check failed in a GitHub Actions workflow, Workflow Runs (`Ctrl+7`) and `L` on its run shows what failed.
 
 ### Go to an issue by number
 
@@ -435,10 +460,34 @@ A workflow can only be run by hand if its file has an `on: workflow_dispatch` tr
 | Key | Action |
 |-----|--------|
 | `Enter` | List the run's artifacts |
+| `J` | List the run's jobs, with their steps |
+| `L` | Show what failed |
+| `E` | Rerun it: every job, or only the ones that failed |
+| `X` | Cancel it, while it is queued or running |
 | `Ctrl+D` or `Delete` | Delete the run, after asking |
 | `Ctrl+O` | Open the run on GitHub |
 
-Deleting a run cannot be undone, and the question says so. On a Mac keyboard, use `Cmd+D`.
+Deleting a run cannot be undone, and the question says so. On a Mac keyboard, use `Cmd+D`. `J`, `L`, `E` and `X` work from the details panel too, and are on the **Actions** menu as Show Jobs, Show What Failed, Rerun… and Cancel Run….
+
+### What failed
+
+`L` on a failed run gathers what you would otherwise hunt for across the run's page and its logs, into one text to read from the top:
+
+- which jobs failed, at which step, after how long; jobs that were cancelled, usually because another failed first, are named on one line rather than reported as failures;
+- what GitHub flagged in each: the errors shown as annotations on the run's page, such as "Process completed with exit code 1.", or a failing test's file and line;
+- the last 40 lines of each failed step's log, where the error usually is. Some repositories' logs don't say where one step ends and the next begins; then it is the end of the job's log, and the report says so.
+
+A run that failed before any job started, because of a mistake in the workflow file or because it is waiting for someone to approve it, says that instead.
+
+Logs are tidied for reading: no colour codes or other terminal control codes, no timestamp on every line, GitHub's error and warning markers read as "ERROR:" and "WARNING:", and the commands it ran as "Command:". Warnings that are not failures are left out. On a run that succeeded, `L` just says so.
+
+### Jobs
+
+`J` on a run lists its jobs: each job's name, status, result, how long it took and the step that failed, if one did. The details panel lists every step with its result, "Step 4, Run tests: failure". `Enter` on a job opens its whole log, with the cursor on the first error when there is one; a very long log keeps its last 20,000 lines. A skipped job has no log, and a running one's log is ready when it finishes; GHManage says so rather than opening an empty window. `L`, `E` and `X` work here on the run the jobs belong to. `Backspace` returns to the runs.
+
+### Rerun and cancel
+
+`E` asks how to rerun a finished run: **Rerun failed jobs only**, offered when something failed, or **Rerun all jobs**. `X` cancels a run that is queued or in progress, after asking. Either way the list refreshes itself a few seconds later, once GitHub shows the change.
 
 ### Artifacts
 
@@ -484,7 +533,7 @@ The publish history has the same split. Sites GitHub builds itself keep a full b
 
 **Notifications** is your GitHub inbox: the issues, pull requests, releases, discussions and workflow runs GitHub has told you about, across every repository, most recently updated first. It lists the unread ones, as github.com does.
 
-Open it by choosing **Notifications** near the top of the repository list, with `Ctrl+Shift+N` (`Cmd+Shift+N` on a Mac), or from **View → View Mode → Notifications**. Like Activity, it keeps the repository you were in.
+Open it by choosing **Notifications** in the repository list, after Watched Repositories, with `Ctrl+Shift+N` (`Cmd+Shift+N` on a Mac), or from **View → View Mode → Notifications**. Like Activity, it keeps the repository you were in.
 
 Each row reads why you were told, what kind of thing it is, its title, the repository, when it last changed, and whether it is read:
 
@@ -516,6 +565,69 @@ A read notification stays in the list until you refresh, its row now ending "rea
 To see only some, use the quick filter (`Ctrl+F`): it matches the reason and the repository as well as the title, so "review requested" or "nvaccess/nvda" narrows the list to those.
 
 The count beside **Notifications** in the repository list goes down as you read, and is brought up to date whenever the whole of your unread list has loaded.
+
+---
+
+## My Work
+
+**My Work** answers "what on GitHub needs me?": the open issues and pull requests, in every repository, where:
+
+- your review is requested,
+- you are assigned,
+- you opened the pull request,
+- you opened the issue,
+- you are mentioned.
+
+They come in that order, most recently updated first within each, and each is listed once, under the first reason that applies: a pull request you are asked to review and also mentioned in is a review request. Archived repositories are left out.
+
+Open it by choosing **My Work** in the repository list, after Notifications, with `Ctrl+Shift+M` (`Cmd+Shift+M` on a Mac), or from **View → View Mode → My Work**. It takes five searches, so a few seconds; `R` asks again. GitHub allows 30 searches a minute, so if you refresh a lot, one kind may fail to load; the status bar names it and the rest still show. The status bar adds it up, for example "My Work — 36 open: 14 review requested, 15 assigned, 7 your pull request". Each kind lists up to 100; a kind with more is marked with a +, and a search (`Ctrl+Shift+F`) with the same terms finds the rest.
+
+Each row reads why it is on the list, whether it is an issue or a pull request, its number, title, repository and when it last changed. The details panel adds the description.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open it here in GHManage, selected in its repository's issues; `Backspace` comes back |
+| `G` or `Ctrl+Shift+G` | Open its repository here |
+| `Ctrl+O` | Open it on GitHub |
+| `F` | Add it to favorites, or remove it |
+
+---
+
+## Searching GitHub
+
+**File → Search GitHub…** (`Ctrl+Shift+F`) searches all of GitHub, not just one repository. Choose what to search for, **Issues and pull requests** or **Repositories**, and type the query.
+
+The query is GitHub's own search language, exactly as on github.com, so every qualifier works:
+
+- `is:open is:issue label:bug repo:nvaccess/nvda`
+- `author:@me`, `review-requested:@me`, `mentions:@me`, `involves:@me`
+- `updated:>2026-01-01`, `created:2026-09-01..2026-09-30`
+- `org:nvaccess braille in:title`
+- for repositories: `screen reader language:python stars:>50`, `topic:accessibility archived:false`
+
+The results replace the list, best match first. Issue and pull request results read type, number, state, title, repository and when last updated; repository results read the same as Starred and Watched Repositories. The status bar says how many match: "Search — 512 issues and pull requests match repo:nvaccess/nvda braille is:open, showing 100."
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the issue, pull request or repository here in GHManage; `Backspace` comes back to the results |
+| `G` or `Ctrl+Shift+G` | Open the result's repository here |
+| `Ctrl+O` | Open it on GitHub |
+| `F` | Add it to favorites, or remove it |
+| `Ctrl++` | Load the next 100, added to these |
+| `Ctrl+S` | Save this search |
+| `Ctrl+Shift+F` | A new search, starting from this one |
+
+GitHub returns at most the first 1,000 results of any search, and allows about 30 searches a minute. A search that matches more than 1,000 says so; narrow it to reach the rest.
+
+Results stay in GitHub's order, best match first; **View → Sort Order** doesn't apply here. To sort, say so in the query: `sort:updated-desc`, `sort:created-asc`, `sort:comments-desc`, or for repositories `sort:stars-desc`.
+
+An issue or pull request in a fork opens on GitHub rather than here: GHManage shows a fork's issues from its upstream, where the same number is something else.
+
+### Saved searches
+
+**Actions → Save Search…** (`Ctrl+S`, `Cmd+S` on a Mac) asks for a name and adds the search to the repository list, after My Work, marked with 🔍. `Enter` there runs it again, for fresh results. Saving under a name you have used replaces that search. **File → Remove from List…** with a saved search selected removes it.
+
+Saved searches are kept on this computer, beside your favorites.
 
 ---
 
@@ -651,11 +763,13 @@ The fourth item is named for what it copies in the view you are in:
 | A release's files | Copy File Name | the file's name |
 | Workflows | Copy File Path | the workflow file, such as `.github/workflows/ci.yml` |
 | Workflow Runs | Copy Run ID | the run's id, as `gh run view` takes it |
+| A run's jobs | Copy Job ID | the job's id |
 | A run's artifacts | Copy Name | the artifact's name |
 | Labels | Copy Label Name | the label |
 | GitHub Pages | Copy Commit | the commit the publish was built from |
 | Published Pages | Copy Path | the page's path in the repository |
 | Favorites | Copy Name | the favorite's title, the same as Copy Title |
+| My Work, search results | Copy Number, or Copy Repository Name for repositories | `owner/name#208`, since the list mixes repositories; or `owner/name` |
 | Notifications | Copy Number or Repository | the issue or pull request number, or the repository for anything else |
 | Activity | Copy Number, Tag or Repository | the issue or pull request number, the release's tag, or the repository for events about a whole repository |
 | Starred, Watched | Copy Repository Name | `owner/name` |
@@ -697,12 +811,16 @@ The current mode is shown on the status bar, and the status bar says "Quick mode
 | Release files | name, downloads, size, date | # |
 | Workflows | name, state, path | # |
 | Workflow Runs | name, status, result, branch, date | event, # |
+| A run's jobs | name, status, result, duration, failed step | |
 | Artifacts | name, size, expired, date | # |
 | Labels | label, description, color | default |
 | GitHub Pages | status, commit, pusher, date, duration | kind, error, # |
 | Published Pages | page, url | size |
 | Favorites | type, repo, title, subtitle | |
 | Notifications | reason, type, title, repo, updated, status | |
+| My Work | why, type, number, title, repo, updated | author, labels |
+| Search results: issues and pull requests | type, number, state, title, repo, updated | author, labels, comments |
+| Search results: repositories | repo, description, language, stars, pushed | owner |
 | Activity | actor, action, repo, title, date | |
 | Starred and Watched Repositories | repo, description, language, stars, pushed | owner |
 
@@ -745,7 +863,9 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
 | New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
+| Pull Request ▸ Checks, Review…, Merge…, Ready for Review or Back to Draft, Request Reviewers…, Update Branch… | `K`, `V`, `D` in the list | Issues & PRs, on a pull request |
 | Watch Settings… | `Ctrl+Shift+U` | Any view of a repository, Starred and Watched |
+| Save Search… | `Ctrl+S` | Search results |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
 | Delete | `Ctrl+D` | Labels (reads **Delete Label…**), Workflow Runs (reads **Delete Workflow Run…**) and Notifications (reads **Mark as Done**) |
 | Run Workflow on Branch… | | Workflows |
@@ -776,7 +896,9 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `F1` | Open this guide in your browser |
 | `Ctrl+1` … `Ctrl+0` | Switch view; see [Views](#views) |
 | `Ctrl+Shift+N` | Notifications |
+| `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
+| `Ctrl+Shift+F` | Search GitHub |
 | `Ctrl+R` | Refresh the list |
 | `Ctrl++` | Load more |
 | `Ctrl+F` | Quick filter |
@@ -811,7 +933,8 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `O` or `Ctrl+Shift+W` | Reopen |
 | `M` or `Ctrl+M` | Add a comment |
 | `N` or `Ctrl+N` | New issue |
-| `Backspace` | Back to the labels, Notifications, the Activity feed, or the Starred or Watched list, when you came from one |
+| `K` / `V` / `D` | On a pull request: checks / review / ready or draft |
+| `Backspace` | Back to the labels, Notifications, My Work, search results, the Activity feed, or the Starred or Watched list, when you came from one |
 
 ### In Branches and Commits
 
@@ -836,9 +959,21 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 |-----|--------|
 | `Enter` on a workflow | Run it on a branch |
 | `Enter` on a run | List its artifacts |
+| `J` | The run's jobs; `Enter` on a job reads its log |
+| `L` | What failed |
+| `E` / `X` | Rerun / cancel |
 | `Ctrl+D` or `Delete` | Delete the run |
 | `Enter` on an artifact | Download it into a folder you choose |
-| `Backspace` | Artifacts back to runs |
+| `Backspace` | Artifacts or jobs back to runs |
+
+### In My Work and search results
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the issue, pull request or repository here; `Backspace` comes back |
+| `G` or `Ctrl+Shift+G` | Open its repository here |
+| `Ctrl+S` | Save the search (search results) |
+| `Ctrl+Shift+F` | A new search |
 
 ### In Labels
 

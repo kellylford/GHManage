@@ -280,13 +280,10 @@ def test_enter_on_an_issue_opens_it_here_and_marks_it_read():
     f = _frame([note])
     changes, opened = [], []
     f._run_notification_change = lambda n, c, announce=False: changes.append(c)
-    f._open_repo_from_list = lambda repo, item: opened.append((repo, item))
-    f._fetch_token = 7   # the load _open_repo_from_list started
-    f._set_pending_target = lambda *a: Frame._set_pending_target(f, *a)
+    f._open_item_here = lambda n: opened.append(n)
     Frame._open_notification(f, note)
     assert changes == ["read"]
-    assert opened == [("o/r", note)]
-    assert f._pending_target == (7, ghviewer.VIEW_ISSUES, "item", "42")
+    assert opened == [note]
 
 
 def test_enter_on_a_ci_run_opens_the_browser(monkeypatch):

@@ -191,6 +191,32 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   turns gh's "needs the X scope" message into `MissingScope(scope)`, whose text gives the
   `gh auth refresh` command. Use `MissingScope` for any future feature that needs an extra
   scope (Follow needs `user:follow`, Projects `read:project`).
+- **Search / My Work / saved searches** — `search_issues`/`search_repos` call the REST
+  `search/*` endpoints with `-f q=<query as typed>`: **not** `gh search`, which splits and
+  re-quotes arguments and breaks qualifiers like `review-requested:@me`. Results are
+  `Item`s carrying `repo` (and `why` for My Work) or `RepoEntry`s. `ITEM_VIEWS` (Issues,
+  My Work, Search issues) all show issue details and keep their rows in `self.items`; only
+  `VIEW_ISSUES` has the repo-bound actions (close/reopen/comment). Enter in the cross-repo
+  views goes through `_open_repo_from_list` + `_set_pending_target`, so Backspace returns;
+  `_open_repo_from_list` snapshots `_view_source()`. `fetch_my_work` runs `MY_WORK_QUERIES`
+  in priority order, dedups by URL and reports reasons that hit the 100 cap. Saved searches
+  (`saved_searches.py`) are repo-list entries with client data `SEARCH_ENTRY_PREFIX+name`;
+  use `is_repo_entry()` wherever a repo-list entry is treated as a repository.
+- **Workflow run jobs / logs / rerun / cancel** — `VIEW_JOBS` is a drill-down of
+  `VIEW_WORKFLOW` (J; `jobs_run` cleared on leaving). Logs come from `gh run view
+  --log-failed` / `--job ID --log`, whose lines are `job TAB step TAB stamped text`;
+  `parse_run_log` groups them and `clean_log_line` strips colour codes, timestamps and
+  turns `##[error]` into "ERROR:". `format_failure_report` / `format_job_log` are pure and
+  tested. Annotations: a job's id is its check run's id (`check-runs/{id}/annotations`).
+  J/L/E/X are in `on_char_hook` so they work from the details panel.
+- **Pull request actions** (Actions ▸ Pull Request; K/V/D in the issues list, list only
+  like C/O/M) — gh_data `fetch_pr_checks` reads `gh pr checks --json` **whatever gh exits
+  with** (1 = a check failed, 8 = still running); `review_pr` sends the message on stdin.
+  Every PR call takes the PR's **address** (`pr.url`), never number + repo: resolving a
+  fork's upstream can fail and fall back to the fork, where the same number is another PR.
+  `merge_pr` reports what happened ("merged", "auto" when GitHub enabled auto-merge,
+  "queued") from `gh pr view --json state,autoMergeRequest`. K/V/D live in `on_char_hook`
+  (they work from the details panel); D asks first. `format_checks` is pure.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
@@ -298,6 +324,7 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Starred repos (Starred view) | `user/starred?per_page=&page=` |
 | Watched repos (Watched view) | `user/subscriptions?per_page=&page=` |
 | Signed-in login | `user` (`-q .login`, cached) |
+| Search | `GET search/issues`, `GET search/repositories` with `-f q=` (30/min, 1,000 max) |
 | Notifications | `notifications?all=false|true&per_page=50&page=` |
 | Mark read / done / unsubscribe | `PATCH`/`DELETE notifications/threads/{id}`, `DELETE …/{id}/subscription` |
 | Mark all read | `PUT notifications -F read=true` |

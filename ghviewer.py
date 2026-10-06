@@ -22,6 +22,10 @@ import updater
 from version import __version__ as APP_VERSION
 from pinned_repos import add_pinned, load_pinned, remove_pinned
 from favorites import FavoriteEntry, load_favorites, save_favorites, is_favorite, toggle_favorite
+from saved_searches import (
+    KIND_ISSUES, KIND_REPOS, SavedSearch, add_saved_search, load_saved_searches,
+    remove_saved_search,
+)
 
 from gh_data import (
     ACTIVITY_COLUMNS,
@@ -79,6 +83,32 @@ from gh_data import (
     add_comment,
     close_item,
     IssueCreatedUnreadable,
+    MERGE_METHODS,
+    allowed_merge_methods,
+    fetch_pr_checks,
+    merge_pr,
+    request_reviewers,
+    review_pr,
+    set_pr_ready,
+    update_pr_branch,
+    JOB_COLUMNS,
+    JOB_DEFAULT_COLUMNS,
+    WorkflowJob,
+    cancel_workflow_run,
+    fetch_failed_log,
+    fetch_job_annotations,
+    fetch_job_log,
+    fetch_run_jobs,
+    fetch_workflow_run,
+    rerun_workflow_run,
+    MY_WORK_COLUMNS,
+    MY_WORK_DEFAULT_COLUMNS,
+    SEARCH_ITEM_COLUMNS,
+    SEARCH_ITEM_DEFAULT_COLUMNS,
+    SEARCH_MAX,
+    fetch_my_work,
+    search_issues,
+    search_repos,
     MissingScope,
     WATCH_ALL,
     WATCH_IGNORE,
@@ -319,6 +349,104 @@ def parse_github_url(value: str) -> GitHubTarget | None:
     return GitHubTarget(repo, "inside")
 
 
+# ── Workflow run reports ────────────────────────────────────────────────
+
+# Lines of each failed step's log in the "what failed" report: enough to
+# hold the error and what led to it, short enough to read.
+FAILED_TAIL_LINES = 40
+# A job log longer than this keeps only its end, where failures are.
+JOB_LOG_MAX_LINES = 20000
+
+
+# gh labels every line this way when it can't tell the steps of a log apart,
+# which happens on some repositories; the whole job's log then comes back.
+UNKNOWN_STEP = "UNKNOWN STEP"
+
+FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+
+
+def format_failure_report(run, jobs: list, annotations: dict, failed_log: list) -> str:
+    """What failed in ``run``, as text to read top to bottom.
+
+    ``annotations`` maps job id to that job's annotations; ``failed_log`` is
+    fetch_failed_log's (job, step, lines).
+    """
+    failed = [j for j in jobs if j.conclusion in FAILED_CONCLUSIONS]
+    cancelled = [j for j in jobs if j.conclusion == "cancelled"]
+    head = f"Run #{run.run_number} {run.name} on {run.branch} — {run.conclusion or run.status}"
+    lines = [head]
+    if not jobs:
+        lines.append("It failed before any job started: a problem in the workflow file, or "
+                     "it is waiting for someone to approve it. The run's page on GitHub says which.")
+        return "\n".join(lines)
+    if not failed and not cancelled:
+        lines.append("No job failed.")
+        return "\n".join(lines)
+    if failed:
+        lines.append(f"{len(failed)} of {len(jobs)} jobs failed: {', '.join(j.name for j in failed)}.")
+    if cancelled:
+        names = ", ".join(j.name for j in cancelled[:10])
+        more = f" and {len(cancelled) - 10} more" if len(cancelled) > 10 else ""
+        lines.append(f"{len(cancelled)} cancelled, often because another job failed first: "
+                     f"{names}{more}.")
+    for job in failed:
+        lines.append("")
+        lines.append("─" * 60)
+        steps = job.failed_steps
+        where = f" at step \"{steps[0].name}\"" if steps else ""
+        took = f" after {job.duration}" if job.duration else ""
+        lines.append(f"Job {job.name} — {job.conclusion}{where}{took}")
+        lines.append("─" * 60)
+        flagged = [a for a in annotations.get(job.id, []) if a.level == "failure"]
+        if flagged:
+            lines.append("")
+            lines.append("What GitHub flagged:")
+            for a in flagged:
+                # An annotation on ".github" points into the raw log, not a
+                # file; its line number means nothing here.
+                place = f"{a.path} line {a.line}: " if a.path and a.path != ".github" and a.line else ""
+                title = f"{a.title}: " if a.title else ""
+                lines.append(f"  {place}{title}{a.message}")
+        for log_job, step, step_lines in failed_log:
+            if log_job != job.name:
+                continue
+            kept = [ln for ln in step_lines if ln.strip()]
+            tail = kept[-FAILED_TAIL_LINES:]
+            if step == UNKNOWN_STEP:
+                name = f"the job's log (it failed at \"{steps[0].name}\")" if steps else "the job's log"
+            else:
+                name = f"\"{step}\""
+            lines.append("")
+            lines.append(f"Last {len(tail)} lines of {name}:" if len(tail) < len(kept)
+                         else f"Log of {name}:")
+            lines.extend(f"  {ln}" for ln in tail)
+    lines.append("")
+    lines.append("The whole log of a job: J for the jobs, then Enter on one.")
+    return "\n".join(lines)
+
+
+def format_job_log(job, log: list) -> tuple[str, int]:
+    """A job's log as text, and the line its first error is on (or 0).
+
+    A line number rather than a character offset: text controls count in
+    UTF-16 units, so an emoji earlier in the log would put an offset off.
+    """
+    lines = [f"Log of job {job.name} — {job.conclusion or job.status}"]
+    body: list[str] = []
+    for _job, step, step_lines in log:
+        if step != UNKNOWN_STEP:
+            body.append("")
+            body.append(f"── Step: {step} ──")
+        body.extend(step_lines)
+    if len(body) > JOB_LOG_MAX_LINES:
+        dropped = len(body) - JOB_LOG_MAX_LINES
+        body = body[dropped:]
+        lines.append(f"(The first {dropped:,} lines are left out; this is the end of the log.)")
+    lines.extend(body)
+    first_error = next((i for i, ln in enumerate(lines) if ln.startswith("ERROR: ")), 0)
+    return "\n".join(lines), first_error
+
+
 # ── Copy ────────────────────────────────────────────────────────────────
 
 
@@ -367,7 +495,8 @@ def _first_line(text: str) -> str:
 def copy_values(item) -> CopyValues | None:
     """The Copy commands' view of ``item``, or None for an unknown kind."""
     if isinstance(item, Item):
-        number = f"#{item.number}"
+        # Across repositories (search, My Work) a bare #208 says too little.
+        number = f"{item.repo}#{item.number}" if item.repo else f"#{item.number}"
         return CopyValues(item.url, item.title, number, "Number",
                           f"{number} {item.title}")
     if isinstance(item, Branch):
@@ -389,6 +518,8 @@ def copy_values(item) -> CopyValues | None:
     if isinstance(item, WorkflowRun):
         return CopyValues(item.url, item.name, str(item.run_id) if item.run_id else "", "Run ID",
                           f"{item.name} #{item.run_number}")
+    if isinstance(item, WorkflowJob):
+        return CopyValues(item.url, item.name, str(item.id) if item.id else "", "Job ID", item.name)
     if isinstance(item, Artifact):
         # Artifacts have no page of their own on github.com.
         return CopyValues("", item.name, item.name, "Name", item.name)
@@ -494,6 +625,20 @@ ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
+ID_SEARCH = wx.NewIdRef()
+ID_RUN_JOBS = wx.NewIdRef()
+ID_PR_CHECKS = wx.NewIdRef()
+ID_PR_REVIEW = wx.NewIdRef()
+ID_PR_MERGE = wx.NewIdRef()
+ID_PR_DRAFT = wx.NewIdRef()
+ID_PR_REVIEWERS = wx.NewIdRef()
+ID_PR_UPDATE = wx.NewIdRef()
+ID_RUN_FAILED = wx.NewIdRef()
+ID_RUN_RERUN = wx.NewIdRef()
+ID_RUN_CANCEL = wx.NewIdRef()
+ID_SAVE_SEARCH = wx.NewIdRef()
+ID_VIEW_MY_WORK = wx.NewIdRef()
+ID_VIEW_SEARCH_RESULTS = wx.NewIdRef()
 ID_WATCH_SETTINGS = wx.NewIdRef()
 ID_COPY_LINK = wx.NewIdRef()
 ID_COPY_MARKDOWN = wx.NewIdRef()
@@ -511,6 +656,7 @@ VIEW_RELEASES = "releases"
 VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
 VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
+VIEW_JOBS = "jobs"             # jobs of a single workflow run (drill-down)
 VIEW_ASSETS = "assets"         # files attached to a single release (drill-down)
 VIEW_LABELS = "labels"
 VIEW_FAVORITES = "favorites"
@@ -520,33 +666,52 @@ VIEW_ACTIVITY = "activity"     # your GitHub activity feed (not tied to a repo)
 VIEW_STARRED = "starred"       # repositories you have starred
 VIEW_WATCHED = "watched"       # repositories you watch
 VIEW_NOTIFICATIONS = "notifications"  # your GitHub notifications
+VIEW_MY_WORK = "my_work"       # open issues and PRs that need you, everywhere
+VIEW_SEARCH_ISSUES = "search_issues"  # GitHub-wide search: issues and PRs
+VIEW_SEARCH_REPOS = "search_repos"    # GitHub-wide search: repositories
 
 # Views that are not views *of a repo*, so they work with none selected.
-REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_NOTIFICATIONS, VIEW_ACTIVITY, VIEW_STARRED,
-                  VIEW_WATCHED)
+REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_ACTIVITY,
+                  VIEW_STARRED, VIEW_WATCHED, VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
 # The repoless views fetched from GitHub (Favorites is read from disk).
-FEED_VIEWS = (VIEW_NOTIFICATIONS, VIEW_ACTIVITY, VIEW_STARRED, VIEW_WATCHED)
+FEED_VIEWS = (VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_ACTIVITY, VIEW_STARRED,
+              VIEW_WATCHED, VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
+# Views listing issues and pull requests (Items), shown with the issue
+# details. Only Issues & PRs is of one repo; the issue actions (close,
+# reopen, comment) belong to it alone.
+ITEM_VIEWS = (VIEW_ISSUES, VIEW_MY_WORK, VIEW_SEARCH_ISSUES)
+SEARCH_VIEWS = (VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
+# Lists across repositories where G opens the selected row's repository here.
+GO_TO_REPO_VIEWS = (VIEW_ACTIVITY, VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_SEARCH_ISSUES,
+                    VIEW_SEARCH_REPOS)
 # Views listing repositories; Enter on one opens it here.
 REPO_LIST_VIEWS = (VIEW_STARRED, VIEW_WATCHED)
 
 # clientData of the pseudo-entries at the top of the repository list.
 FAVORITES_ENTRY = "__favorites__"
 NOTIFICATIONS_ENTRY = "__notifications__"
+MY_WORK_ENTRY = "__my_work__"
+# A saved search in the repo list: this prefix and its name.
+SEARCH_ENTRY_PREFIX = "__search__:"
 ACTIVITY_ENTRY = "__activity__"
 STARRED_ENTRY = "__starred__"
 WATCHED_ENTRY = "__watched__"
 
 # The category entries after ★ Favorites, in order, with their labels.
 CATEGORY_ENTRIES = [
-    (NOTIFICATIONS_ENTRY, "Notifications"),
+    # The four from 0.8.5 keep their places, so the keystrokes people have
+    # learned from the top of the list still reach them; newer ones follow.
     (ACTIVITY_ENTRY, "Activity"),
     (STARRED_ENTRY, "Starred Repositories"),
     (WATCHED_ENTRY, "Watched Repositories"),
+    (NOTIFICATIONS_ENTRY, "Notifications"),
+    (MY_WORK_ENTRY, "My Work"),
 ]
 # Which repo-list entry stands for which view, both ways.
 VIEW_ENTRIES = {
     VIEW_FAVORITES: FAVORITES_ENTRY,
     VIEW_NOTIFICATIONS: NOTIFICATIONS_ENTRY,
+    VIEW_MY_WORK: MY_WORK_ENTRY,
     VIEW_ACTIVITY: ACTIVITY_ENTRY,
     VIEW_STARRED: STARRED_ENTRY,
     VIEW_WATCHED: WATCHED_ENTRY,
@@ -568,6 +733,7 @@ USER_GUIDE_URL = "https://kellylford.github.io/GHManage/"
 PARENT_VIEW = {
     VIEW_COMMITS: VIEW_BRANCHES,
     VIEW_ARTIFACTS: VIEW_WORKFLOW,
+    VIEW_JOBS: VIEW_WORKFLOW,
     VIEW_ASSETS: VIEW_RELEASES,
     VIEW_PAGEFILES: VIEW_PAGES,
 }
@@ -586,6 +752,7 @@ VIEW_COLUMNS = {
     VIEW_WORKFLOWS: (WORKFLOW_DEF_DEFAULT_COLUMNS, WORKFLOW_DEF_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
     VIEW_ARTIFACTS: (ARTIFACT_DEFAULT_COLUMNS, ARTIFACT_COLUMNS),
+    VIEW_JOBS: (JOB_DEFAULT_COLUMNS, JOB_COLUMNS),
     VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
     VIEW_LABELS: (LABEL_DEFAULT_COLUMNS, LABEL_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
@@ -595,7 +762,19 @@ VIEW_COLUMNS = {
     VIEW_STARRED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
     VIEW_WATCHED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
     VIEW_NOTIFICATIONS: (NOTIFICATION_DEFAULT_COLUMNS, NOTIFICATION_COLUMNS),
+    VIEW_MY_WORK: (MY_WORK_DEFAULT_COLUMNS, MY_WORK_COLUMNS),
+    VIEW_SEARCH_ISSUES: (SEARCH_ITEM_DEFAULT_COLUMNS, SEARCH_ITEM_COLUMNS),
+    VIEW_SEARCH_REPOS: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
 }
+
+
+def is_repo_entry(data) -> bool:
+    """Whether a repo-list entry's client data names a repository, rather
+    than Favorites, a category or a saved search."""
+    return (
+        isinstance(data, str) and bool(data) and data != FAVORITES_ENTRY
+        and data not in ENTRY_VIEWS and not data.startswith(SEARCH_ENTRY_PREFIX)
+    )
 
 
 # ── The item list ───────────────────────────────────────────────────────
@@ -1036,6 +1215,177 @@ class NewLabelDialog(wx.Dialog):
         )
 
 
+# ── Search dialog ───────────────────────────────────────────────────────
+
+
+class SearchDialog(wx.Dialog):
+    """What to search GitHub for, and how.
+
+    The query is GitHub's own search syntax, passed through untouched, so
+    every qualifier github.com accepts works here. Labelled as the other
+    dialogs: a StaticText before each control and a matching SetName.
+    """
+
+    KINDS = [(KIND_ISSUES, "Issues and pull requests"), (KIND_REPOS, "Repositories")]
+
+    def __init__(self, parent: wx.Window, kind: str = KIND_ISSUES, query: str = "") -> None:
+        super().__init__(parent, title="Search GitHub",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        outer = wx.BoxSizer(wx.VERTICAL)
+
+        label = "&Search for"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.kind_ctrl = wx.Choice(self, choices=[name for _, name in self.KINDS])
+        self.kind_ctrl.SetName(label.replace("&", ""))
+        keys = [k for k, _ in self.KINDS]
+        self.kind_ctrl.SetSelection(keys.index(kind) if kind in keys else 0)
+        outer.Add(self.kind_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        # The example is in the label itself, so a screen reader says it as
+        # it lands on the field; the longer help below is for reading on.
+        label = "&Query, with GitHub's qualifiers, such as is:open label:bug author:@me"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.query_ctrl = wx.TextCtrl(self, value=query)
+        self.query_ctrl.SetName(label.replace("&", ""))
+        self.query_ctrl.SetHint("is:open label:bug repo:owner/name")
+        outer.Add(self.query_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        help_text = (
+            "Words and GitHub's qualifiers, for example:\n"
+            "  is:open is:issue label:bug repo:nvaccess/nvda\n"
+            "  author:@me  review-requested:@me  updated:>2026-01-01\n"
+            "  screen reader language:python stars:>50   (repositories)"
+        )
+        outer.Add(wx.StaticText(self, label=help_text), 0, wx.ALL, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((520, -1))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        wx.CallAfter(self.query_ctrl.SetFocus)
+        wx.CallAfter(self.query_ctrl.SelectAll)
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        if self.query_ctrl.GetValue().strip():
+            event.Skip()
+            return
+        wx.MessageBox("Type something to search for.", "Search GitHub",
+                      wx.OK | wx.ICON_INFORMATION, self)
+        self.query_ctrl.SetFocus()
+
+    def values(self) -> tuple[str, str]:
+        return self.KINDS[self.kind_ctrl.GetSelection()][0], self.query_ctrl.GetValue().strip()
+
+
+# ── Pull request dialogs ────────────────────────────────────────────────
+
+
+class ReviewDialog(wx.Dialog):
+    """Approve, request changes, or comment, with an optional message.
+
+    Labelled as the other dialogs. Ctrl+Enter submits from the message, as
+    in New Issue, and Enter in it starts a new line.
+    """
+
+    KINDS = [("approve", "Approve"), ("request-changes", "Request changes"),
+             ("comment", "Comment")]
+
+    def __init__(self, parent: wx.Window, pr_label: str) -> None:
+        super().__init__(parent, title="Review Pull Request",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER, size=(560, 420))
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=f"Review {pr_label}"), 0, wx.ALL, 10)
+        self.kind_ctrl = wx.RadioBox(self, label="Your review",
+                                     choices=[name for _, name in self.KINDS],
+                                     majorDimension=1, style=wx.RA_SPECIFY_COLS)
+        outer.Add(self.kind_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        label = "&Message (Markdown; needed to request changes or comment)"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.body_ctrl = wx.TextCtrl(self, style=wx.TE_MULTILINE)
+        self.body_ctrl.SetName(label.replace("&", ""))
+        outer.Add(self.body_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        ok = self.FindWindow(wx.ID_OK)
+        if ok:
+            ok.SetLabel("&Submit Review")
+        self.SetSizer(outer)
+        submit = wx.NewIdRef()
+        self.Bind(wx.EVT_MENU, self._on_submit, id=submit)
+        self.SetAcceleratorTable(wx.AcceleratorTable([
+            (wx.ACCEL_CTRL, wx.WXK_RETURN, submit), (wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER, submit),
+        ]))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        wx.CallAfter(self.kind_ctrl.SetFocus)
+
+    def _valid(self) -> bool:
+        kind, body = self.values()
+        if kind != "approve" and not body:
+            wx.MessageBox("Requesting changes or commenting needs a message.",
+                          "Review Pull Request", wx.OK | wx.ICON_INFORMATION, self)
+            self.body_ctrl.SetFocus()
+            return False
+        return True
+
+    def _on_submit(self, event) -> None:
+        if self._valid():
+            self.EndModal(wx.ID_OK)
+
+    def _on_ok(self, event) -> None:
+        if self._valid():
+            event.Skip()
+
+    def values(self) -> tuple[str, str]:
+        return self.KINDS[self.kind_ctrl.GetSelection()][0], self.body_ctrl.GetValue().strip()
+
+
+class MergeDialog(wx.Dialog):
+    """How to merge a pull request, offering only what the repository allows."""
+
+    def __init__(self, parent: wx.Window, pr_label: str, methods: list[str]) -> None:
+        super().__init__(parent, title="Merge Pull Request", style=wx.DEFAULT_DIALOG_STYLE)
+        self._methods = methods
+        names = dict(MERGE_METHODS)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=f"Merge {pr_label}"), 0, wx.ALL, 10)
+        self.method_ctrl = wx.RadioBox(self, label="Merge method", choices=[names[m] for m in methods],
+                                       majorDimension=1, style=wx.RA_SPECIFY_COLS)
+        outer.Add(self.method_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        self.delete_ctrl = wx.CheckBox(self, label="&Delete the branch afterwards")
+        outer.Add(self.delete_ctrl, 0, wx.ALL, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        ok = self.FindWindow(wx.ID_OK)
+        if ok:
+            ok.SetLabel("&Merge")
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((420, -1))
+        wx.CallAfter(self.method_ctrl.SetFocus)
+
+    def values(self) -> tuple[str, bool]:
+        return self._methods[self.method_ctrl.GetSelection()], self.delete_ctrl.GetValue()
+
+
+def format_checks(pr_label: str, checks: list) -> str:
+    """A pull request's checks as text: a count, then each, failures first."""
+    words = {"fail": "failed", "cancel": "cancelled", "pending": "running",
+             "pass": "passed", "skipping": "skipped"}
+    counts: dict[str, int] = {}
+    for c in checks:
+        counts[c.bucket] = counts.get(c.bucket, 0) + 1
+    order = ["fail", "cancel", "pending", "pass", "skipping"]
+    summary = ", ".join(f"{counts[b]} {words[b]}" for b in order if b in counts)
+    lines = [f"Checks for {pr_label}", summary or "No checks have run.", ""]
+    for c in checks:
+        where = f"{c.workflow} / {c.name}" if c.workflow else c.name
+        lines.append(f"{words.get(c.bucket, c.state.lower())}: {where}")
+        if c.description:
+            lines.append(f"    {c.description}")
+        if c.link:
+            lines.append(f"    {c.link}")
+    if counts.get("fail"):
+        lines += ["", "For a failed workflow, Workflow Runs (Ctrl+7) and L on its run "
+                      "shows what failed."]
+    return "\n".join(lines)
+
+
 # ── New issue dialog ────────────────────────────────────────────────────
 
 
@@ -1154,6 +1504,7 @@ class GhViewerFrame(wx.Frame):
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
+        self.jobs_run: WorkflowRun | None = None  # run whose jobs are shown
         self.assets_release: Release | None = None  # release whose assets are shown
         # Pages config for the current repo. Shared by both Pages views — the
         # published-file list is derived from it — so it survives the move
@@ -1205,6 +1556,11 @@ class GhViewerFrame(wx.Frame):
         # it when it lands, so a late reply can't touch the next account's
         # counts or lists.
         self._account_gen: int = 0
+        # The search on screen, or last run: (kind, query), and how many
+        # GitHub said match.
+        self._search: tuple[str, str] | None = None
+        self._search_total: int = 0
+        self.saved_searches: list[SavedSearch] = load_saved_searches()
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -1369,7 +1725,9 @@ class GhViewerFrame(wx.Frame):
         elif self.view_mode == VIEW_NOTIFICATIONS:
             widths.update({"status": 70, "reason": 130, "type": 80, "title": 420,
                            "repo": 220, "updated": 130})
-        elif self.view_mode in REPO_LIST_VIEWS:
+        elif self.view_mode in (VIEW_MY_WORK, VIEW_SEARCH_ISSUES):
+            widths.update({"why": 130, "repo": 200, "title": 380})
+        elif self.view_mode in REPO_LIST_VIEWS or self.view_mode == VIEW_SEARCH_REPOS:
             widths.update({"repo": 240, "description": 380, "language": 100,
                            "stars": 80, "pushed": 100, "owner": 140})
         for i, col in enumerate(self.columns):
@@ -1390,6 +1748,7 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
+        file_menu.Append(ID_SEARCH, "Search GitHub…\tCtrl+Shift+F")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
         file_menu.Append(ID_FILTER, "Quick Filter…\tCtrl+F")
         file_menu.AppendSeparator()
@@ -1422,7 +1781,17 @@ class GhViewerFrame(wx.Frame):
         self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
         self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         self._act_new_issue = actions_menu.Append(ID_NEW_ISSUE, "New Issue…\tCtrl+N")
+        # Pull requests. K, V and D are the keys in the issues list.
+        pr_menu = wx.Menu()
+        pr_menu.Append(ID_PR_CHECKS, "&Checks (K)")
+        pr_menu.Append(ID_PR_REVIEW, "Re&view… (V)")
+        pr_menu.Append(ID_PR_MERGE, "&Merge…")
+        pr_menu.Append(ID_PR_DRAFT, "Ready for Review or Back to &Draft (D)")
+        pr_menu.Append(ID_PR_REVIEWERS, "Request &Reviewers…")
+        pr_menu.Append(ID_PR_UPDATE, "&Update Branch…")
+        self._act_pr = actions_menu.AppendSubMenu(pr_menu, "&Pull Request")
         self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
+        self._act_save_search = actions_menu.Append(ID_SAVE_SEARCH, "Save Search…\tCtrl+S")
         actions_menu.AppendSeparator()
         # Ctrl+I and Ctrl+D are safe as accelerators; a bare Delete accelerator
         # would not be, since it would swallow the Delete key inside the list.
@@ -1436,6 +1805,11 @@ class GhViewerFrame(wx.Frame):
         self._act_download = actions_menu.Append(
             ID_ACT_DOWNLOAD_ARTIFACT, "Download Artifact…"
         )
+        # Workflow runs. J, L, E and X are the keys in the list.
+        self._act_run_jobs = actions_menu.Append(ID_RUN_JOBS, "Show Jobs (J)")
+        self._act_run_failed = actions_menu.Append(ID_RUN_FAILED, "Show What Failed (L)")
+        self._act_run_rerun = actions_menu.Append(ID_RUN_RERUN, "Rerun… (E)")
+        self._act_run_cancel = actions_menu.Append(ID_RUN_CANCEL, "Cancel Run… (X)")
         self._act_open_site = actions_menu.Append(
             ID_OPEN_PAGES_SITE, "Open Published Site"
         )
@@ -1483,6 +1857,10 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+9")
         show_menu.AppendRadioItem(ID_VIEW_PAGES, "GitHub Pages\tCtrl+0")
         show_menu.AppendRadioItem(ID_VIEW_NOTIFICATIONS, "Notifications\tCtrl+Shift+N")
+        show_menu.AppendRadioItem(ID_VIEW_MY_WORK, "My Work\tCtrl+Shift+M")
+        # Checked while search results are showing; choosing it asks for a
+        # search, as File ▸ Search GitHub does.
+        show_menu.AppendRadioItem(ID_VIEW_SEARCH_RESULTS, "Search Results…")
         show_menu.AppendRadioItem(ID_VIEW_ACTIVITY, "Activity\tCtrl+Shift+A")
         show_menu.AppendRadioItem(ID_VIEW_STARRED, "Starred Repositories")
         show_menu.AppendRadioItem(ID_VIEW_WATCHED, "Watched Repositories")
@@ -1718,6 +2096,8 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         menu_bar.Check(ID_VIEW_PAGES, self.view_mode == VIEW_PAGES)
         menu_bar.Check(ID_VIEW_NOTIFICATIONS, self.view_mode == VIEW_NOTIFICATIONS)
+        menu_bar.Check(ID_VIEW_MY_WORK, self.view_mode == VIEW_MY_WORK)
+        menu_bar.Check(ID_VIEW_SEARCH_RESULTS, self.view_mode in SEARCH_VIEWS)
         menu_bar.Check(ID_VIEW_ACTIVITY, self.view_mode == VIEW_ACTIVITY)
         menu_bar.Check(ID_SHOW_READ, self._include_read)
         menu_bar.Check(ID_VIEW_STARRED, self.view_mode == VIEW_STARRED)
@@ -1755,14 +2135,18 @@ class GhViewerFrame(wx.Frame):
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
         self._act_new_issue.Enable(in_repo)
+        self._act_pr.Enable(issues)
         # Always on: it can act on the repo selected in the repo list from any
         # view, and says "Select a repository first" when there is none.
         self._act_watch.Enable(True)
-        self._act_go_to_repo.Enable(self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS))
+        self._act_save_search.Enable(self.view_mode in SEARCH_VIEWS)
+        self._act_go_to_repo.Enable(self.view_mode in GO_TO_REPO_VIEWS)
         self._act_go_to_repo.SetItemLabel(
             "Go to Notification's Repository\tCtrl+Shift+G"
             if self.view_mode == VIEW_NOTIFICATIONS
             else "Go to Event's Repository\tCtrl+Shift+G"
+            if self.view_mode == VIEW_ACTIVITY
+            else "Go to Repository\tCtrl+Shift+G"
         )
         notifications = self.view_mode == VIEW_NOTIFICATIONS
         for entry in (self._act_mark_read, self._act_unsubscribe, self._act_mark_all_read):
@@ -1783,6 +2167,10 @@ class GhViewerFrame(wx.Frame):
 
         self._act_run_workflow.Enable(self.view_mode == VIEW_WORKFLOWS)
         self._act_download.Enable(self.view_mode == VIEW_ARTIFACTS)
+        runs = self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS)
+        self._act_run_jobs.Enable(self.view_mode == VIEW_WORKFLOW)
+        for entry in (self._act_run_failed, self._act_run_rerun, self._act_run_cancel):
+            entry.Enable(runs)
         # Only offer the site once we know there is one — the Pages views are
         # reachable on a repo that publishes nothing.
         self._act_open_site.Enable(
@@ -1833,6 +2221,8 @@ class GhViewerFrame(wx.Frame):
             self.commit_branch = ""
         if mode != VIEW_ARTIFACTS:
             self.artifacts_run = None
+        if mode != VIEW_JOBS:
+            self.jobs_run = None
         if mode != VIEW_ASSETS:
             self.assets_release = None
         if mode != VIEW_ISSUES:
@@ -1903,6 +2293,20 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_new_issue, id=ID_NEW_ISSUE)
         self.Bind(wx.EVT_MENU, lambda e: self._switch_account_flow(), id=ID_SWITCH_ACCOUNT)
         self.Bind(wx.EVT_MENU, lambda e: self._watch_settings_flow(), id=ID_WATCH_SETTINGS)
+        self.Bind(wx.EVT_MENU, lambda e: self._search_flow(), id=ID_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._search_from_view_menu(), id=ID_VIEW_SEARCH_RESULTS)
+        self.Bind(wx.EVT_MENU, lambda e: self._show_run_jobs(), id=ID_RUN_JOBS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_checks(), id=ID_PR_CHECKS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_review(), id=ID_PR_REVIEW)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_merge(), id=ID_PR_MERGE)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_toggle_draft(), id=ID_PR_DRAFT)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_request_reviewers(), id=ID_PR_REVIEWERS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_update_branch(), id=ID_PR_UPDATE)
+        self.Bind(wx.EVT_MENU, lambda e: self._show_what_failed(), id=ID_RUN_FAILED)
+        self.Bind(wx.EVT_MENU, lambda e: self._rerun_run(), id=ID_RUN_RERUN)
+        self.Bind(wx.EVT_MENU, lambda e: self._cancel_run(), id=ID_RUN_CANCEL)
+        self.Bind(wx.EVT_MENU, lambda e: self._save_search(), id=ID_SAVE_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._select_category(VIEW_MY_WORK), id=ID_VIEW_MY_WORK)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
@@ -2003,6 +2407,10 @@ class GhViewerFrame(wx.Frame):
         self.repo_list.Append(fav_label, clientData=FAVORITES_ENTRY)
         for entry, label in CATEGORY_ENTRIES:
             self.repo_list.Append(self._category_label(entry, label), clientData=entry)
+        # Saved searches next: Enter runs one.
+        for saved in getattr(self, "saved_searches", []):
+            self.repo_list.Append(f"🔍 {saved.name}",
+                                  clientData=SEARCH_ENTRY_PREFIX + saved.name)
         # Pinned (added-by-URL) repos next, marked with a pin
         shown = set()
         for name in self._pinned_repos:
@@ -2041,6 +2449,18 @@ class GhViewerFrame(wx.Frame):
     def _current_focus(self):
         return wx.Window.FindFocus()
 
+    def _current_entry(self):
+        """The repo-list entry for what the right-hand side shows, or None."""
+        if self.view_mode in VIEW_ENTRIES:
+            return VIEW_ENTRIES[self.view_mode]
+        if self.view_mode in SEARCH_VIEWS:
+            search = getattr(self, "_search", None)
+            for saved in getattr(self, "saved_searches", []):
+                if search == (saved.kind, saved.query):
+                    return SEARCH_ENTRY_PREFIX + saved.name
+            return None
+        return self.repo
+
     def _restore_repo_selection(self, previous) -> None:
         """Select the right row after a rebuild of the repo list.
 
@@ -2049,7 +2469,7 @@ class GhViewerFrame(wx.Frame):
         pinned repo just removed), select nothing rather than something that
         disagrees with the rest of the window.
         """
-        wanted = [previous, VIEW_ENTRIES.get(self.view_mode, self.repo)]
+        wanted = [previous, self._current_entry()]
         for target in wanted:
             if target is None:
                 continue
@@ -2090,6 +2510,10 @@ class GhViewerFrame(wx.Frame):
             self._select_favorites()
         elif name in ENTRY_VIEWS:
             self._select_category(ENTRY_VIEWS[name])
+        elif name.startswith(SEARCH_ENTRY_PREFIX):
+            saved = self._saved_search(name[len(SEARCH_ENTRY_PREFIX):])
+            if saved:
+                self._run_search(saved.kind, saved.query)
         else:
             self._select_repo(name)
 
@@ -2181,6 +2605,11 @@ class GhViewerFrame(wx.Frame):
         elif self.view_mode == VIEW_NOTIFICATIONS:
             self._set_view_status("Loading your notifications…")
             self._notif_more = None
+        elif self.view_mode == VIEW_MY_WORK:
+            self._set_view_status("Finding what needs you — five searches, a few seconds…")
+        elif self.view_mode in SEARCH_VIEWS:
+            query = self._search[1] if self._search else ""
+            self._set_view_status(f"Searching GitHub for {query}…")
         elif self.view_mode in REPO_LIST_VIEWS:
             self._set_view_status(f"Loading your {view_label.lower()}…")
         else:
@@ -2194,6 +2623,9 @@ class GhViewerFrame(wx.Frame):
         view = self.view_mode
         limit = self.current_limit
         include_read = self._include_read
+        search = self._search
+        # View More in a search: what is already listed, to add the next page to
+        more_of, self._search_more = getattr(self, "_search_more", None), None
         focus_row, self._pending_focus_row = self._pending_focus_row, 0
 
         def worker() -> None:
@@ -2244,6 +2676,13 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, token, arts, "artifacts")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, token, [], "artifacts")
+                elif view == VIEW_JOBS:
+                    run = self.jobs_run
+                    jobs = fetch_run_jobs(self.repo, run.run_id) if run else []
+                    # The run as it is now, not as it was when J was pressed:
+                    # it may have finished, or been rerun, since.
+                    fresh = fetch_workflow_run(self.repo, run.run_id) if run else None
+                    wx.CallAfter(self._on_jobs_loaded, token, jobs, fresh)
                 elif view == VIEW_ASSETS:
                     if self.assets_release:
                         assets = fetch_release_assets(
@@ -2255,6 +2694,22 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, token, assets, "assets")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, token, [], "assets")
+                elif view == VIEW_MY_WORK:
+                    work, capped, failed = fetch_my_work()
+                    wx.CallAfter(self._on_my_work_loaded, token, work, focus_row, capped, failed)
+                elif view in SEARCH_VIEWS:
+                    if not search:
+                        wx.CallAfter(self._on_search_loaded, token, [], 0, 0)
+                    else:
+                        fetch = search_issues if view == VIEW_SEARCH_ISSUES else search_repos
+                        if more_of:
+                            offset = (len(more_of) // 100) * 100
+                            found, total = fetch(search[1], 100, offset)
+                            have = {getattr(x, "url", "") for x in more_of}
+                            found = more_of + [x for x in found if getattr(x, "url", "") not in have]
+                        else:
+                            found, total = fetch(search[1], limit)
+                        wx.CallAfter(self._on_search_loaded, token, found, total, focus_row)
                 elif view == VIEW_NOTIFICATIONS:
                     notes, more = fetch_notifications(limit, include_read)
                     wx.CallAfter(self._on_notifications_loaded, token, notes, more, focus_row)
@@ -2320,6 +2775,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOWS: "Workflows",
         VIEW_WORKFLOW: "Workflow Runs",
         VIEW_ARTIFACTS: "Artifacts",
+        VIEW_JOBS: "Jobs",
         VIEW_ASSETS: "Release Assets",
         VIEW_LABELS: "Labels",
         VIEW_FAVORITES: "Favorites",
@@ -2329,6 +2785,9 @@ class GhViewerFrame(wx.Frame):
         VIEW_STARRED: "Starred Repositories",
         VIEW_WATCHED: "Watched Repositories",
         VIEW_NOTIFICATIONS: "Notifications",
+        VIEW_MY_WORK: "My Work",
+        VIEW_SEARCH_ISSUES: "Search Results",
+        VIEW_SEARCH_REPOS: "Repository Search Results",
     }
 
     def _update_title(self) -> None:
@@ -2341,6 +2800,8 @@ class GhViewerFrame(wx.Frame):
         # Include the run being drilled into (artifacts view)
         if self.view_mode == VIEW_ARTIFACTS and self.artifacts_run:
             parts.append(f"run #{self.artifacts_run.run_number} {self.artifacts_run.name}")
+        if self.view_mode == VIEW_JOBS and self.jobs_run:
+            parts.append(f"run #{self.jobs_run.run_number} {self.jobs_run.name}")
         # Include the release being drilled into (assets view)
         if self.view_mode == VIEW_ASSETS and self.assets_release:
             parts.append(self.assets_release.tag or self.assets_release.name)
@@ -2421,13 +2882,21 @@ class GhViewerFrame(wx.Frame):
         self._set_view_status(
             f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}){label_info}. "
             f"Showing up to {self.current_limit} newest.",
-            "Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter"
+            "Ctrl++=view more  R=refresh  M=comment  N=new issue  K=checks  V=review  "
+            "F=favorite  Ctrl+F=filter"
             f"{label_hint}",
         )
         self._update_title()
         row = self._take_pending_row(items, token)
         if filtered:
             wx.CallLater(100, self._focus_list, row)
+
+    def _on_jobs_loaded(self, token: int, jobs: list, fresh) -> None:
+        if not self._fetch_is_current(token):
+            return
+        if fresh is not None and self.jobs_run and fresh.run_id == self.jobs_run.run_id:
+            self.jobs_run = fresh
+        self._on_git_items_loaded(token, jobs, "jobs")
 
     def _on_pages_loaded(self, token: int, site: "PagesSite | None", builds: list) -> None:
         """Pages view: keep the site config, list its publish history."""
@@ -2486,7 +2955,11 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_WORKFLOWS:
             compare_hint = "  Enter=run on branch"
         elif self.view_mode == VIEW_WORKFLOW:
-            compare_hint = "  Enter=list artifacts  Delete/Ctrl+D=delete run"
+            compare_hint = ("  Enter=list artifacts  J=jobs  L=what failed  E=rerun  X=cancel"
+                            "  Delete/Ctrl+D=delete run")
+        elif self.view_mode == VIEW_JOBS:
+            compare_hint = ("  Enter=read log  L=what failed  E=rerun  X=cancel"
+                            "  Backspace=back to runs")
         elif self.view_mode == VIEW_ARTIFACTS:
             compare_hint = "  Enter=download  Backspace=back to runs"
         elif self.view_mode == VIEW_RELEASES:
@@ -2606,6 +3079,80 @@ class GhViewerFrame(wx.Frame):
             row = focus
         else:
             row = max(self._row_of_id(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
+    def _on_search_loaded(self, token: int, results: list, total: int, focus=0) -> None:
+        """Search results: issues and PRs, or repositories, across GitHub."""
+        if not self._fetch_is_current(token):
+            return
+        self._search_total = total
+        if self.view_mode == VIEW_SEARCH_ISSUES:
+            self.items, self.git_items = results, []
+            noun = "issue or pull request" if total == 1 else "issues and pull requests"
+        else:
+            self.git_items, self.items = results, []
+            noun = "repository" if total == 1 else "repositories"
+        filtered = self._populate_filtered_list(results, use_favorite_prefix=True)
+        query = self._search[1] if self._search else ""
+        n = len(results)
+        if not n:
+            message = f"Search — nothing matches {query}."
+        else:
+            reach = min(total, SEARCH_MAX)
+            if n < reach:
+                tail = " Ctrl++ loads more."
+            elif total > SEARCH_MAX:
+                tail = f" GitHub returns at most the first {SEARCH_MAX:,}; narrow the search for the rest."
+            else:
+                tail = ""
+            verb = "matches" if total == 1 else "match"
+            message = f"Search — {total:,} {noun} {verb} {query}, showing {n:,}.{tail}"
+        self._set_view_status(
+            message,
+            "Enter=open here  G=go to repository  Ctrl+O=open on GitHub  F=favorite  "
+            "Ctrl+S=save search  Ctrl+Shift+F=new search  Ctrl+F=filter",
+        )
+        self._update_title()
+        self._restore_repo_selection(None)
+        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
+    def _on_my_work_loaded(self, token: int, items: list, focus=0,
+                           capped: set | None = None, failed: list | None = None) -> None:
+        """My Work: open issues and PRs that need you, grouped by why."""
+        if not self._fetch_is_current(token):
+            return
+        self.items, self.git_items = items, []
+        filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
+        if capped is None:  # restored by Backspace: as it was
+            capped = getattr(self, "_my_work_capped", set())
+            failed = getattr(self, "_my_work_failed", [])
+        self._my_work_capped, self._my_work_failed = capped, failed or []
+        self._category_counts[MY_WORK_ENTRY] = len(items)
+        self._refresh_category_labels()
+        if items:
+            counts: dict[str, int] = {}
+            for it in items:
+                counts[it.why] = counts.get(it.why, 0) + 1
+            parts = ", ".join(f"{n}{'+' if why in capped else ''} {why}"
+                              for why, n in counts.items())
+            message = f"My Work — {len(items)} open: {parts}."
+            if capped:
+                message += " Lists marked + have more than 100; search finds the rest."
+        else:
+            message = "My Work — nothing open needs you."
+        if self._my_work_failed:
+            message += (f" Couldn't load: {', '.join(self._my_work_failed)} — "
+                        "GitHub allows 30 searches a minute; R tries again shortly.")
+        self._set_view_status(
+            message,
+            "Enter=open here  G=go to repository  Ctrl+O=open on GitHub  F=favorite  "
+            "R=refresh  Ctrl+F=filter",
+        )
+        self._update_title()
+        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
         if filtered:
             wx.CallLater(100, self._focus_list, row)
 
@@ -2818,7 +3365,7 @@ class GhViewerFrame(wx.Frame):
         item = self._row_item(row)
         source = self._view_source()
         idx = next((i for i, it in enumerate(source) if it is item), -1)
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             self._show_issue_details(idx)
         elif self.view_mode == VIEW_FAVORITES:
             self._show_favorite_details(idx)
@@ -2858,6 +3405,10 @@ class GhViewerFrame(wx.Frame):
         item = self.items[idx]
         lines = []
         lines.append(f"#{item.number} [{item.kind}] {item.title}")
+        if item.repo:
+            lines.append(f"Repository: {item.repo}")
+        if item.why:
+            lines.append(f"On My Work because: {item.why}")
         lines.append(f"State: {item.state_display}")
         lines.append(f"Author: {item.author}")
         lines.append(f"Created: {item.created_at}")
@@ -2868,14 +3419,24 @@ class GhViewerFrame(wx.Frame):
             lines.append(f"Labels: {', '.join(item.labels)}")
         if item.assignees:
             lines.append(f"Assignees: {', '.join(item.assignees)}")
-        lines.append(f"Comments: {item.comments}")
+        if item.comments and not item.comment_list and item.repo:
+            # Search and My Work don't fetch comments; the item's own view does.
+            lines.append(f"Comments: {item.comments} — press Enter to open it and read them")
+        else:
+            lines.append(f"Comments: {item.comments}")
         if item.is_pr:
             lines.append(f"Draft: {'Yes' if item.is_draft else 'No'}")
             lines.append(f"Merged: {'Yes' if item.is_merged else 'No'}")
             if item.review_status:
                 lines.append(f"Review: {item.review_status}")
-            lines.append(f"Branches: {item.head_branch} → {item.base_branch}")
-            lines.append(f"Changes: +{item.additions} -{item.deletions} ({item.changed_files} files)")
+            if item.head_branch or item.base_branch:
+                lines.append(f"Branches: {item.head_branch} → {item.base_branch}")
+            if item.changed_files or item.additions or item.deletions:
+                lines.append(f"Changes: +{item.additions} -{item.deletions} ({item.changed_files} files)")
+            if getattr(self, "view_mode", None) == VIEW_ISSUES and item.state == "OPEN":
+                lines.append("Keys: K checks, V review, D "
+                             + ("ready for review" if item.is_draft else "back to draft")
+                             + "; Actions ▸ Pull Request to merge.")
         lines.append("")
         lines.append("─" * 60)
         lines.append("")
@@ -3023,8 +3584,31 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
-            lines.append("Press Enter to list this run's artifacts.")
+            lines.append("Press Enter to list this run's artifacts, J for its jobs and steps.")
+            if item.conclusion in ("failure", "timed_out", "startup_failure"):
+                lines.append("L shows what failed: GitHub's errors and the end of each failed step's log.")
+            lines.append("E reruns it, X cancels it while it is running.")
             lines.append("Delete or Ctrl+D deletes this run — GHManage asks first.")
+        elif isinstance(item, WorkflowJob):
+            lines.append(f"Job: {item.name}")
+            lines.append(f"Status: {item.status}")
+            lines.append(f"Result: {item.conclusion or '(running)'}")
+            if item.duration:
+                lines.append(f"Took: {item.duration}")
+            lines.append(f"ID: {item.id}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append(f"Steps ({len(item.steps)}):")
+            lines.append("─" * 60)
+            for step in item.steps:
+                lines.append(f"  Step {step.number}, {step.name}: "
+                             f"{step.conclusion or step.status or 'not started'}")
+            lines.append("")
+            lines.append("Press Enter to read this job's log; it opens at the first error.")
+            lines.append("L shows only what failed, across the run.")
+            lines.append("Press Backspace to return to the workflow runs.")
         elif isinstance(item, Artifact):
             lines.append(f"Artifact: {item.name}")
             lines.append(f"Size: {item.size_human()}")
@@ -3199,7 +3783,7 @@ class GhViewerFrame(wx.Frame):
 
     def _view_source(self) -> list:
         """The full, unfiltered items behind the current view."""
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             return self.items
         if self.view_mode == VIEW_FAVORITES:
             return self.favorites
@@ -3217,6 +3801,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOWS: "File Path",
         VIEW_WORKFLOW: "Run ID",
         VIEW_ARTIFACTS: "Name",
+        VIEW_JOBS: "Job ID",
         VIEW_ASSETS: "File Name",
         VIEW_LABELS: "Label Name",
         VIEW_FAVORITES: "Name",
@@ -3226,6 +3811,9 @@ class GhViewerFrame(wx.Frame):
         VIEW_STARRED: "Repository Name",
         VIEW_WATCHED: "Repository Name",
         VIEW_NOTIFICATIONS: "Number or Repository",
+        VIEW_MY_WORK: "Number",
+        VIEW_SEARCH_ISSUES: "Number",
+        VIEW_SEARCH_REPOS: "Repository Name",
     }
 
     _COPY_WHAT = {
@@ -3241,7 +3829,7 @@ class GhViewerFrame(wx.Frame):
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
-            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+            if is_repo_entry(name):
                 return repo_copy_values(name)
             return None
         item = self._focused_item()
@@ -3354,6 +3942,9 @@ class GhViewerFrame(wx.Frame):
             self._switch_view(VIEW_ARTIFACTS)
             self._announce(f"Showing artifacts for run #{item.run_number} {item.name}")
             return
+        if self.view_mode == VIEW_JOBS and isinstance(item, WorkflowJob):
+            self._show_job_log(item)
+            return
         # In Artifacts view, Enter downloads the selected artifact
         if self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
             self._download_artifact_flow(item)
@@ -3399,6 +3990,13 @@ class GhViewerFrame(wx.Frame):
             return
         if self.view_mode == VIEW_NOTIFICATIONS and isinstance(item, Notification):
             self._open_notification(item)
+            return
+        # Across repositories: open the issue or PR here, Backspace returns
+        if self.view_mode in (VIEW_MY_WORK, VIEW_SEARCH_ISSUES) and isinstance(item, Item):
+            self._open_item_here(item)
+            return
+        if self.view_mode == VIEW_SEARCH_REPOS and isinstance(item, RepoEntry):
+            self._open_repo_from_list(item.name, item)
             return
         # In Activity view, Enter opens what the event was about
         if self.view_mode == VIEW_ACTIVITY and isinstance(item, ActivityEvent):
@@ -3663,9 +4261,30 @@ class GhViewerFrame(wx.Frame):
         # G here rather than in the list's handler so it also works from the
         # details panel, where "Press G" is read.
         if (key == ord("G") and not event.HasAnyModifiers()
-                and self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS)):
+                and self.view_mode in GO_TO_REPO_VIEWS):
             self._go_to_event_repo()
             return
+        if self.view_mode == VIEW_ISSUES and not event.HasAnyModifiers():
+            # Pull request keys, here so they work from the details panel,
+            # where the line naming them is read.
+            action = {
+                ord("K"): self._pr_checks,
+                ord("V"): self._pr_review,
+                ord("D"): self._pr_toggle_draft,
+            }.get(key)
+            if action:
+                action()
+                return
+        if self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS) and not event.HasAnyModifiers():
+            action = {
+                ord("J"): self._show_run_jobs,
+                ord("L"): self._show_what_failed,
+                ord("E"): self._rerun_run,
+                ord("X"): self._cancel_run,
+            }.get(key)
+            if action:
+                action()
+                return
         if self.view_mode == VIEW_NOTIFICATIONS and not event.HasAnyModifiers():
             action = {
                 ord("M"): self._mark_notification_read,
@@ -3793,7 +4412,10 @@ class GhViewerFrame(wx.Frame):
     def _go_to_event_repo(self) -> None:
         """Open the repository an activity event happened in (G key)."""
         item = self._focused_item()
-        if not isinstance(item, (ActivityEvent, Notification)) or not item.repo:
+        if isinstance(item, RepoEntry):
+            self._open_repo_from_list(item.name, item)
+            return
+        if not isinstance(item, (ActivityEvent, Notification, Item)) or not item.repo:
             self._announce("No repository for this item.")
             return
         self._open_repo_from_list(item.repo, item)
@@ -3812,7 +4434,7 @@ class GhViewerFrame(wx.Frame):
             more = self._notif_more
         else:
             more = False
-        saved = (self.view_mode, list(self.git_items), bool(more),
+        saved = (self.view_mode, list(self._view_source()), bool(more),
                  item, self.current_limit)
         self._select_repo(repo)
         # Set after _select_repo, which clears it for an ordinary repo change.
@@ -3837,6 +4459,10 @@ class GhViewerFrame(wx.Frame):
         token = self._begin_fetch()
         if view == VIEW_ACTIVITY:
             self._on_activity_loaded(token, items, more, item)
+        elif view == VIEW_MY_WORK:
+            self._on_my_work_loaded(token, items, item)
+        elif view in SEARCH_VIEWS:
+            self._on_search_loaded(token, items, self._search_total, item)
         elif view == VIEW_NOTIFICATIONS:
             if self._include_read != self._notif_loaded_include:
                 # Include Read was changed while you were away; the list you
@@ -3914,6 +4540,7 @@ class GhViewerFrame(wx.Frame):
         url = getattr(item, "url", "") or ""
         repo = self.repo or ""
         if isinstance(item, Item):
+            repo = item.repo or repo
             item_type = "PR" if item.is_pr else "issue"
             title = f"#{item.number} — {item.title}"
             subtitle = item.state_display
@@ -3945,6 +4572,10 @@ class GhViewerFrame(wx.Frame):
             item_type = "workflow run"
             title = f"#{item.run_number} {item.name}"
             subtitle = f"{item.conclusion or item.status} on {item.branch}"
+        elif isinstance(item, WorkflowJob):
+            item_type = "job"
+            title = item.name
+            subtitle = item.conclusion or item.status
         elif isinstance(item, PagesFile):
             item_type = "page"
             title = item.path
@@ -4077,6 +4708,18 @@ class GhViewerFrame(wx.Frame):
                 self._announce("That is all your notifications.")
                 return
             self._pending_focus_row = frozenset(x.id for x in self.git_items)
+        elif self.view_mode in SEARCH_VIEWS:
+            have = len(self._view_source())
+            if have >= min(self._search_total, SEARCH_MAX):
+                self._announce("That is every result GitHub gives for this search.")
+                return
+            # Only the next page, added to what is here.
+            self._search_more = list(self._view_source())
+            self._pending_focus_row = len(self._shown)
+        elif self.view_mode == VIEW_MY_WORK:
+            self._announce("My Work shows up to 100 of each kind. Search (Ctrl+Shift+F) "
+                           "finds more.")
+            return
         elif self.view_mode in REPO_LIST_VIEWS:
             if len(self.git_items) < self.current_limit:
                 label = self._VIEW_LABELS[self.view_mode].lower()
@@ -4240,6 +4883,12 @@ class GhViewerFrame(wx.Frame):
         if name == FAVORITES_ENTRY or name in ENTRY_VIEWS:
             self._announce("That entry is always in the list.")
             return
+        if name.startswith(SEARCH_ENTRY_PREFIX):
+            label = name[len(SEARCH_ENTRY_PREFIX):]
+            self.saved_searches = remove_saved_search(label)
+            self._refresh_repo_list()
+            self._announce(f"Removed the saved search '{label}'.")
+            return
         if name not in self._pinned_repos:
             self._announce(
                 f"{name} is one of your own repositories and can't be removed from here."
@@ -4319,7 +4968,7 @@ class GhViewerFrame(wx.Frame):
 
     def _filtered_items(self) -> list:
         """Return the filtered list for the current view mode."""
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             return [it for it in self.items if self._matches_filter(it)]
         elif self.view_mode == VIEW_FAVORITES:
             return [fav for fav in self.favorites if self._matches_filter(fav)]
@@ -4331,7 +4980,7 @@ class GhViewerFrame(wx.Frame):
         if not self.filter_text:
             self.status_bar.set_item("filter", "")
             return
-        total = len(self.items) if self.view_mode == VIEW_ISSUES else (
+        total = len(self.items) if self.view_mode in ITEM_VIEWS else (
             len(self.favorites) if self.view_mode == VIEW_FAVORITES else len(self.git_items)
         )
         shown = len(self._filtered_items())
@@ -4636,7 +5285,7 @@ class GhViewerFrame(wx.Frame):
             lines.append("  (none)")
         return "\n".join(lines)
 
-    def _show_text_dialog(self, title: str, text: str) -> None:
+    def _show_text_dialog(self, title: str, text: str, start_line: int = 0) -> None:
         """Show read-only, focusable, scrollable text in a modal dialog.
 
         Used for content a screen reader needs to navigate line by line
@@ -4659,8 +5308,15 @@ class GhViewerFrame(wx.Frame):
         if btn_sizer:
             sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 8)
         dlg.SetSizer(sizer)
-        txt.SetInsertionPoint(0)
         wx.CallAfter(txt.SetFocus)
+        # After focus, or some platforms put the caret back at the start. By
+        # line, which the control converts in its own units.
+        def place() -> None:
+            pos = txt.XYToPosition(0, start_line) if start_line else 0
+            pos = max(pos, 0)
+            txt.SetInsertionPoint(pos)
+            txt.ShowPosition(pos)
+        wx.CallAfter(place)
         dlg.ShowModal()
         dlg.Destroy()
 
@@ -4689,6 +5345,15 @@ class GhViewerFrame(wx.Frame):
             self._refresh_list_display()
 
     def on_sort_selected(self, event: wx.CommandEvent) -> None:
+        if self.view_mode == VIEW_MY_WORK:
+            self._update_menu_checks()
+            self._announce("My Work is grouped by why it needs you, so it isn't sorted.")
+            return
+        if self.view_mode in SEARCH_VIEWS:
+            self._update_menu_checks()
+            self._announce("Search results are in GitHub's order, best match first. To sort, "
+                           "add a qualifier such as sort:updated-desc to the search.")
+            return
         self.sort_order = self._sort_menu_items.get(event.GetId(), SORT_ORDERS[0])
         self._update_menu_checks()
         if self.items:
@@ -4810,7 +5475,7 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_FAVORITES:
             self._load_favorites_view()
             return
-        items = self.items if self.view_mode == VIEW_ISSUES else self.git_items
+        items = self.items if self.view_mode in ITEM_VIEWS else self.git_items
         filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
         if filtered:
             wx.CallLater(100, self._focus_list)
@@ -5022,9 +5687,7 @@ class GhViewerFrame(wx.Frame):
         if note.unread:
             self._run_notification_change(note, "read")
         if note.is_item and not in_browser:
-            number = note.number
-            self._open_repo_from_list(note.repo, note)
-            self._set_pending_target(VIEW_ISSUES, "item", str(number))
+            self._open_item_here(note)
             return
         if note.subject_type == "Release" and note.api_url:
             # Its own page needs its tag, which only GitHub can tell us.
@@ -5221,6 +5884,473 @@ class GhViewerFrame(wx.Frame):
         self._announce("Including read notifications." if self._include_read
                        else "Unread notifications only.")
 
+    # ── Search ──────────────────────────────────────────────────────────
+
+    def _open_item_here(self, item) -> None:
+        """An issue or PR from a list across repos, opened in its repo's issues.
+
+        Not when its repository is a fork: the Issues view of a fork shows
+        its upstream's issues (forks usually have none of their own), where
+        #N is something else entirely. Those open on GitHub instead. Whether
+        a repo is a fork costs a gh call, so the answer is kept.
+        """
+        if not item.repo:
+            self._announce("No repository for this item.")
+            return
+        repo, number = item.repo, item.number
+        cache = self.__dict__.setdefault("_fork_parent", {})
+        if repo in cache:
+            self._open_item_checked(item, cache[repo])
+            return
+        self._announce(f"Opening #{number} in {repo}…")
+
+        def worker() -> None:
+            wx.CallAfter(self._on_fork_checked, item, parent_repo(repo))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_fork_checked(self, item, parent) -> None:
+        # parent_repo says None for "not a fork" and for "couldn't ask"; only
+        # a fork is certain enough to keep for the rest of the session.
+        if parent:
+            self.__dict__.setdefault("_fork_parent", {})[item.repo] = parent
+        self._open_item_checked(item, parent)
+
+    def _open_item_checked(self, item, parent) -> None:
+        if parent:
+            webbrowser.open(item.url)
+            self._announce(f"#{item.number} is in {item.repo}, a fork, whose issues GHManage "
+                           f"shows from {parent}; opened it in your browser instead.")
+            return
+        self._open_repo_from_list(item.repo, item)
+        self._set_pending_target(VIEW_ISSUES, "item", str(item.number))
+
+    def _saved_search(self, name: str) -> SavedSearch | None:
+        return next((s for s in self.saved_searches if s.name == name), None)
+
+    def _search_flow(self) -> None:
+        """File ▸ Search GitHub (Ctrl+Shift+F)."""
+        kind, query = self._search or (KIND_ISSUES, "")
+        dlg = SearchDialog(self, kind, query)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            kind, query = dlg.values()
+        finally:
+            dlg.Destroy()
+        self._run_search(kind, query)
+
+    def _search_from_view_menu(self) -> None:
+        # The radio item has checked itself; put it right if the search is
+        # cancelled, by re-checking whatever is actually showing.
+        self._search_flow()
+        self._update_menu_checks()
+
+    def _run_search(self, kind: str, query: str) -> None:
+        self._search = (kind, query)
+        self._search_total = 0
+        self._search_more = None
+        self._return_to = None
+        if self.view_mode in SEARCH_VIEWS:
+            # Nothing from the last search may be acted on while this one loads.
+            self.items, self.git_items = [], []
+        view = VIEW_SEARCH_REPOS if kind == KIND_REPOS else VIEW_SEARCH_ISSUES
+        if self.view_mode == view:
+            self.current_limit = self.page_size
+            self.filter_text = ""
+            self._load_items()
+        else:
+            self._switch_view(view)
+        self._restore_repo_selection(None)
+
+    def _save_search(self) -> None:
+        """Actions ▸ Save Search (Ctrl+S): keep this search in the repo list."""
+        if self.view_mode not in SEARCH_VIEWS or not self._search:
+            self._announce("Run a search first (Ctrl+Shift+F).")
+            return
+        kind, query = self._search
+        dlg = wx.TextEntryDialog(
+            self, f"Name this search. It goes in the repository list, where Enter runs it.\n\n"
+            f"{query}", "Save Search", query[:60],
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            name = dlg.GetValue().strip()
+        finally:
+            dlg.Destroy()
+        if not name:
+            self._announce("A saved search needs a name.")
+            return
+        self.saved_searches = add_saved_search(SavedSearch(name, query, kind))
+        self._refresh_repo_list()
+        self._announce(f"Saved '{name}'. It is in the repository list, after My Work; "
+                       "Enter there runs it again.")
+
+    # ── Pull requests ───────────────────────────────────────────────────
+
+    def _focused_pr(self) -> Item | None:
+        item = self._focused_item()
+        if self.view_mode == VIEW_ISSUES and isinstance(item, Item) and item.is_pr:
+            return item
+        self._announce("Select a pull request in Issues & PRs first.")
+        return None
+
+    @staticmethod
+    def _pr_label(pr: Item) -> str:
+        return f"#{pr.number} {pr.title}"
+
+    def _pr_in_background(self, call, done, error: str) -> None:
+        """Run ``call`` off the UI thread, then reload. ``done`` is what to
+        say, or a function of ``call``'s result giving it."""
+        def worker() -> None:
+            try:
+                result = call()
+            except GhError as exc:
+                wx.CallAfter(self._on_action_error, f"{error}: {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                wx.CallAfter(self._on_action_error, f"{error}: {type(exc).__name__}: {exc}")
+                return
+            wx.CallAfter(self._on_action_done, done(result) if callable(done) else done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _open_pr(self) -> Item | None:
+        """The selected pull request, if it is still open; else say why not."""
+        pr = self._focused_pr()
+        if pr is not None and pr.state != "OPEN":
+            self._announce(f"#{pr.number} is {pr.state_display.lower()}.")
+            return None
+        return pr
+
+    def _pr_checks(self) -> None:
+        """K: the checks on a pull request, failures first."""
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        repo, label = self.repo, self._pr_label(pr)
+        self._announce(f"Loading the checks on #{pr.number}…")
+
+        def worker() -> None:
+            try:
+                checks = fetch_pr_checks(pr.url)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't load the checks: {exc}")
+                return
+            wx.CallAfter(self._on_checks_ready, repo, label, checks)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_checks_ready(self, repo: str, label: str, checks: list) -> None:
+        if self.repo != repo:
+            return
+        text = format_checks(label, checks)
+        self._announce(text.splitlines()[1])
+        self._show_text_dialog(f"Checks — {label}", text)
+
+    def _pr_review(self) -> None:
+        """V: approve, request changes, or comment."""
+        pr = self._open_pr()
+        if pr is None:
+            return
+        dlg = ReviewDialog(self, self._pr_label(pr))
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Review cancelled.")
+                return
+            kind, body = dlg.values()
+        finally:
+            dlg.Destroy()
+        said = {"approve": "Approved", "request-changes": "Requested changes on",
+                "comment": "Commented on"}[kind]
+        self._announce(f"Submitting your review of #{pr.number}…")
+        url = pr.url
+        self._pr_in_background(lambda: review_pr(url, kind, body),
+                               f"{said} #{pr.number}", f"Couldn't review #{pr.number}")
+
+    def _pr_merge(self) -> None:
+        """Actions ▸ Pull Request ▸ Merge: how, from what the repo allows."""
+        pr = self._open_pr()
+        if pr is None:
+            return
+        if pr.is_draft:
+            self._announce(f"#{pr.number} is a draft; mark it ready for review first (D).")
+            return
+        repo = self.repo
+        self._announce("Checking how this repository lets pull requests merge…")
+
+        def worker() -> None:
+            try:
+                methods = allowed_merge_methods(pr.url)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't check the merge settings: {exc}")
+                return
+            wx.CallAfter(self._choose_merge, repo, pr, methods)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    _MERGE_OUTCOMES = {
+        "merged": "Merged #{n}",
+        "auto": "#{n} will merge by itself once its required checks pass — "
+                "GitHub turned on auto-merge",
+        "queued": "GitHub took the merge of #{n} but hasn't merged it yet; it may be "
+                  "in a merge queue. Refresh to see",
+    }
+
+    def _choose_merge(self, repo: str, pr: Item, methods: list[str]) -> None:
+        if self.repo != repo:
+            return
+        if not methods:
+            self._announce("This repository allows no way of merging.")
+            return
+        dlg = MergeDialog(self, f"{self._pr_label(pr)} into {pr.base_branch or 'its base'}",
+                          methods)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Merge cancelled.")
+                return
+            method, delete = dlg.values()
+        finally:
+            dlg.Destroy()
+        self._announce(f"Merging #{pr.number}…")
+        url, n = pr.url, pr.number
+        self._pr_in_background(lambda: merge_pr(url, method, delete),
+                               lambda outcome: self._MERGE_OUTCOMES[outcome].format(n=n),
+                               f"Couldn't merge #{n}")
+
+    def _pr_toggle_draft(self) -> None:
+        """D: a draft becomes ready for review; an open PR goes back to draft.
+
+        Asks first: others see the change, and D is one stray key away.
+        """
+        pr = self._open_pr()
+        if pr is None:
+            return
+        ready = pr.is_draft
+        what = "ready for review" if ready else "back to a draft"
+        confirm = wx.MessageBox(
+            f"Mark {self._pr_label(pr)} {what}?", "Pull Request",
+            wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
+        self._announce(f"Marking #{pr.number} {what}…")
+        url = pr.url
+        self._pr_in_background(lambda: set_pr_ready(url, ready),
+                               f"#{pr.number} is {what}", f"Couldn't change #{pr.number}")
+
+    def _pr_request_reviewers(self) -> None:
+        pr = self._open_pr()
+        if pr is None:
+            return
+        dlg = wx.TextEntryDialog(
+            self, f"Request reviews on {self._pr_label(pr)} from (GitHub logins, "
+            "separated by commas; a team as org/team-name):", "Request Reviewers", "",
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            logins = [x.strip().lstrip("@") for x in dlg.GetValue().split(",") if x.strip()]
+        finally:
+            dlg.Destroy()
+        if not logins:
+            self._announce("No reviewers named.")
+            return
+        self._announce(f"Requesting reviews from {', '.join(logins)}…")
+        url = pr.url
+        self._pr_in_background(lambda: request_reviewers(url, logins),
+                               f"Requested reviews on #{pr.number} from {', '.join(logins)}",
+                               f"Couldn't request reviewers on #{pr.number}")
+
+    def _pr_update_branch(self) -> None:
+        pr = self._open_pr()
+        if pr is None:
+            return
+        confirm = wx.MessageBox(
+            f"Bring {self._pr_label(pr)} up to date with {pr.base_branch or 'its base'}?\n\n"
+            "GitHub merges the base branch into the pull request's branch.",
+            "Update Branch", wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
+        self._announce(f"Updating the branch of #{pr.number}…")
+        url = pr.url
+        self._pr_in_background(lambda: update_pr_branch(url),
+                               f"Updated the branch of #{pr.number}",
+                               f"Couldn't update the branch of #{pr.number}")
+
+    # ── Workflow runs: jobs, logs, rerun, cancel ────────────────────────
+
+    def _focused_run(self) -> WorkflowRun | None:
+        """The run J, L, E and X act on: the selected one, or the one whose
+        jobs are listed."""
+        if self.view_mode == VIEW_JOBS and self.jobs_run:
+            return self.jobs_run
+        item = self._focused_item()
+        if self.view_mode == VIEW_WORKFLOW and isinstance(item, WorkflowRun):
+            return item
+        self._announce("Select a workflow run first.")
+        return None
+
+    def _show_run_jobs(self) -> None:
+        """J: the run's jobs, as a list to drill into (Backspace returns)."""
+        if self.view_mode != VIEW_WORKFLOW:
+            return
+        run = self._focused_run()
+        if run is None:
+            return
+        self.jobs_run = run
+        self._switch_view(VIEW_JOBS)
+        self._announce(f"Showing jobs for run #{run.run_number} {run.name}")
+
+    def _show_what_failed(self) -> None:
+        """L: GitHub's errors and the end of each failed step's log, in one text."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status != "completed":
+            self._announce(f"Run #{run.run_number} is still {run.status.replace('_', ' ')}.")
+            return
+        if run.conclusion == "success":
+            self._announce(f"Nothing failed in run #{run.run_number} — it succeeded.")
+            return
+        if getattr(self, "_report_busy", False):
+            self._announce("Still putting the last report together.")
+            return
+        repo = self.repo
+        self._report_busy = True
+        self._announce(f"Finding what failed in run #{run.run_number}…")
+
+        def worker() -> None:
+            from concurrent.futures import ThreadPoolExecutor
+            try:
+                jobs = fetch_run_jobs(repo, run.run_id)
+                failed = [j for j in jobs if j.conclusion in FAILED_CONCLUSIONS]
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    found = list(pool.map(lambda j: fetch_job_annotations(repo, j.id), failed))
+                annotations = {j.id: a for j, a in zip(failed, found)}
+                log = fetch_failed_log(repo, run.run_id) if failed else []
+            except GhError as exc:
+                wx.CallAfter(self._report_failed, f"Couldn't read run #{run.run_number}: {exc}")
+                return
+            text = format_failure_report(run, jobs, annotations, log)
+            wx.CallAfter(self._on_report_ready, repo,
+                         f"What failed — run #{run.run_number} {run.name}", text, 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_job_log(self, job: WorkflowJob) -> None:
+        """Enter on a job: its whole log, opening at the first error."""
+        run = self.jobs_run
+        if not run or not self.repo:
+            return
+        if job.conclusion == "skipped":
+            self._announce(f"{job.name} was skipped, so it has no log.")
+            return
+        if job.status != "completed":
+            self._announce(f"{job.name} is still {job.status.replace('_', ' ')}; its log "
+                           "is ready when it finishes.")
+            return
+        if getattr(self, "_report_busy", False):
+            self._announce("Still putting the last report together.")
+            return
+        repo = self.repo
+        self._report_busy = True
+        self._announce(f"Loading the log of {job.name}…")
+
+        def worker() -> None:
+            try:
+                log = fetch_job_log(repo, run.run_id, job.id)
+            except GhError as exc:
+                wx.CallAfter(self._report_failed, f"Couldn't load the log of {job.name}: {exc}")
+                return
+            text, start = format_job_log(job, log)
+            wx.CallAfter(self._on_report_ready, repo, f"Log — {job.name}", text, start)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _report_failed(self, msg: str) -> None:
+        self._report_busy = False
+        self._announce(msg)
+
+    def _on_report_ready(self, repo: str, title: str, text: str, start: int) -> None:
+        self._report_busy = False
+        if self.repo != repo or self.view_mode not in (VIEW_WORKFLOW, VIEW_JOBS):
+            self._announce(f"{title} is ready, but you have moved on; ask again there.")
+            return
+        self._announce(title + (" — at the first error." if start else "."))
+        self._show_text_dialog(title, text, start)
+
+    def _rerun_run(self) -> None:
+        """E: run it again — every job, or only those that failed."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status != "completed":
+            self._announce(f"Run #{run.run_number} hasn't finished; cancel it (X) or wait.")
+            return
+        choices = ["Rerun all jobs"]
+        if run.conclusion in ("failure", "cancelled", "timed_out", "startup_failure"):
+            choices.insert(0, "Rerun failed jobs only")
+        dlg = wx.SingleChoiceDialog(
+            self, f"Rerun #{run.run_number} {run.name} on {run.branch}?", "Rerun", choices,
+        )
+        dlg.SetSelection(0)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Rerun cancelled.")
+                return
+            failed_only = dlg.GetStringSelection() == "Rerun failed jobs only"
+        finally:
+            dlg.Destroy()
+        repo = self.repo
+        self._run_change(run, lambda: rerun_workflow_run(repo, run.run_id, failed_only),
+                         f"Rerunning {'the failed jobs of ' if failed_only else ''}"
+                         f"#{run.run_number} {run.name}")
+
+    def _cancel_run(self) -> None:
+        """X: stop a run that is queued or in progress."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status == "completed":
+            self._announce(f"Run #{run.run_number} has already finished.")
+            return
+        confirm = wx.MessageBox(
+            f"Cancel run #{run.run_number} {run.name} on {run.branch}?",
+            "Cancel Run", wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
+        repo = self.repo
+        self._run_change(run, lambda: cancel_workflow_run(repo, run.run_id),
+                         f"Cancelling #{run.run_number} {run.name}")
+
+    def _run_change(self, run: WorkflowRun, call, said: str) -> None:
+        self._announce(f"{said}…")
+        repo = self.repo
+
+        def worker() -> None:
+            try:
+                call()
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't do that to run #{run.run_number}: {exc}")
+                return
+            wx.CallAfter(self._on_run_changed, repo, said)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_run_changed(self, repo: str, said: str) -> None:
+        if self.repo == repo and self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS):
+            # GitHub takes a moment to show the new state; refresh after it.
+            wx.CallLater(3000, self._refresh_if_runs, repo)
+        self._announce(f"{said}. The list refreshes in a moment.")
+
+    def _refresh_if_runs(self, repo: str) -> None:
+        if self.repo == repo and self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS):
+            self._load_items()
+
     # ── Watching ────────────────────────────────────────────────────────
 
     _WATCH_CHOICES = [
@@ -5236,7 +6366,7 @@ class GhViewerFrame(wx.Frame):
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
-            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+            if is_repo_entry(name):
                 return name
         item = self._focused_item()
         if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):
@@ -5389,6 +6519,9 @@ class GhViewerFrame(wx.Frame):
         not the account's.
         """
         self._account_gen += 1
+        self._search = None
+        self._search_total = 0
+        self.__dict__.pop("_fork_parent", None)  # the new account may see other repos
         self.repo = None
         self._return_to = None
         self._pending_target = None

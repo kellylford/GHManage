@@ -121,6 +121,11 @@ class Item:
     changed_files: int = 0
     base_branch: str = ""
     head_branch: str = ""
+    # Set when the item came from a search across repositories, which list
+    # many repos' issues together; empty in a repo's own issues list.
+    repo: str = ""
+    # My Work: why it is on the list ("review requested", "assigned", …).
+    why: str = ""
 
     @property
     def kind(self) -> str:
@@ -151,6 +156,8 @@ class Item:
             "files": str(self.changed_files) if self.is_pr else "",
             "base": self.base_branch if self.is_pr else "",
             "head": self.head_branch if self.is_pr else "",
+            "repo": self.repo,
+            "why": self.why,
         }
         return {col: mapping.get(col, "") for col in columns}
 
@@ -1289,6 +1296,20 @@ def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRu
             run_id=row.get("id", 0),
         ))
     return runs
+
+
+def fetch_workflow_run(repo: Optional[str], run_id: int) -> WorkflowRun:
+    """One run as it stands now — its status changes as it runs and reruns."""
+    row = _api_json([f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}"], repo)
+    if not isinstance(row, dict):
+        raise GhError(f"Unexpected reply about run {run_id}")
+    return WorkflowRun(
+        name=row.get("name") or "", status=row.get("status") or "",
+        conclusion=row.get("conclusion") or "", branch=row.get("head_branch") or "",
+        event=row.get("event") or "", created_at=row.get("created_at") or "",
+        url=row.get("html_url") or "", run_number=row.get("run_number") or 0,
+        run_id=row.get("id") or run_id,
+    )
 
 
 @dataclass
@@ -2832,3 +2853,470 @@ def set_watch_level(repo: str, level: str) -> None:
         _run_gh(args)
     except GhError as exc:
         raise _scope_error(exc) or exc
+
+
+# ── Search ─────────────────────────────────────────────────────────────
+#
+# GitHub's REST search endpoints, given the query exactly as typed:
+# `gh search issues` splits and re-quotes its arguments, which mangles
+# qualifiers such as review-requested:@me. Search has its own rate limit,
+# 30 requests a minute, and returns at most 1,000 results for any query.
+
+SEARCH_MAX = 1000
+
+SEARCH_ITEM_COLUMNS = [
+    "type", "number", "state", "title", "repo", "updated", "author", "labels", "comments",
+]
+SEARCH_ITEM_DEFAULT_COLUMNS = ["type", "number", "state", "title", "repo", "updated"]
+MY_WORK_COLUMNS = ["why", "type", "number", "title", "repo", "updated", "author", "labels"]
+MY_WORK_DEFAULT_COLUMNS = ["why", "type", "number", "title", "repo", "updated"]
+
+
+def _search_page(kind: str, query: str, per_page: int, page: int) -> dict:
+    raw = _run_gh([
+        "api", "-X", "GET", f"search/{kind}",
+        "-f", f"q={query}", "-f", f"per_page={per_page}", "-f", f"page={page}",
+    ])
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        raise GhError("Unexpected reply from GitHub search")
+    return data if isinstance(data, dict) else {}
+
+
+def _search(kind: str, query: str, limit: int, offset: int = 0) -> tuple[list[dict], int]:
+    """Up to ``limit`` raw results from ``offset`` on, and the total GitHub
+    says match. ``offset`` must be a whole number of pages of 100: View More
+    asks only for the pages it hasn't got, since search allows 30 requests a
+    minute and refetching from the start would run into that fast."""
+    limit = max(1, min(limit, SEARCH_MAX - offset))
+    per_page = 100 if offset else min(limit, 100)
+    rows: list[dict] = []
+    total = 0
+    page = offset // 100 + 1
+    while len(rows) < limit:
+        data = _search_page(kind, query, per_page, page)
+        total = int(data.get("total_count") or 0)
+        items = [r for r in (data.get("items") or []) if isinstance(r, dict)]
+        rows.extend(items)
+        if len(items) < per_page or offset + len(rows) >= min(total, SEARCH_MAX):
+            break
+        page += 1
+    return rows[:limit], total
+
+
+def _repo_of(api_url: str) -> str:
+    """OWNER/NAME from https://api.github.com/repos/OWNER/NAME."""
+    tail = api_url.split("/repos/", 1)[-1] if "/repos/" in api_url else ""
+    return "/".join(tail.split("/")[:2]) if tail.count("/") >= 1 else ""
+
+
+def parse_search_item(raw: dict) -> Item:
+    """An issue or pull request from the search API, as an Item."""
+    pr = raw.get("pull_request")
+    is_pr = isinstance(pr, dict)
+    labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in raw.get("labels") or []]
+    assignees = [a.get("login", "") for a in raw.get("assignees") or [] if isinstance(a, dict)]
+    return Item(
+        number=int(raw.get("number") or 0),
+        title=raw.get("title") or "",
+        state=(raw.get("state") or "open").upper(),
+        url=raw.get("html_url") or "",
+        is_pr=is_pr,
+        author=_login_of(raw.get("user")),
+        created_at=raw.get("created_at") or "",
+        updated_at=raw.get("updated_at") or "",
+        body=raw.get("body") or "",
+        labels=labels,
+        assignees=assignees,
+        comments=int(raw.get("comments") or 0),
+        is_draft=bool(raw.get("draft")),
+        is_merged=bool(is_pr and pr.get("merged_at")),
+        repo=_repo_of(raw.get("repository_url") or ""),
+    )
+
+
+def search_issues(query: str, limit: int = 100, offset: int = 0) -> tuple[list[Item], int]:
+    """Issues and pull requests matching ``query``, best match first."""
+    rows, total = _search("issues", query, limit, offset)
+    return [parse_search_item(r) for r in rows], total
+
+
+def search_repos(query: str, limit: int = 100, offset: int = 0) -> tuple[list[RepoEntry], int]:
+    """Repositories matching ``query``, best match first."""
+    rows, total = _search("repositories", query, limit, offset)
+    return [_repo_entry(r) for r in rows if r.get("full_name")], total
+
+
+# My Work: what needs you, one search per reason. Earlier reasons win when
+# an item matches several — a PR you are asked to review and are also
+# mentioned in is listed once, as a review.
+MY_WORK_QUERIES = [
+    ("review requested", "is:open is:pr review-requested:@me archived:false"),
+    ("assigned", "is:open assignee:@me archived:false"),
+    ("your pull request", "is:open is:pr author:@me archived:false"),
+    ("your issue", "is:open is:issue author:@me archived:false"),
+    ("mentioned", "is:open mentions:@me archived:false"),
+]
+
+
+def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str], list[str]]:
+    """Open issues and pull requests that need you, grouped by why, most
+    recently updated first in each group; the reasons that had more than
+    ``limit_each``, so the count can say "100+"; and the reasons whose search
+    failed (the rate limit, say), whose part is missing rather than all of it.
+    """
+    seen: set[str] = set()
+    out: list[Item] = []
+    capped: set[str] = set()
+    failed: list[str] = []
+    for why, query in MY_WORK_QUERIES:
+        try:
+            items, total = search_issues(query + " sort:updated-desc", limit_each)
+        except GhError:
+            failed.append(why)
+            continue
+        if total > len(items):
+            capped.add(why)
+        for item in items:
+            if item.url in seen:
+                continue
+            seen.add(item.url)
+            item.why = why
+            out.append(item)
+    order = {why: i for i, (why, _) in enumerate(MY_WORK_QUERIES)}
+    out.sort(key=lambda it: it.updated_at, reverse=True)
+    out.sort(key=lambda it: order.get(it.why, 99))
+    if failed and len(failed) == len(MY_WORK_QUERIES):
+        raise GhError("GitHub search isn't answering; try again in a minute.")
+    return out, capped, failed
+
+
+# ── Workflow run jobs, logs, rerun and cancel ─────────────────────────
+
+JOB_COLUMNS = ["name", "status", "result", "duration", "failed step"]
+JOB_DEFAULT_COLUMNS = ["name", "status", "result", "duration", "failed step"]
+
+
+@dataclass
+class JobStep:
+    number: int
+    name: str
+    status: str = ""
+    conclusion: str = ""
+
+
+@dataclass
+class WorkflowJob:
+    """One job of a workflow run, with its steps."""
+
+    id: int
+    name: str
+    status: str = ""
+    conclusion: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    url: str = ""
+    steps: list[JobStep] = field(default_factory=list)
+
+    @property
+    def duration(self) -> str:
+        from datetime import datetime
+        try:
+            start = datetime.fromisoformat(self.started_at.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(self.completed_at.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        seconds = int((end - start).total_seconds())
+        if seconds < 0:
+            return ""
+        return f"{seconds // 60}m {seconds % 60}s" if seconds >= 60 else f"{seconds}s"
+
+    @property
+    def failed_steps(self) -> list[JobStep]:
+        return [s for s in self.steps if s.conclusion == "failure"]
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        failed = self.failed_steps
+        mapping = {
+            "name": self.name,
+            "status": self.status,
+            "result": self.conclusion or "(running)",
+            "duration": self.duration,
+            "failed step": failed[0].name if failed else "",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
+
+
+def _repo_args(repo: Optional[str]) -> list[str]:
+    return ["-R", repo] if repo else []
+
+
+def fetch_run_jobs(repo: Optional[str], run_id: int) -> list[WorkflowJob]:
+    """The jobs of a run's latest attempt, in the order they ran."""
+    rows: list = []
+    page = 1
+    while True:  # a big matrix has more than one page of jobs
+        data = _api_json(
+            [f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs?per_page=100&page={page}"], repo)
+        batch = (data.get("jobs") if isinstance(data, dict) else None) or []
+        rows.extend(batch)
+        total = int(data.get("total_count") or 0) if isinstance(data, dict) else 0
+        if len(batch) < 100 or len(rows) >= total or page >= 10:
+            break
+        page += 1
+    jobs = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        steps = [
+            JobStep(int(s.get("number") or 0), s.get("name") or "",
+                    s.get("status") or "", s.get("conclusion") or "")
+            for s in r.get("steps") or [] if isinstance(s, dict)
+        ]
+        jobs.append(WorkflowJob(
+            id=int(r.get("id") or 0), name=r.get("name") or "",
+            status=r.get("status") or "", conclusion=r.get("conclusion") or "",
+            started_at=r.get("started_at") or "", completed_at=r.get("completed_at") or "",
+            url=r.get("html_url") or "", steps=steps,
+        ))
+    return jobs
+
+
+# Terminal colour codes, which logs keep from the tools that wrote them.
+_ANSI = re.compile(
+    r"\x1b\[[0-9;:?]*[ -/]*[@-~]"           # CSI: colours, cursor moves, line clears
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"   # OSC: hyperlinks, titles
+    r"|\x1b[()][A-Za-z0-9]"                  # character set switches
+    r"|\^\[\[[0-9;:?]*[A-Za-z]"               # the same, written out as ^[[
+)
+# The timestamp GitHub puts at the start of every log line.
+_STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
+
+
+def clean_log_line(line: str) -> str:
+    """A log line as a person wants to read it: no colour codes, no stamp,
+    and GitHub's ##[error] / ##[warning] markers in words."""
+    line = _STAMP.sub("", _ANSI.sub("", line))
+    for marker, word in (("##[error]", "ERROR: "), ("##[warning]", "WARNING: "),
+                         ("##[group]", ""), ("##[endgroup]", ""), ("##[notice]", "NOTE: "),
+                         ("##[command]", "Command: "), ("[command]", "Command: "),
+                         ("##[debug]", "Debug: ")):
+        if line.startswith(marker):
+            return word + line[len(marker):]
+    return line
+
+
+def parse_run_log(text: str) -> list[tuple[str, str, list[str]]]:
+    """``gh run view --log`` output as (job, step, cleaned lines), in order.
+
+    Each line arrives as job TAB step TAB stamped text.
+    """
+    out: list[tuple[str, str, list[str]]] = []
+    # "\n" only: splitlines() also breaks at form feeds and other characters
+    # tools print mid-line, leaving a piece with no job and step in front.
+    for raw in text.split("\n"):
+        raw = raw.rstrip("\r")
+        parts = raw.split("\t", 2)
+        if len(parts) != 3:
+            if out and raw.strip():
+                out[-1][2].append(clean_log_line(raw))  # a piece of the line before
+            continue
+        job, step, rest = parts
+        line = clean_log_line(rest)
+        if line == "" and rest.strip().endswith("##[endgroup]"):
+            continue
+        if out and out[-1][0] == job and out[-1][1] == step:
+            out[-1][2].append(line)
+        else:
+            out.append((job, step, [line]))
+    return out
+
+
+def fetch_failed_log(repo: Optional[str], run_id: int) -> list[tuple[str, str, list[str]]]:
+    """The log of every failed step in a run, grouped by job and step."""
+    try:
+        raw = _run_gh(["run", "view", str(run_id), "--log-failed", *_repo_args(repo)])
+    except GhError as exc:
+        if "log not found" in str(exc).lower():
+            return []
+        raise
+    return parse_run_log(raw)
+
+
+def fetch_job_log(repo: Optional[str], run_id: int, job_id: int) -> list[tuple[str, str, list[str]]]:
+    """One job's whole log, grouped by step."""
+    raw = _run_gh(["run", "view", str(run_id), "--job", str(job_id), "--log", *_repo_args(repo)])
+    return parse_run_log(raw)
+
+
+@dataclass
+class Annotation:
+    level: str        # failure, warning, notice
+    message: str
+    path: str = ""
+    line: int = 0
+    title: str = ""
+
+
+def fetch_job_annotations(repo: Optional[str], job_id: int) -> list[Annotation]:
+    """What GitHub flagged in a job: the errors and warnings shown on the run's page.
+
+    A job is a check run, and its id is the check run's id.
+    """
+    try:
+        data = _api_json([f"repos/{{owner}}/{{repo}}/check-runs/{job_id}/annotations"], repo)
+    except GhError:
+        return []  # a nicety; the logs still say what happened
+    return [
+        Annotation(a.get("annotation_level") or "", a.get("message") or "",
+                   a.get("path") or "", int(a.get("start_line") or 0), a.get("title") or "")
+        for a in (data if isinstance(data, list) else []) if isinstance(a, dict)
+    ]
+
+
+def rerun_workflow_run(repo: Optional[str], run_id: int, failed_only: bool = False) -> None:
+    args = ["run", "rerun", str(run_id), *_repo_args(repo)]
+    if failed_only:
+        args.append("--failed")
+    _run_gh(args)
+
+
+def cancel_workflow_run(repo: Optional[str], run_id: int) -> None:
+    _run_gh(["run", "cancel", str(run_id), *_repo_args(repo)])
+
+
+# ── Pull request actions ───────────────────────────────────────────────
+#
+# Each takes the pull request's own address, which gh accepts in place of a
+# number. Not number + repo: on a fork, the repo has to be resolved to its
+# upstream first, and if that lookup fails (it falls back to the fork) the
+# same number is a different pull request — the wrong one to merge.
+
+MERGE_METHODS = [("merge", "Create a merge commit"), ("squash", "Squash and merge"),
+                 ("rebase", "Rebase and merge")]
+
+
+def _pr_parts(pr_url: str) -> tuple[str, int]:
+    """(OWNER/NAME, number) from https://github.com/OWNER/NAME/pull/N."""
+    m = re.match(r"https?://[^/]+/([^/]+/[^/]+)/pull/(\d+)", pr_url or "")
+    if not m:
+        raise GhError(f"Not a pull request address: {pr_url!r}")
+    return m.group(1), int(m.group(2))
+
+
+@dataclass
+class Check:
+    name: str
+    state: str           # SUCCESS, FAILURE, PENDING, SKIPPED, …
+    bucket: str = ""     # pass, fail, pending, skipping, cancel
+    workflow: str = ""
+    link: str = ""
+    description: str = ""
+
+
+def fetch_pr_checks(pr_url: str) -> list[Check]:
+    """A pull request's checks, failing ones first.
+
+    gh exits non-zero when checks fail (1) or are still running (8) while
+    printing them all the same, so its output is read whatever it exits with.
+    """
+    _pr_parts(pr_url)
+    args = ["pr", "checks", pr_url, "--json", "name,state,bucket,link,workflow,description"]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [_find_gh(), *args], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise GhError(str(exc))
+    out = result.stdout.strip()
+    if not out:
+        err = result.stderr.strip()
+        if "no checks reported" in err:
+            return []
+        raise GhError(err or "gh didn't list the checks.")
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        raise GhError("Unexpected reply listing checks")
+    checks = [
+        Check(r.get("name") or "", r.get("state") or "", r.get("bucket") or "",
+              r.get("workflow") or "", r.get("link") or "", r.get("description") or "")
+        for r in rows if isinstance(r, dict)
+    ]
+    order = {"fail": 0, "cancel": 1, "pending": 2, "pass": 3, "skipping": 4}
+    checks.sort(key=lambda c: (order.get(c.bucket, 5), c.workflow, c.name))
+    return checks
+
+
+def allowed_merge_methods(pr_url: str) -> list[str]:
+    """Which of merge, squash and rebase the pull request's repository allows."""
+    repo, _ = _pr_parts(pr_url)
+    raw = _run_gh(["repo", "view", repo, "--json",
+                   "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"])
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return [m for m, _ in MERGE_METHODS]
+    allowed = {"merge": data.get("mergeCommitAllowed"), "squash": data.get("squashMergeAllowed"),
+               "rebase": data.get("rebaseMergeAllowed")}
+    return [m for m, _ in MERGE_METHODS if allowed.get(m, True)]
+
+
+def merge_pr(pr_url: str, method: str, delete_branch: bool = False) -> str:
+    """Merge, and say what actually happened: "merged"; "auto" when GitHub
+    turned on auto-merge to wait for required checks; or "queued" when it
+    accepted the request without merging yet (a merge queue)."""
+    if method not in ("merge", "squash", "rebase"):
+        raise ValueError(method)
+    _pr_parts(pr_url)
+    args = ["pr", "merge", pr_url, f"--{method}"]
+    if delete_branch:
+        args.append("--delete-branch")
+    _run_gh(args)
+    try:
+        data = json.loads(_run_gh(["pr", "view", pr_url, "--json", "state,autoMergeRequest"]))
+    except (GhError, ValueError):
+        return "queued"
+    if data.get("state") == "MERGED":
+        return "merged"
+    return "auto" if data.get("autoMergeRequest") else "queued"
+
+
+def set_pr_ready(pr_url: str, ready: bool) -> None:
+    """Ready for review, or (``ready=False``) back to a draft."""
+    _pr_parts(pr_url)
+    args = ["pr", "ready", pr_url]
+    if not ready:
+        args.append("--undo")
+    _run_gh(args)
+
+
+def review_pr(pr_url: str, kind: str, body: str = "") -> None:
+    """Approve, request changes, or comment, as a review."""
+    flag = {"approve": "--approve", "request-changes": "--request-changes",
+            "comment": "--comment"}[kind]
+    _pr_parts(pr_url)
+    args = ["pr", "review", pr_url, flag]
+    if body:
+        args += ["--body-file", "-"]
+    _run_gh(args, stdin=body or None)
+
+
+def request_reviewers(pr_url: str, logins: list[str]) -> None:
+    _pr_parts(pr_url)
+    _run_gh(["pr", "edit", pr_url, "--add-reviewer", ",".join(logins)])
+
+
+def update_pr_branch(pr_url: str) -> None:
+    """Bring the pull request's branch up to date with its base (a merge)."""
+    repo, number = _pr_parts(pr_url)
+    _run_gh(["api", "-X", "PUT", f"repos/{repo}/pulls/{number}/update-branch"])
+
+
