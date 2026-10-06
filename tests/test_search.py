@@ -84,7 +84,8 @@ def test_my_work_lists_each_item_once_under_its_first_reason(fake_gh):
                         "items": items}
         return {"total_count": 0, "items": []}
     fake_gh.route("search/issues", reply)
-    items, capped = gh_data.fetch_my_work(100)
+    items, capped, failed = gh_data.fetch_my_work(100)
+    assert failed == []
     # Grouped by why, most recently updated first within each group
     assert [(i.number, i.why) for i in items] == [
         (2, "review requested"), (1, "review requested"), (3, "assigned"), (4, "mentioned")]
@@ -179,7 +180,7 @@ def test_repo_search_results_go_in_git_items(monkeypatch):
     repos = [gh_data.RepoEntry("o/r")]
     Frame._on_search_loaded(f, 1, repos, 1)
     assert f.git_items == repos and f.items == []
-    assert f.statuses == ["Search — 1 repository match q, showing 1."]
+    assert f.statuses == ["Search — 1 repository matches q, showing 1."]
 
 
 def test_my_work_status_counts_reasons_and_marks_capped(monkeypatch):
@@ -224,9 +225,52 @@ def test_enter_on_a_search_result_opens_it_in_its_repo():
     f._fetch_token = 4
     f._open_repo_from_list = lambda repo, it: f.events.append((repo, it.number))
     f._set_pending_target = lambda *a: Frame._set_pending_target(f, *a)
+    f._open_item_checked = lambda it, parent: Frame._open_item_checked(f, it, parent)
+    f._fork_parent = {"nvaccess/nvda": None}   # known not to be a fork
     Frame._open_item_here(f, item)
     assert f.events == [("nvaccess/nvda", 9)]
     assert f._pending_target == (4, ghviewer.VIEW_ISSUES, "item", "9")
+
+
+def test_an_item_in_a_fork_opens_on_github(monkeypatch):
+    # The Issues view of a fork shows its upstream's issues; #9 there is
+    # something else, so it must not be "found" there.
+    opened = []
+    monkeypatch.setattr(ghviewer.webbrowser, "open", opened.append)
+    item = gh_data.parse_search_item(_issue(9, repo="me/fork"))
+    f = _frame()
+    f._open_repo_from_list = lambda *a: pytest.fail("not in the fork's issues")
+    f._open_item_checked = lambda it, parent: Frame._open_item_checked(f, it, parent)
+    f._fork_parent = {"me/fork": "up/r"}
+    Frame._open_item_here(f, item)
+    assert opened == [item.url] and "a fork" in f.announced[-1]
+
+
+def test_my_work_keeps_what_loaded_when_one_search_fails(fake_gh):
+    def reply(args):
+        q = next(a for a in args if a.startswith("q="))
+        if "mentions" in q:
+            raise gh_data.GhError("API rate limit exceeded")
+        if "review-requested" in q:
+            return {"total_count": 1, "items": [_issue(1, pr=True)]}
+        return {"total_count": 0, "items": []}
+    fake_gh.route("search/issues", reply)
+    items, capped, failed = gh_data.fetch_my_work()
+    assert [i.number for i in items] == [1] and failed == ["mentioned"]
+
+
+def test_my_work_all_failing_is_an_error(fake_gh):
+    fake_gh.route("search/issues", gh_data.GhError("API rate limit exceeded"))
+    with pytest.raises(gh_data.GhError):
+        gh_data.fetch_my_work()
+
+
+def test_view_more_asks_only_for_the_next_page(fake_gh):
+    fake_gh.route("search/issues", {"total_count": 500, "items": [_issue(i) for i in range(100, 200)]})
+    items, total = gh_data.search_issues("x", 100, offset=100)
+    assert len(fake_gh.calls) == 1
+    assert "page=2" in fake_gh.calls[0] and "per_page=100" in fake_gh.calls[0]
+    assert items[0].number == 100
 
 
 def test_view_more_stops_at_the_end_of_the_results():

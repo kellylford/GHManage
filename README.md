@@ -10,8 +10,9 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 ## Features
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
-  Above them sit **★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
-  **Watched Repositories**, the counted ones with how many they hold, e.g. "Notifications (12 unread)"
+  Above them sit **★ Favorites**, **Activity**, **Starred Repositories**, **Watched Repositories**,
+  **Notifications**, **My Work** and your saved searches, the counted ones with how many they hold,
+  e.g. "Notifications (12 unread)"
 - **Notifications** — your GitHub inbox: why you were told, what it is, mark read, mark done,
   unsubscribe; Enter opens an issue or PR right here, and Backspace comes back
 - **Search GitHub** — Ctrl+Shift+F searches issues and PRs, or repositories, across all of GitHub
@@ -184,17 +185,17 @@ details panel).
 | `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
 
-Every view except Favorites, Notifications, Activity, Starred Repositories and
-Watched Repositories needs a repository, so with none selected the status bar says
-"Select a repository first" and the view is left alone. Those five don't change
+Every view except Favorites, Activity, Starred Repositories, Watched Repositories,
+Notifications, My Work and search results needs a repository, so with none selected
+the status bar says "Select a repository first" and the view is left alone. Those don't change
 the repository you are in, so `Ctrl+1` takes you back to it.
 
 ### Starred and watched repositories
 
-The repository list starts with five entries that aren't single repositories:
-**★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
-**Watched Repositories**. After them come any repositories you opened by address, then
-your own. Starred and Watched are also on View ▸ View Mode.
+The repository list starts with six entries that aren't single repositories:
+**★ Favorites**, **Activity**, **Starred Repositories**, **Watched Repositories**,
+**Notifications** and **My Work**. After them come your saved searches, any
+repositories you opened by address, then your own. Starred and Watched are also on View ▸ View Mode.
 
 - **Starred Repositories** — the repositories you have starred, most recently
   starred first.
@@ -224,7 +225,7 @@ description. The details panel adds forks and open issues.
 | `G` or `Ctrl+Shift+G` | Open its repository here |
 | `Ctrl++` | Load more |
 
-Choose **Notifications** near the top of the repository list, press
+Choose **Notifications** in the repository list, press
 `Ctrl+Shift+N`, or use View ▸ View Mode ▸ Notifications. Each row reads why
 GitHub told you, what it is, its title, the repository, when it changed, and
 whether it is read. **Actions ▸ Mark All as Read** asks first.

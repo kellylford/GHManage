@@ -2870,19 +2870,22 @@ def _search_page(kind: str, query: str, per_page: int, page: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _search(kind: str, query: str, limit: int) -> tuple[list[dict], int]:
-    """Up to ``limit`` raw results and the total GitHub says match."""
-    limit = max(1, min(limit, SEARCH_MAX))
-    per_page = min(limit, 100)
+def _search(kind: str, query: str, limit: int, offset: int = 0) -> tuple[list[dict], int]:
+    """Up to ``limit`` raw results from ``offset`` on, and the total GitHub
+    says match. ``offset`` must be a whole number of pages of 100: View More
+    asks only for the pages it hasn't got, since search allows 30 requests a
+    minute and refetching from the start would run into that fast."""
+    limit = max(1, min(limit, SEARCH_MAX - offset))
+    per_page = 100 if offset else min(limit, 100)
     rows: list[dict] = []
     total = 0
-    page = 1
+    page = offset // 100 + 1
     while len(rows) < limit:
         data = _search_page(kind, query, per_page, page)
         total = int(data.get("total_count") or 0)
         items = [r for r in (data.get("items") or []) if isinstance(r, dict)]
         rows.extend(items)
-        if len(items) < per_page or len(rows) >= min(total, SEARCH_MAX):
+        if len(items) < per_page or offset + len(rows) >= min(total, SEARCH_MAX):
             break
         page += 1
     return rows[:limit], total
@@ -2919,15 +2922,15 @@ def parse_search_item(raw: dict) -> Item:
     )
 
 
-def search_issues(query: str, limit: int = 100) -> tuple[list[Item], int]:
+def search_issues(query: str, limit: int = 100, offset: int = 0) -> tuple[list[Item], int]:
     """Issues and pull requests matching ``query``, best match first."""
-    rows, total = _search("issues", query, limit)
+    rows, total = _search("issues", query, limit, offset)
     return [parse_search_item(r) for r in rows], total
 
 
-def search_repos(query: str, limit: int = 100) -> tuple[list[RepoEntry], int]:
+def search_repos(query: str, limit: int = 100, offset: int = 0) -> tuple[list[RepoEntry], int]:
     """Repositories matching ``query``, best match first."""
-    rows, total = _search("repositories", query, limit)
+    rows, total = _search("repositories", query, limit, offset)
     return [_repo_entry(r) for r in rows if r.get("full_name")], total
 
 
@@ -2943,15 +2946,22 @@ MY_WORK_QUERIES = [
 ]
 
 
-def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str]]:
+def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str], list[str]]:
     """Open issues and pull requests that need you, grouped by why, most
-    recently updated first in each group; and the reasons that had more
-    than ``limit_each``, so the count can say "100+"."""
+    recently updated first in each group; the reasons that had more than
+    ``limit_each``, so the count can say "100+"; and the reasons whose search
+    failed (the rate limit, say), whose part is missing rather than all of it.
+    """
     seen: set[str] = set()
     out: list[Item] = []
     capped: set[str] = set()
+    failed: list[str] = []
     for why, query in MY_WORK_QUERIES:
-        items, total = search_issues(query + " sort:updated-desc", limit_each)
+        try:
+            items, total = search_issues(query + " sort:updated-desc", limit_each)
+        except GhError:
+            failed.append(why)
+            continue
         if total > len(items):
             capped.add(why)
         for item in items:
@@ -2963,7 +2973,9 @@ def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str]]:
     order = {why: i for i, (why, _) in enumerate(MY_WORK_QUERIES)}
     out.sort(key=lambda it: it.updated_at, reverse=True)
     out.sort(key=lambda it: order.get(it.why, 99))
-    return out, capped
+    if failed and len(failed) == len(MY_WORK_QUERIES):
+        raise GhError("GitHub search isn't answering; try again in a minute.")
+    return out, capped, failed
 
 
 # ── Workflow run jobs, logs, rerun and cancel ─────────────────────────
