@@ -110,7 +110,28 @@ Three command-line options work in every copy, installed or not:
 | `--repo OWNER/NAME` | Opens that repository straight away instead of starting on the repository list. |
 | `--version` | Prints the version and exits. |
 | `--debug` | Writes more detail to the update log. |
-KF:Please include an example.
+
+For example, to start GHManage on the issues of NVDA's repository, `nvaccess/nvda`:
+
+- **Windows, installed:** in the Run box (`Windows+R`) or a terminal, type
+
+  ```
+  %LocalAppData%\GHManage\current\ghmanage.exe --repo nvaccess/nvda
+  ```
+
+- **Mac, installed:** in Terminal, type
+
+  ```
+  /Applications/GHManage.app/Contents/MacOS/GHManage --repo nvaccess/nvda
+  ```
+
+- **From source:** in the repository's folder, type
+
+  ```
+  python ghviewer.py --repo nvaccess/nvda
+  ```
+
+Options can be combined, so `--repo nvaccess/nvda --debug` does both.
 
 ---
 
