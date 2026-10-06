@@ -407,6 +407,7 @@ including the checks either side. The short version:
 - v0.8.1 — web addresses in the details panel on a line of their own; comment navigation lands on the right comment
 - v0.8.2 — Go To Issue fetches items not in the list (it never finished before), PRs as PRs, real errors instead of "not found"; first test suite, run in CI
 - v0.8.5 — Activity view (Ctrl+Shift+A) plus Starred and Watched Repositories, each an entry at the top of the repo list; user guide published to GitHub Pages (Help ▸ User Guide, F1); quick-filter rows now map to the right item
+- v0.9.0 — a major release: GHManage becomes a much fuller GitHub client. Notifications (Ctrl+Shift+N), My Work (Ctrl+Shift+M), Search GitHub (Ctrl+Shift+F) with saved searches; open any GitHub address (Ctrl+Shift+O); New Issue; Copy commands; PR checks/review/merge/draft; workflow run jobs, logs, what failed, rerun, cancel; watch settings; account switching; context menus everywhere; repository actions act on the repo in front of you
 
 ## Roadmap
 

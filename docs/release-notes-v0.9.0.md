@@ -3,12 +3,26 @@
 GHManage is a desktop app for reading and managing your GitHub repositories from
 a fast, keyboard-driven list.
 
-This release reaches beyond the repository you have open. Your notifications,
-a list of everything that needs you, and search across all of GitHub are in
-GHManage now, and any GitHub link you paste opens in its own view. Pull
-requests can be reviewed and merged, a failed workflow run says what failed,
-and there are new issues, copy commands, watch settings and switching between
-GitHub accounts.
+This is a big release. It turns GHManage from a way to browse your own
+repositories into a much fuller GitHub client, where much of your day on
+GitHub can happen from the keyboard in one window. The headline features:
+
+- **Notifications**: your GitHub inbox, with mark read, mark done and
+  unsubscribe, and issues and pull requests opening right here.
+- **Search and My Work**: search all of GitHub with its own query language, and
+  one list of every open issue and pull request that needs you.
+- **Saved searches**: keep a search in the repository list and run it again
+  with one keystroke.
+- **Workflow run logs**: what failed in a run, in one readable report, plus each
+  job's log, rerun and cancel.
+- **Pull request actions**: checks, reviews, draft or ready, and merging.
+- **Repository actions wherever you are**: New Issue, Search This Repository and
+  Watch Settings work from any list, for the repository in front of you.
+- **Context menus**: the Applications key, `Shift+F10` or a right-click, in every
+  list.
+
+Any GitHub link you paste also opens in its own view, and there are copy
+commands and switching between GitHub accounts.
 
 The repository list keeps its familiar start — Favorites, Activity, Starred
 Repositories, Watched Repositories — with the new Notifications and My Work
@@ -92,6 +106,24 @@ repository's own address does.
 and a description in Markdown. `Ctrl+Enter` creates the issue, and the list
 reloads with it selected. If you cancel, or GitHub refuses it, what you typed is
 kept for next time.
+
+## Repository actions, wherever you are
+
+New Issue, **Search This Repository** (`Ctrl+Shift+S`, a search starting
+`repo:owner/name`) and Watch Settings are always on the Actions menu, and act on
+the repository in front of you: the one selected in the repository list when it
+has focus; the selected row's repository in Notifications, My Work, Activity,
+search results, Starred, Watched or Favorites; otherwise the one open. New
+Issue opens that repository on its issues first when it isn't the open one.
+
+## Context menus
+
+The Applications key, `Shift+F10` or a right-click now opens a context menu in
+the item list and in the repository list. In the item list it starts with what
+`Enter` does in that view, then offers everything on the Actions menu there. In
+the repository list a repository's menu has Open, Open on GitHub, New Issue,
+Search This Repository, Watch Settings, Copy, and Remove from List for one you
+opened by address. With VoiceOver on a Mac, use `VO+Shift+M`.
 
 ## Copy
 
