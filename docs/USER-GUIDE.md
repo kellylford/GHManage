@@ -470,9 +470,9 @@ The publish history has the same split. Sites GitHub builds itself keep a full b
 
 Open it by choosing **Notifications** near the top of the repository list, with `Ctrl+Shift+N` (`Cmd+Shift+N` on a Mac), or from **View → View Mode → Notifications**. Like Activity, it keeps the repository you were in.
 
-Each row reads whether it is unread, why you were told, what kind of thing it is, its title, the repository and when it last changed:
+Each row reads why you were told, what kind of thing it is, its title, the repository, when it last changed, and whether it is read:
 
-"unread, review requested, PR, #1587 Bump huggingface-hub, Community-Access/quill, 2026-10-05 18:41"
+"review requested, PR, #1587 Bump huggingface-hub, Community-Access/quill, 2026-10-05 18:41, unread"
 
 Why you were told is GitHub's reason in words: review requested, mention, team mention, assigned, author, comment, state change, CI activity, security alert, or watching, when it comes from a repository you watch. The details panel has the same, with the address on a line of its own.
 
@@ -480,20 +480,22 @@ Why you were told is GitHub's reason in words: review requested, mention, team m
 
 | Key | Action |
 |-----|--------|
-| `Enter` | An issue or pull request opens here in GHManage, selected in its repository's list; anything else opens on GitHub. Either way it is marked read |
+| `Enter` | An issue or pull request opens here in GHManage, selected in its repository's list. A discussion, commit, release or security advisory opens on its own page on GitHub; a workflow run, which notifications don't identify, opens the repository's Actions page. Either way it is marked read |
 | `Backspace` | From the issue or pull request, come back to the same notification |
 | `M` | Mark it read |
-| `Delete` or `Ctrl+D` | Mark it done: it leaves your inbox, as the Done button on github.com does |
+| `Delete` or `Ctrl+D` | Mark it done: it leaves your inbox, as the Done button on github.com does. GHManage can't bring it back; github.com's **Done** tab can |
 | `U` | Unsubscribe from the thread: no more notifications about it unless you comment or are mentioned |
 | `I` | Include read notifications, or go back to unread only |
 | `G` or `Ctrl+Shift+G` | Open its repository here in GHManage |
 | `Ctrl+O` | Open it on GitHub, and mark it read |
-| `F` | Add it to favorites, or remove it |
-| `Ctrl++` | Load more |
+| `F` | Add it to favorites, or remove it. Only something with a page of its own can be a favorite: not a workflow run, a release or an invitation, whose address is their repository's list of them |
+| `Ctrl++` | Load more, landing on the first one not listed before |
 
-`M`, `U`, `I` and `G` work from the details panel as well as the list. The **Actions** menu has Mark as Read, Mark as Done, Unsubscribe from Thread and **Mark All as Read…**, which asks first and then marks every notification read, not only those loaded. **View → Include Read Notifications** is the same as `I`.
+`M`, `U`, `I`, `G` and `Delete` work from the details panel as well as the list, and leave you in the panel. GitHub has no way to mark a notification unread again, from GHManage or anywhere else, so `M` and `Enter` are for good.
 
-A read notification stays in the list until you refresh, with its row no longer starting "unread", so marking several in a row doesn't move you about. Marking one done takes it out at once, and you land on the one that was below it.
+The **Actions** menu has Mark as Read, Mark as Done, Unsubscribe from Thread and **Mark All as Read…**, which asks first and then marks every notification read, not only those loaded, up to the moment the list was loaded: anything that has come in since stays unread for you to see. A large inbox is marked in the background on GitHub, so the list shows them read straight away but a refresh in the first few seconds may still bring some back. **View → Include Read Notifications** is the same as `I`.
+
+A read notification stays in the list until you refresh, its row now ending "read", so marking several in a row doesn't move you about. Marking one done takes it out at once, and you land on the one that was below it.
 
 To see only some, use the quick filter (`Ctrl+F`): it matches the reason and the repository as well as the title, so "review requested" or "nvaccess/nvda" narrows the list to those.
 
@@ -676,7 +678,7 @@ The current mode is shown on the status bar, and the status bar says "Quick mode
 | GitHub Pages | status, commit, pusher, date, duration | kind, error, # |
 | Published Pages | page, url | size |
 | Favorites | type, repo, title, subtitle | |
-| Notifications | unread, reason, type, title, repo, updated | |
+| Notifications | reason, type, title, repo, updated, status | |
 | Activity | actor, action, repo, title, date | |
 | Starred and Watched Repositories | repo, description, language, stars, pushed | owner |
 

@@ -2472,8 +2472,10 @@ def fetch_activity(limit: int = 100) -> tuple[list[ActivityEvent], bool]:
 # newest first; PATCH marks one read, DELETE marks it done, PUT marks every
 # one read. The `repo` scope gh asks for at login covers all of it.
 
-NOTIFICATION_COLUMNS = ["unread", "reason", "type", "title", "repo", "updated"]
-NOTIFICATION_DEFAULT_COLUMNS = ["unread", "reason", "type", "title", "repo", "updated"]
+# Status goes last: with only unread ones listed it would open every row
+# with the same word.
+NOTIFICATION_COLUMNS = ["reason", "type", "title", "repo", "updated", "status"]
+NOTIFICATION_DEFAULT_COLUMNS = ["reason", "type", "title", "repo", "updated", "status"]
 
 # GitHub's page size for notifications is at most 50, whatever is asked for.
 _NOTIFICATION_PAGE = 50
@@ -2506,6 +2508,8 @@ _SUBJECT_KINDS = {
     "CheckSuite": "CI run",
     "RepositoryVulnerabilityAlert": "security alert",
     "RepositoryDependabotAlertsThread": "Dependabot alert",
+    "RepositoryAdvisory": "security advisory",
+    "RepositoryInvitation": "invitation",
 }
 
 
@@ -2523,6 +2527,10 @@ class Notification:
     api_url: str = ""         # the subject's API address, when it has one
     url: str = ""             # where to read it on github.com
     number: int = 0           # issue or pull request number, else 0
+    # Whether ``url`` is this thing's own page, or only the repository's page
+    # for its kind (all its releases, all its runs) — not something to
+    # favorite, since every notification of that kind shares it.
+    own_page: bool = False
 
     @property
     def reason_display(self) -> str:
@@ -2539,7 +2547,7 @@ class Notification:
 
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {
-            "unread": "unread" if self.unread else "",
+            "status": "unread" if self.unread else "read",
             "reason": self.reason_display,
             "type": self.kind,
             "title": f"#{self.number} {self.title}" if self.number else self.title,
@@ -2553,33 +2561,41 @@ class Notification:
         return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
 
 
-def _notification_url(subject_type: str, api_url: str, repo: str) -> tuple[str, int]:
-    """The github.com address for a notification's subject, and its number.
+def _notification_url(subject_type: str, api_url: str, repo: str) -> tuple[str, int, bool]:
+    """The github.com address for a notification's subject, its number, and
+    whether that address is the subject's own page.
 
     The API gives the subject's *API* address, which is not a page anyone can
     open: repos/o/r/pulls/12 is github.com/o/r/pull/12. Some subjects have no
-    address at all (discussions, CI runs), or one that doesn't map (a release
-    by id); those fall back to the repository's page for that kind of thing.
+    address at all (CI runs), or one that doesn't map without asking GitHub
+    (a release by id); those fall back to the repository's page for that kind
+    of thing.
     """
     base = f"https://github.com/{repo}" if repo else "https://github.com"
     prefix = f"https://api.github.com/repos/{repo}/"
-    rest = api_url[len(prefix):] if api_url.startswith(prefix) else ""
+    rest = api_url[len(prefix):] if api_url.lower().startswith(prefix.lower()) else ""
     parts = rest.split("/")
     if len(parts) == 2 and parts[1].isdigit():
         if parts[0] == "issues":
-            return f"{base}/issues/{parts[1]}", int(parts[1])
+            return f"{base}/issues/{parts[1]}", int(parts[1]), True
         if parts[0] == "pulls":
-            return f"{base}/pull/{parts[1]}", int(parts[1])
+            return f"{base}/pull/{parts[1]}", int(parts[1]), True
+        if parts[0] == "discussions":
+            return f"{base}/discussions/{parts[1]}", 0, True
     if len(parts) == 2 and parts[0] == "commits" and parts[1]:
-        return f"{base}/commit/{parts[1]}", 0
+        return f"{base}/commit/{parts[1]}", 0, True
+    if len(parts) == 2 and parts[0] == "security-advisories" and parts[1]:
+        return f"{base}/security/advisories/{parts[1]}", 0, True
     fallback = {
         "Release": "/releases",
         "Discussion": "/discussions",
         "CheckSuite": "/actions",
         "RepositoryVulnerabilityAlert": "/security",
         "RepositoryDependabotAlertsThread": "/security/dependabot",
+        "RepositoryAdvisory": "/security/advisories",
+        "RepositoryInvitation": "/invitations",
     }.get(subject_type, "")
-    return base + fallback, 0
+    return base + fallback, 0, False
 
 
 def parse_notification(raw: dict) -> Notification:
@@ -2587,7 +2603,7 @@ def parse_notification(raw: dict) -> Notification:
     repo = ((raw.get("repository") or {}).get("full_name")) or ""
     subject_type = subject.get("type") or ""
     api_url = subject.get("url") or ""
-    url, number = _notification_url(subject_type, api_url, repo)
+    url, number, own_page = _notification_url(subject_type, api_url, repo)
     return Notification(
         id=str(raw.get("id") or ""),
         title=subject.get("title") or "",
@@ -2599,7 +2615,38 @@ def parse_notification(raw: dict) -> Notification:
         api_url=api_url,
         url=url,
         number=number,
+        own_page=own_page,
     )
+
+
+def release_page(api_url: str) -> str:
+    """A release's github.com page, from its API address (repos/o/r/releases/<id>)."""
+    try:
+        data = json.loads(_run_gh(["api", api_url.split("api.github.com/", 1)[-1]]))
+    except (GhError, ValueError):
+        return ""
+    return (data.get("html_url") or "") if isinstance(data, dict) else ""
+
+
+def _api_page(endpoint: str) -> tuple[list, bool]:
+    """One page of a REST list, and whether GitHub says there is a next one.
+
+    The Link header's rel="next" is the only reliable answer: a full page
+    may be the last, when the total is a whole number of pages.
+    """
+    raw = _run_gh(["api", "-i", endpoint])
+    head, blank, body = raw.replace("\r\n", "\n").partition("\n\n")
+    if not blank:
+        raise GhError(f"Unexpected reply from {endpoint}")
+    more = any(
+        line.lower().startswith("link:") and 'rel="next"' in line
+        for line in head.splitlines()
+    )
+    try:
+        rows = json.loads(body) if body.strip() else []
+    except ValueError:
+        raise GhError(f"Unexpected reply from {endpoint}")
+    return (rows if isinstance(rows, list) else []), more
 
 
 def fetch_notifications(limit: int = 50, include_read: bool = False) -> tuple[list[Notification], bool]:
@@ -2610,23 +2657,27 @@ def fetch_notifications(limit: int = 50, include_read: bool = False) -> tuple[li
     """
     base = "notifications?all=true" if include_read else "notifications?all=false"
     out: list[Notification] = []
+    seen: set[str] = set()
     page = 1
     more = False
     while len(out) < limit:
-        raw = _run_gh(["api", f"{base}&per_page={_NOTIFICATION_PAGE}&page={page}"])
-        rows = json.loads(raw) if raw.strip() else []
-        if not isinstance(rows, list):
+        rows, more = _api_page(f"{base}&per_page={_NOTIFICATION_PAGE}&page={page}")
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            note = parse_notification(r)
+            # Pages are offsets into an inbox that changes as you read, so a
+            # thread can turn up on two of them.
+            if note.id in seen:
+                continue
+            seen.add(note.id)
+            out.append(note)
+        if not more:
             break
-        out.extend(parse_notification(r) for r in rows if isinstance(r, dict))
-        if len(rows) < _NOTIFICATION_PAGE:
-            break
-        more = True
         page += 1
     if len(out) > limit:
         out = out[:limit]
         more = True
-    elif len(out) < limit:
-        more = False
     return out, more
 
 
@@ -2644,9 +2695,16 @@ def mark_notification_done(thread_id: str) -> None:
     _run_gh(["api", "-X", "DELETE", f"notifications/threads/{thread_id}"])
 
 
-def mark_all_notifications_read() -> None:
-    """Every notification read. GitHub may finish this in the background."""
-    _run_gh(["api", "-X", "PUT", "notifications", "-F", "read=true"])
+def mark_all_notifications_read(last_read_at: str = "") -> None:
+    """Every notification read, up to ``last_read_at`` when given (ISO 8601).
+
+    Pass the time the list was loaded, so anything that arrived since — that
+    you have not seen — stays unread. GitHub may finish this in the background.
+    """
+    args = ["api", "-X", "PUT", "notifications", "-F", "read=true"]
+    if last_read_at:
+        args += ["-f", f"last_read_at={last_read_at}"]
+    _run_gh(args)
 
 
 def unsubscribe_notification(thread_id: str) -> None:

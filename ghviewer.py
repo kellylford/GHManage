@@ -111,6 +111,7 @@ from gh_data import (
     mark_all_notifications_read,
     mark_notification_done,
     mark_notification_read,
+    release_page,
     unsubscribe_notification,
     list_repos,
     count_starred_repos,
@@ -1158,11 +1159,16 @@ class GhViewerFrame(wx.Frame):
         # has more than are loaded (None while a load is under way).
         self._include_read: bool = False
         self._notif_more: bool | None = False
+        # What the list on screen was loaded with, and when: Backspace back to
+        # it reloads if Include Read changed meanwhile, and Mark All Read marks
+        # only what had arrived by then.
+        self._notif_loaded_include: bool = False
+        self._notif_loaded_at: str = ""
         # Row to put the cursor on when the feed load about to start lands
         # (View More lands you on the first new row, not back at the top).
         # Handed to that one load in _load_items and reset there, so a load
         # that is superseded or fails can't leave it for a later one.
-        self._pending_focus_row: int = 0
+        self._pending_focus_row = 0  # a row, or for Notifications the ids already shown
         # The list you were in when you opened a repository from it — G on an
         # activity event, Enter on a starred or watched repo — so Backspace
         # brings you back to the same item without fetching the list again:
@@ -2539,39 +2545,61 @@ class GhViewerFrame(wx.Frame):
     ) -> None:
         """Notifications view: newest first, unread only unless asked.
 
-        ``focus`` is the row to land on, or the notification to land on
-        wherever the list now shows it (Backspace from one opened here).
+        ``focus`` is the row to land on; or the notification to land on
+        wherever the list now shows it (Backspace from one opened here); or,
+        after View More, the ids already heard, to land on the first new one.
         """
         if not self._fetch_is_current(token):
             return  # the user has moved on; these belong to a view they left
+        from datetime import datetime, timezone
         self._notif_more = more
+        self._notif_loaded_include = self._include_read
+        self._notif_loaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.git_items = notes
         self.items = []
         filtered = self._populate_filtered_list(notes, use_favorite_prefix=True)
-        n = len(notes)
-        unread = sum(1 for x in notes if x.unread)
         if not self._include_read and not more:
             # Every unread one is here, so the count is known exactly.
-            self._category_counts[NOTIFICATIONS_ENTRY] = unread
+            self._category_counts[NOTIFICATIONS_ENTRY] = sum(1 for x in notes if x.unread)
             self._refresh_category_labels()
-        tail = " Ctrl++ loads more." if more else ""
+        self._set_notifications_status()
+        self._update_title()
+        if isinstance(focus, frozenset):
+            # View More: the first notification not on the list before. Rows
+            # read or done meanwhile have gone, so a row number would skip.
+            row = next((i for i, x in enumerate(self._shown) if x.id not in focus),
+                       max(len(self._shown) - 1, 0))
+        elif isinstance(focus, int):
+            row = focus
+        else:
+            row = max(self._row_of_id(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
+    def _set_notifications_status(self) -> None:
+        notes = self.git_items
+        n = len(notes)
+        unread = sum(1 for x in notes if x.unread)
+        tail = " Ctrl++ loads more." if self._notif_more else ""
         if not n:
             message = ("Notifications — nothing unread." if not self._include_read
                        else "Notifications — none.")
-        elif self._include_read:
-            message = f"Notifications — {n:,}, {unread:,} unread, newest first.{tail}"
-        else:
+        elif unread == n and not self._include_read:
             message = f"Notifications — {n:,} unread, newest first.{tail}"
+        else:
+            message = f"Notifications — {n:,}, {unread:,} unread, newest first.{tail}"
         self._set_view_status(
             message,
             "Enter=open  M=mark read  Delete=done  U=unsubscribe  "
             f"I={'hide' if self._include_read else 'include'} read  G=go to repository  "
-            "Ctrl+O=open on GitHub  F=favorite  Ctrl+F=filter",
+            "Ctrl+O=open on GitHub  F=favorite  R=refresh  Ctrl+F=filter",
         )
-        self._update_title()
-        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
-        if filtered:
-            wx.CallLater(100, self._focus_list, row)
+
+    def _row_of_id(self, note) -> int:
+        """The row showing the notification with ``note``'s id, or -1."""
+        nid = getattr(note, "id", None)
+        return next((i for i, x in enumerate(self._shown)
+                     if isinstance(x, Notification) and x.id == nid), -1)
 
     def _on_repo_list_loaded(
         self, token: int, repos: list, focus=0, count: int | None = None,
@@ -3764,6 +3792,7 @@ class GhViewerFrame(wx.Frame):
         """Backspace from a repo opened from a list: that list, where you left it."""
         view, items, more, item, limit = self._return_to
         self._return_to = None
+        self._pending_target = None
         self._switch_view(view, load=False)
         self.current_limit = limit
         self._restore_repo_selection(None)
@@ -3771,7 +3800,13 @@ class GhViewerFrame(wx.Frame):
         if view == VIEW_ACTIVITY:
             self._on_activity_loaded(token, items, more, item)
         elif view == VIEW_NOTIFICATIONS:
-            self._on_notifications_loaded(token, items, more, item)
+            if self._include_read != self._notif_loaded_include:
+                # Include Read was changed while you were away; the list you
+                # left no longer matches it.
+                self._pending_focus_row = 0
+                self._load_items()
+            else:
+                self._on_notifications_loaded(token, items, more, item)
         else:
             self._on_repo_list_loaded(token, items, item)
         self._announce(f"Back to {self._VIEW_LABELS.get(view, view).lower()}")
@@ -3789,6 +3824,13 @@ class GhViewerFrame(wx.Frame):
             self._announce(f"Removed '{item.title}' from favorites")
             self._load_favorites_view()
             self._refresh_repo_list_fav_count()
+            return
+
+        if isinstance(item, Notification) and not item.own_page:
+            self._announce(
+                f"This {item.kind or 'notification'} has no page of its own to favorite, "
+                "only its repository's list of them."
+            )
             return
 
         if isinstance(item, ActivityEvent) and not item.subject_url:
@@ -3875,6 +3917,8 @@ class GhViewerFrame(wx.Frame):
             title = item.name
             subtitle = item.description[:60] if item.description else ""
         elif isinstance(item, Notification):
+            if not item.own_page:
+                return None
             repo = item.repo
             item_type = item.kind or "notification"
             title = f"#{item.number} — {item.title}" if item.number else item.title
@@ -3994,7 +4038,7 @@ class GhViewerFrame(wx.Frame):
             if not self._notif_more:
                 self._announce("That is all your notifications.")
                 return
-            self._pending_focus_row = len(self._shown)
+            self._pending_focus_row = frozenset(x.id for x in self.git_items)
         elif self.view_mode in REPO_LIST_VIEWS:
             if len(self.git_items) < self.current_limit:
                 label = self._VIEW_LABELS[self.view_mode].lower()
@@ -4940,6 +4984,17 @@ class GhViewerFrame(wx.Frame):
             self._open_repo_from_list(note.repo, note)
             self._set_pending_target(VIEW_ISSUES, "item", str(number))
             return
+        if note.subject_type == "Release" and note.api_url:
+            # Its own page needs its tag, which only GitHub can tell us.
+            self._announce(f"Opening {note.title}…")
+
+            def worker() -> None:
+                url = release_page(note.api_url) or note.url
+                wx.CallAfter(webbrowser.open, url)
+                wx.CallAfter(self._announce, f"Opened {note.title} in browser")
+
+            threading.Thread(target=worker, daemon=True).start()
+            return
         if note.url:
             webbrowser.open(note.url)
             self._announce(f"Opened {note.title} in browser")
@@ -4984,7 +5039,7 @@ class GhViewerFrame(wx.Frame):
         def worker() -> None:
             try:
                 call(note.id)
-            except GhError as exc:
+            except Exception as exc:  # noqa: BLE001 — GhError, or anything else
                 wx.CallAfter(self._announce, f"Couldn't update the notification: {exc}")
                 return
             wx.CallAfter(self._on_notification_changed, note, change,
@@ -4993,29 +5048,57 @@ class GhViewerFrame(wx.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_notification_changed(self, note: Notification, change: str, said: str) -> None:
-        was_unread = note.unread
+        """Show a change GitHub has accepted, wherever that thread is listed.
+
+        Matched by id, not by object: a reload while the request was out
+        brings new objects for the same threads, and the list you left to
+        open one (kept for Backspace) has its own copy too.
+        """
+        copies = [n for n in self.git_items if isinstance(n, Notification) and n.id == note.id]
+        if self._return_to and self._return_to[0] == VIEW_NOTIFICATIONS:
+            copies += [n for n in self._return_to[1] if n.id == note.id]
+        copies.append(note)
         if change in ("read", "done"):
-            note.unread = False
+            was_unread = any(n.unread for n in copies)
+            for n in copies:
+                n.unread = False
             if was_unread:
                 self._adjust_unread_count(-1)
+        if change == "done" and self._return_to and self._return_to[0] == VIEW_NOTIFICATIONS:
+            view, items, *rest = self._return_to
+            self._return_to = (view, [n for n in items if n.id != note.id], *rest)
         if said:
             self._announce(said)
         if self.view_mode != VIEW_NOTIFICATIONS:
-            return  # opened from the list and moved on; the list catches up on return
-        row = self._row_of(note)
+            return
+        row = self._row_of_id(note)
         if change == "done":
             # Gone from the inbox, so gone from the list; stay at the same place.
-            self.git_items = [n for n in self.git_items if n is not note]
+            self.git_items = [n for n in self.git_items if n.id != note.id]
             if row >= 0:
+                selected = self.list_ctrl.GetFirstSelected()
+                keep_focus = self._pane_index(self._current_focus()) != 1
                 self._populate_filtered_list(self.git_items, use_favorite_prefix=True)
                 if self._shown:
-                    self._focus_list(min(row, len(self._shown) - 1))
+                    # Where you are now, moved up one if the row went from above.
+                    target = selected - 1 if 0 <= row < selected else selected
+                    target = min(max(target, 0), len(self._shown) - 1)
+                    if keep_focus:
+                        # Done from the details panel: stay in it.
+                        self.list_ctrl.Select(target, on=True)
+                        self.list_ctrl.Focus(target)
+                        self._show_details(target)
+                    else:
+                        self._focus_list(target)
                 else:
                     self.details_text.Clear()
         elif row >= 0:
-            self._redraw_row(row, note)
+            self._redraw_row(row, self._shown[row])
             if row == self.list_ctrl.GetFirstSelected():
                 self._show_details(row)
+        self._set_notifications_status()
+        if said:
+            self._announce(said)  # the status line above replaced it
 
     def _redraw_row(self, row: int, item) -> None:
         for j, col in enumerate(self.columns):
@@ -5045,9 +5128,11 @@ class GhViewerFrame(wx.Frame):
             return
         self._announce("Marking all notifications read…")
 
+        since = self._notif_loaded_at
+
         def worker() -> None:
             try:
-                mark_all_notifications_read()
+                mark_all_notifications_read(since)
             except GhError as exc:
                 wx.CallAfter(self._announce, f"Couldn't mark them read: {exc}")
                 return
@@ -5056,14 +5141,26 @@ class GhViewerFrame(wx.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_all_read(self) -> None:
+        """Show everything read, without asking GitHub again straight away.
+
+        A large inbox is marked in the background (HTTP 202), so a reload
+        now could bring back unread ones and contradict what was just said.
+        """
         self._category_counts[NOTIFICATIONS_ENTRY] = 0
         self._refresh_category_labels()
+        lists = [self.git_items if self.view_mode == VIEW_NOTIFICATIONS else []]
+        if self._return_to and self._return_to[0] == VIEW_NOTIFICATIONS:
+            lists.append(self._return_to[1])
+        for notes in lists:
+            for n in notes:
+                if isinstance(n, Notification):
+                    n.unread = False
         if self.view_mode == VIEW_NOTIFICATIONS:
-            self.current_limit = self.page_size
-            self._load_items()
-        # After the reload's "Loading…", which would otherwise replace it.
-        wx.CallLater(50, self._announce,
-                     "Marked all read. GitHub may take a moment to catch up.")
+            for row, item in enumerate(self._shown):
+                self._redraw_row(row, item)
+            self._set_notifications_status()
+        self._announce("Marked all read. GitHub may take a moment to catch up; "
+                       "R refreshes the list.")
 
     def _toggle_include_read(self) -> None:
         """I, or View ▸ Include Read Notifications."""
@@ -5124,8 +5221,13 @@ class GhViewerFrame(wx.Frame):
         """Route Delete/Ctrl+D to the deletion this view supports.
 
         One entry point for the key and the menu item, so the two can never
-        disagree about what Delete means in a given view.
+        disagree about what Delete means in a given view. Never from the
+        repository list, where Delete reads as "remove this repository" —
+        the bare key is kept out of it in on_char_hook, Ctrl+D here.
         """
+        if self._pane_index(self._current_focus()) == 0:
+            self._announce("Move to the list to delete or mark done (F6).")
+            return
         if self.view_mode == VIEW_LABELS:
             self._do_delete_label()
         elif self.view_mode == VIEW_WORKFLOW:
