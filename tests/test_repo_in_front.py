@@ -35,6 +35,8 @@ def _frame(view=ghviewer.VIEW_ISSUES, item=None, pane=1, repo="o/open", listed="
     f._focused_item = lambda: item
     f._announce = f.announced.append
     f._repo_in_front = lambda: Frame._repo_in_front(f)
+    f._repo_in_front_from = lambda: Frame._repo_in_front_from(f)
+    f._issue_busy = False
     f._select_repo = lambda r: f.events.append(("open", r))
     f._open_repo_from_list = lambda r, it: f.events.append(("open from list", r))
     f._do_new_issue = lambda: f.events.append("new issue")
@@ -102,3 +104,33 @@ def test_repo_actions_are_always_on_the_actions_menu():
     src = inspect.getsource(Frame._update_actions_menu)
     assert "self._act_new_issue.Enable(True)" in src
     assert "self._act_search_repo.Enable(True)" in src
+
+
+def test_new_issue_from_the_repo_list_on_the_open_repo_s_issues_does_not_reload():
+    # Reloading would drop the filter, a label drill-down and the way back.
+    f = _frame(ghviewer.VIEW_ISSUES, pane=0, repo="o/listed")
+    Frame._new_issue_in_front(f)
+    assert f.events == ["new issue"]
+
+
+def test_new_issue_from_favorites_opens_the_repo_without_a_way_back():
+    # Favorites has no Backspace return; it opens as choosing the repo would.
+    f = _frame(ghviewer.VIEW_FAVORITES, FavoriteEntry("f/r", "issue", "u", "#1"), repo=None)
+    Frame._new_issue_in_front(f)
+    assert f.events == [("open", "f/r"), "new issue"]
+
+
+def test_new_issue_while_one_is_being_created_switches_nothing():
+    f = _frame(ghviewer.VIEW_NOTIFICATIONS, Notification("1", "T", "n/r"))
+    f._issue_busy = True
+    Frame._new_issue_in_front(f)
+    assert f.events == []
+    assert f.announced == ["Already creating an issue — wait for it to finish."]
+
+
+def test_a_category_selected_in_the_repo_list_uses_the_row():
+    f = _frame(ghviewer.VIEW_NOTIFICATIONS, Notification("1", "T", "n/r"), pane=0,
+               listed=ghviewer.NOTIFICATIONS_ENTRY)
+    assert Frame._repo_in_front_from(f) == ("n/r", "row")
+    Frame._new_issue_in_front(f)
+    assert f.events == [("open from list", "n/r"), "new issue"]

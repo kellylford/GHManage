@@ -5711,23 +5711,30 @@ class GhViewerFrame(wx.Frame):
     def _new_issue_in_front(self) -> None:
         """Actions ▸ New Issue (Ctrl+N), for the repository in front of you.
 
-        In a view of the open repository it is created there, as before.
-        Anywhere else the repository is opened on its issues first, so the
-        new issue lands in a list you can see — from a list across
-        repositories by the same path as Enter, so Backspace comes back.
+        Already on that repository's issues, or in another of its views, the
+        issue is created there, as before. Anywhere else the repository is
+        opened on its issues first, so the new issue lands in a list you can
+        see: from a row of Notifications, My Work, Activity, search results,
+        Starred or Watched by the same path as Enter, so Backspace comes back;
+        from the repository list or Favorites, as choosing it there would.
         """
-        repo = self._repo_in_front()
+        if self._issue_busy:
+            # Before any switching: moving away would also cost the issue
+            # being created its landing in the list.
+            self._announce("Already creating an issue — wait for it to finish.")
+            return
+        repo, source = self._repo_in_front_from()
         if not repo:
             self._announce("Select a repository first: New Issue needs one.")
             return
-        if repo == self.repo and self.view_mode not in REPOLESS_VIEWS \
-                and self._pane_index(self._current_focus()) != 0:
+        here = repo == self.repo and self.view_mode not in REPOLESS_VIEWS
+        if here and (source == "open" or self.view_mode == VIEW_ISSUES):
             self._do_new_issue()
             return
-        if self._pane_index(self._current_focus()) == 0 or self.view_mode not in REPOLESS_VIEWS:
-            self._select_repo(repo)
-        else:
+        if source == "row" and self.view_mode != VIEW_FAVORITES:
             self._open_repo_from_list(repo, self._focused_item())
+        else:
+            self._select_repo(repo)
         self._do_new_issue()
 
     def _do_new_issue(self) -> None:
@@ -6538,20 +6545,26 @@ class GhViewerFrame(wx.Frame):
           search results, Starred, Watched), the selected row's repository;
         - otherwise the repository open.
         """
+        return self._repo_in_front_from()[0]
+
+    def _repo_in_front_from(self) -> tuple[str | None, str]:
+        """``_repo_in_front`` and where it came from: "list" (the repository
+        list), "row" (the selected row of a list across repositories) or
+        "open" (the repository open). Opening it differs by source: from a
+        row, Backspace should come back to that row."""
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
             if is_repo_entry(name):
-                return name
+                return name, "list"
         item = self._focused_item()
         if self.view_mode in REPOLESS_VIEWS:
             if isinstance(item, RepoEntry):
-                return item.name
+                return item.name, "row"
             if isinstance(item, FavoriteEntry):
-                return item.repo or None
-            repo = getattr(item, "repo", "")
-            return repo or None
-        return self.repo
+                return (item.repo or None), "row"
+            return (getattr(item, "repo", "") or None), "row"
+        return self.repo, "open"
 
     def _watch_target(self) -> str | None:
         return self._repo_in_front()

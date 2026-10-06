@@ -350,7 +350,7 @@ New Issue works wherever you are, for the repository in front of you:
 - with focus in the repository list, the repository selected there;
 - in Notifications, My Work, Activity, search results, Starred, Watched or Favorites, the selected row's repository.
 
-When that isn't the repository open, GHManage opens it on its issues first, so the new issue shows in its list; from Notifications and the other lists, `Backspace` afterwards comes back to where you were. With no repository in front of you, the status bar says so.
+When that isn't the repository open, GHManage opens it on its issues first, so the new issue shows in its list; from Notifications, My Work, Activity, search results, Starred or Watched, `Backspace` afterwards comes back to where you were. With no repository in front of you, the status bar says so.
 
 The form names the repository the issue goes to. On a fork that is the upstream repository, since that is where the issues you see in the list live.
 
