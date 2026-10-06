@@ -3153,3 +3153,114 @@ def rerun_workflow_run(repo: Optional[str], run_id: int, failed_only: bool = Fal
 
 def cancel_workflow_run(repo: Optional[str], run_id: int) -> None:
     _run_gh(["run", "cancel", str(run_id), *_repo_args(repo)])
+
+
+# ── Pull request actions ───────────────────────────────────────────────
+#
+# All go to the repo the issues list shows (the upstream, on a fork), as
+# close, reopen and comment do.
+
+MERGE_METHODS = [("merge", "Create a merge commit"), ("squash", "Squash and merge"),
+                 ("rebase", "Rebase and merge")]
+
+
+def _pr_args(number: int, repo: Optional[str]) -> list[str]:
+    effective = resolve_issue_repo(repo)
+    return [str(number), *(["--repo", effective] if effective else [])]
+
+
+@dataclass
+class Check:
+    name: str
+    state: str           # SUCCESS, FAILURE, PENDING, SKIPPED, …
+    bucket: str = ""     # pass, fail, pending, skipping, cancel
+    workflow: str = ""
+    link: str = ""
+    description: str = ""
+
+
+def fetch_pr_checks(repo: Optional[str], number: int) -> list[Check]:
+    """A pull request's checks, failing ones first.
+
+    gh exits non-zero when checks fail (1) or are still running (8) while
+    printing them all the same, so its output is read whatever it exits with.
+    """
+    args = ["pr", "checks", *_pr_args(number, repo),
+            "--json", "name,state,bucket,link,workflow,description"]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [_find_gh(), *args], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise GhError(str(exc))
+    out = result.stdout.strip()
+    if not out:
+        err = result.stderr.strip()
+        if "no checks reported" in err:
+            return []
+        raise GhError(err or "gh didn't list the checks.")
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        raise GhError("Unexpected reply listing checks")
+    checks = [
+        Check(r.get("name") or "", r.get("state") or "", r.get("bucket") or "",
+              r.get("workflow") or "", r.get("link") or "", r.get("description") or "")
+        for r in rows if isinstance(r, dict)
+    ]
+    order = {"fail": 0, "cancel": 1, "pending": 2, "pass": 3, "skipping": 4}
+    checks.sort(key=lambda c: (order.get(c.bucket, 5), c.workflow, c.name))
+    return checks
+
+
+def allowed_merge_methods(repo: Optional[str]) -> list[str]:
+    """Which of merge, squash and rebase the repository allows."""
+    effective = resolve_issue_repo(repo)
+    raw = _run_gh(["repo", "view", *([effective] if effective else []), "--json",
+                   "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"])
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return [m for m, _ in MERGE_METHODS]
+    allowed = {"merge": data.get("mergeCommitAllowed"), "squash": data.get("squashMergeAllowed"),
+               "rebase": data.get("rebaseMergeAllowed")}
+    return [m for m, _ in MERGE_METHODS if allowed.get(m, True)]
+
+
+def merge_pr(repo: Optional[str], number: int, method: str, delete_branch: bool = False) -> None:
+    if method not in ("merge", "squash", "rebase"):
+        raise ValueError(method)
+    args = ["pr", "merge", *_pr_args(number, repo), f"--{method}"]
+    if delete_branch:
+        args.append("--delete-branch")
+    _run_gh(args)
+
+
+def set_pr_ready(repo: Optional[str], number: int, ready: bool) -> None:
+    """Ready for review, or (``ready=False``) back to a draft."""
+    args = ["pr", "ready", *_pr_args(number, repo)]
+    if not ready:
+        args.append("--undo")
+    _run_gh(args)
+
+
+def review_pr(repo: Optional[str], number: int, kind: str, body: str = "") -> None:
+    """Approve, request changes, or comment, as a review."""
+    flag = {"approve": "--approve", "request-changes": "--request-changes",
+            "comment": "--comment"}[kind]
+    args = ["pr", "review", *_pr_args(number, repo), flag]
+    if body:
+        args += ["--body-file", "-"]
+    _run_gh(args, stdin=body or None)
+
+
+def request_reviewers(repo: Optional[str], number: int, logins: list[str]) -> None:
+    _run_gh(["pr", "edit", *_pr_args(number, repo), "--add-reviewer", ",".join(logins)])
+
+
+def update_pr_branch(repo: Optional[str], number: int) -> None:
+    """Bring the pull request's branch up to date with its base (a merge)."""
+    effective = resolve_issue_repo(repo)
+    _api(["-X", "PUT", f"repos/{{owner}}/{{repo}}/pulls/{number}/update-branch"], effective)

@@ -83,6 +83,14 @@ from gh_data import (
     add_comment,
     close_item,
     IssueCreatedUnreadable,
+    MERGE_METHODS,
+    allowed_merge_methods,
+    fetch_pr_checks,
+    merge_pr,
+    request_reviewers,
+    review_pr,
+    set_pr_ready,
+    update_pr_branch,
     JOB_COLUMNS,
     JOB_DEFAULT_COLUMNS,
     WorkflowJob,
@@ -592,6 +600,12 @@ ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
 ID_SEARCH = wx.NewIdRef()
 ID_RUN_JOBS = wx.NewIdRef()
+ID_PR_CHECKS = wx.NewIdRef()
+ID_PR_REVIEW = wx.NewIdRef()
+ID_PR_MERGE = wx.NewIdRef()
+ID_PR_DRAFT = wx.NewIdRef()
+ID_PR_REVIEWERS = wx.NewIdRef()
+ID_PR_UPDATE = wx.NewIdRef()
 ID_RUN_FAILED = wx.NewIdRef()
 ID_RUN_RERUN = wx.NewIdRef()
 ID_RUN_CANCEL = wx.NewIdRef()
@@ -1235,6 +1249,116 @@ class SearchDialog(wx.Dialog):
         return self.KINDS[self.kind_ctrl.GetSelection()][0], self.query_ctrl.GetValue().strip()
 
 
+# ── Pull request dialogs ────────────────────────────────────────────────
+
+
+class ReviewDialog(wx.Dialog):
+    """Approve, request changes, or comment, with an optional message.
+
+    Labelled as the other dialogs. Ctrl+Enter submits from the message, as
+    in New Issue, and Enter in it starts a new line.
+    """
+
+    KINDS = [("approve", "Approve"), ("request-changes", "Request changes"),
+             ("comment", "Comment")]
+
+    def __init__(self, parent: wx.Window, pr_label: str) -> None:
+        super().__init__(parent, title="Review Pull Request",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER, size=(560, 420))
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=f"Review {pr_label}"), 0, wx.ALL, 10)
+        self.kind_ctrl = wx.RadioBox(self, label="Your review",
+                                     choices=[name for _, name in self.KINDS],
+                                     majorDimension=1, style=wx.RA_SPECIFY_COLS)
+        outer.Add(self.kind_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        label = "&Message (Markdown; needed to request changes or comment)"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.body_ctrl = wx.TextCtrl(self, style=wx.TE_MULTILINE)
+        self.body_ctrl.SetName(label.replace("&", ""))
+        outer.Add(self.body_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        ok = self.FindWindow(wx.ID_OK)
+        if ok:
+            ok.SetLabel("&Submit Review")
+        self.SetSizer(outer)
+        submit = wx.NewIdRef()
+        self.Bind(wx.EVT_MENU, self._on_submit, id=submit)
+        self.SetAcceleratorTable(wx.AcceleratorTable([
+            (wx.ACCEL_CTRL, wx.WXK_RETURN, submit), (wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER, submit),
+        ]))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        wx.CallAfter(self.kind_ctrl.SetFocus)
+
+    def _valid(self) -> bool:
+        kind, body = self.values()
+        if kind != "approve" and not body:
+            wx.MessageBox("Requesting changes or commenting needs a message.",
+                          "Review Pull Request", wx.OK | wx.ICON_INFORMATION, self)
+            self.body_ctrl.SetFocus()
+            return False
+        return True
+
+    def _on_submit(self, event) -> None:
+        if self._valid():
+            self.EndModal(wx.ID_OK)
+
+    def _on_ok(self, event) -> None:
+        if self._valid():
+            event.Skip()
+
+    def values(self) -> tuple[str, str]:
+        return self.KINDS[self.kind_ctrl.GetSelection()][0], self.body_ctrl.GetValue().strip()
+
+
+class MergeDialog(wx.Dialog):
+    """How to merge a pull request, offering only what the repository allows."""
+
+    def __init__(self, parent: wx.Window, pr_label: str, methods: list[str]) -> None:
+        super().__init__(parent, title="Merge Pull Request", style=wx.DEFAULT_DIALOG_STYLE)
+        self._methods = methods
+        names = dict(MERGE_METHODS)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=f"Merge {pr_label}"), 0, wx.ALL, 10)
+        self.method_ctrl = wx.RadioBox(self, label="How", choices=[names[m] for m in methods],
+                                       majorDimension=1, style=wx.RA_SPECIFY_COLS)
+        outer.Add(self.method_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        self.delete_ctrl = wx.CheckBox(self, label="&Delete the branch afterwards")
+        outer.Add(self.delete_ctrl, 0, wx.ALL, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        ok = self.FindWindow(wx.ID_OK)
+        if ok:
+            ok.SetLabel("&Merge")
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((420, -1))
+        wx.CallAfter(self.method_ctrl.SetFocus)
+
+    def values(self) -> tuple[str, bool]:
+        return self._methods[self.method_ctrl.GetSelection()], self.delete_ctrl.GetValue()
+
+
+def format_checks(pr_label: str, checks: list) -> str:
+    """A pull request's checks as text: a count, then each, failures first."""
+    words = {"fail": "failed", "cancel": "cancelled", "pending": "running",
+             "pass": "passed", "skipping": "skipped"}
+    counts: dict[str, int] = {}
+    for c in checks:
+        counts[c.bucket] = counts.get(c.bucket, 0) + 1
+    order = ["fail", "cancel", "pending", "pass", "skipping"]
+    summary = ", ".join(f"{counts[b]} {words[b]}" for b in order if b in counts)
+    lines = [f"Checks for {pr_label}", summary or "No checks have run.", ""]
+    for c in checks:
+        where = f"{c.workflow} / {c.name}" if c.workflow else c.name
+        lines.append(f"{words.get(c.bucket, c.state.lower())}: {where}")
+        if c.description:
+            lines.append(f"    {c.description}")
+        if c.link:
+            lines.append(f"    {c.link}")
+    if counts.get("fail"):
+        lines += ["", "For a failed workflow, Workflow Runs (Ctrl+7) and L on its run "
+                      "shows what failed."]
+    return "\n".join(lines)
+
+
 # ── New issue dialog ────────────────────────────────────────────────────
 
 
@@ -1630,6 +1754,15 @@ class GhViewerFrame(wx.Frame):
         self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
         self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         self._act_new_issue = actions_menu.Append(ID_NEW_ISSUE, "New Issue…\tCtrl+N")
+        # Pull requests. K, V and D are the keys in the issues list.
+        pr_menu = wx.Menu()
+        pr_menu.Append(ID_PR_CHECKS, "&Checks (K)")
+        pr_menu.Append(ID_PR_REVIEW, "Re&view… (V)")
+        pr_menu.Append(ID_PR_MERGE, "&Merge…")
+        pr_menu.Append(ID_PR_DRAFT, "Ready for Review or Back to &Draft (D)")
+        pr_menu.Append(ID_PR_REVIEWERS, "Request &Reviewers…")
+        pr_menu.Append(ID_PR_UPDATE, "&Update Branch…")
+        self._act_pr = actions_menu.AppendSubMenu(pr_menu, "&Pull Request")
         self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
         self._act_save_search = actions_menu.Append(ID_SAVE_SEARCH, "Save Search…\tCtrl+S")
         actions_menu.AppendSeparator()
@@ -1975,6 +2108,7 @@ class GhViewerFrame(wx.Frame):
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
         self._act_new_issue.Enable(in_repo)
+        self._act_pr.Enable(issues)
         # Always on: it can act on the repo selected in the repo list from any
         # view, and says "Select a repository first" when there is none.
         self._act_watch.Enable(True)
@@ -2135,6 +2269,12 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda e: self._search_flow(), id=ID_SEARCH)
         self.Bind(wx.EVT_MENU, lambda e: self._search_from_view_menu(), id=ID_VIEW_SEARCH_RESULTS)
         self.Bind(wx.EVT_MENU, lambda e: self._show_run_jobs(), id=ID_RUN_JOBS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_checks(), id=ID_PR_CHECKS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_review(), id=ID_PR_REVIEW)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_merge(), id=ID_PR_MERGE)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_toggle_draft(), id=ID_PR_DRAFT)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_request_reviewers(), id=ID_PR_REVIEWERS)
+        self.Bind(wx.EVT_MENU, lambda e: self._pr_update_branch(), id=ID_PR_UPDATE)
         self.Bind(wx.EVT_MENU, lambda e: self._show_what_failed(), id=ID_RUN_FAILED)
         self.Bind(wx.EVT_MENU, lambda e: self._rerun_run(), id=ID_RUN_RERUN)
         self.Bind(wx.EVT_MENU, lambda e: self._cancel_run(), id=ID_RUN_CANCEL)
@@ -2712,7 +2852,8 @@ class GhViewerFrame(wx.Frame):
         self._set_view_status(
             f"{source} — {n_issues} issues, {n_prs} PRs ({self.state_filter}){label_info}. "
             f"Showing up to {self.current_limit} newest.",
-            "Ctrl++=view more  R=refresh  M=comment  F=favorite  Ctrl+F=filter"
+            "Ctrl++=view more  R=refresh  M=comment  N=new issue  K=checks  V=review  "
+            "F=favorite  Ctrl+F=filter"
             f"{label_hint}",
         )
         self._update_title()
@@ -3255,6 +3396,10 @@ class GhViewerFrame(wx.Frame):
                 lines.append(f"Branches: {item.head_branch} → {item.base_branch}")
             if item.changed_files or item.additions or item.deletions:
                 lines.append(f"Changes: +{item.additions} -{item.deletions} ({item.changed_files} files)")
+            if getattr(self, "view_mode", None) == VIEW_ISSUES and item.state == "OPEN":
+                lines.append("Keys: K checks, V review, D "
+                             + ("ready for review" if item.is_draft else "back to draft")
+                             + "; Actions ▸ Pull Request to merge.")
         lines.append("")
         lines.append("─" * 60)
         lines.append("")
@@ -4189,6 +4334,12 @@ class GhViewerFrame(wx.Frame):
                 self._do_comment()
             elif key == ord("N"):
                 self._do_new_issue()
+            elif key == ord("K"):
+                self._pr_checks()
+            elif key == ord("V"):
+                self._pr_review()
+            elif key == ord("D"):
+                self._pr_toggle_draft()
             else:
                 event.Skip()
         else:
@@ -5785,6 +5936,172 @@ class GhViewerFrame(wx.Frame):
         self._refresh_repo_list()
         self._announce(f"Saved '{name}'. It is in the repository list, after Watched "
                        "Repositories; Enter there runs it again.")
+
+    # ── Pull requests ───────────────────────────────────────────────────
+
+    def _focused_pr(self) -> Item | None:
+        item = self._focused_item()
+        if self.view_mode == VIEW_ISSUES and isinstance(item, Item) and item.is_pr:
+            return item
+        self._announce("Select a pull request in Issues & PRs first.")
+        return None
+
+    @staticmethod
+    def _pr_label(pr: Item) -> str:
+        return f"#{pr.number} {pr.title}"
+
+    def _pr_in_background(self, call, done: str, error: str, reload: bool = True) -> None:
+        def worker() -> None:
+            try:
+                call()
+            except GhError as exc:
+                wx.CallAfter(self._on_action_error, f"{error}: {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                wx.CallAfter(self._on_action_error, f"{error}: {type(exc).__name__}: {exc}")
+                return
+            wx.CallAfter(self._on_action_done if reload else self._announce, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pr_checks(self) -> None:
+        """K: the checks on a pull request, failures first."""
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        repo, label = self.repo, self._pr_label(pr)
+        self._announce(f"Loading the checks on #{pr.number}…")
+
+        def worker() -> None:
+            try:
+                checks = fetch_pr_checks(repo, pr.number)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't load the checks: {exc}")
+                return
+            wx.CallAfter(self._on_checks_ready, repo, label, checks)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_checks_ready(self, repo: str, label: str, checks: list) -> None:
+        if self.repo != repo:
+            return
+        text = format_checks(label, checks)
+        self._announce(text.splitlines()[1])
+        self._show_text_dialog(f"Checks — {label}", text)
+
+    def _pr_review(self) -> None:
+        """V: approve, request changes, or comment."""
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        dlg = ReviewDialog(self, self._pr_label(pr))
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Review cancelled.")
+                return
+            kind, body = dlg.values()
+        finally:
+            dlg.Destroy()
+        said = {"approve": "Approved", "request-changes": "Requested changes on",
+                "comment": "Commented on"}[kind]
+        self._announce(f"Submitting your review of #{pr.number}…")
+        self._pr_in_background(lambda: review_pr(self.repo, pr.number, kind, body),
+                               f"{said} #{pr.number}", f"Couldn't review #{pr.number}")
+
+    def _pr_merge(self) -> None:
+        """Actions ▸ Pull Request ▸ Merge: how, from what the repo allows."""
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        if pr.state != "OPEN":
+            self._announce(f"#{pr.number} is {pr.state_display.lower()}, so it can't be merged.")
+            return
+        if pr.is_draft:
+            self._announce(f"#{pr.number} is a draft; mark it ready for review first (D).")
+            return
+        repo = self.repo
+        self._announce(f"Checking how {repo} lets pull requests merge…")
+
+        def worker() -> None:
+            try:
+                methods = allowed_merge_methods(repo)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't check the merge settings: {exc}")
+                return
+            wx.CallAfter(self._choose_merge, repo, pr, methods)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _choose_merge(self, repo: str, pr: Item, methods: list[str]) -> None:
+        if self.repo != repo:
+            return
+        if not methods:
+            self._announce("This repository allows no way of merging.")
+            return
+        dlg = MergeDialog(self, f"{self._pr_label(pr)} into {pr.base_branch or 'its base'}",
+                          methods)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Merge cancelled.")
+                return
+            method, delete = dlg.values()
+        finally:
+            dlg.Destroy()
+        self._announce(f"Merging #{pr.number}…")
+        self._pr_in_background(lambda: merge_pr(repo, pr.number, method, delete),
+                               f"Merged #{pr.number}", f"Couldn't merge #{pr.number}")
+
+    def _pr_toggle_draft(self) -> None:
+        """D: a draft becomes ready for review; an open PR goes back to draft."""
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        if pr.state != "OPEN":
+            self._announce(f"#{pr.number} is {pr.state_display.lower()}.")
+            return
+        ready = pr.is_draft
+        what = "ready for review" if ready else "back to a draft"
+        self._announce(f"Marking #{pr.number} {what}…")
+        self._pr_in_background(lambda: set_pr_ready(self.repo, pr.number, ready),
+                               f"#{pr.number} is {what}", f"Couldn't change #{pr.number}")
+
+    def _pr_request_reviewers(self) -> None:
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        dlg = wx.TextEntryDialog(
+            self, f"Request reviews on {self._pr_label(pr)} from (GitHub logins, "
+            "separated by commas; a team as org/team-name):", "Request Reviewers", "",
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            logins = [x.strip().lstrip("@") for x in dlg.GetValue().split(",") if x.strip()]
+        finally:
+            dlg.Destroy()
+        if not logins:
+            self._announce("No reviewers named.")
+            return
+        self._announce(f"Requesting reviews from {', '.join(logins)}…")
+        self._pr_in_background(lambda: request_reviewers(self.repo, pr.number, logins),
+                               f"Requested reviews on #{pr.number} from {', '.join(logins)}",
+                               f"Couldn't request reviewers on #{pr.number}")
+
+    def _pr_update_branch(self) -> None:
+        pr = self._focused_pr()
+        if pr is None:
+            return
+        confirm = wx.MessageBox(
+            f"Bring {self._pr_label(pr)} up to date with {pr.base_branch or 'its base'}?\n\n"
+            "GitHub merges the base branch into the pull request's branch.",
+            "Update Branch", wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
+        self._announce(f"Updating the branch of #{pr.number}…")
+        self._pr_in_background(lambda: update_pr_branch(self.repo, pr.number),
+                               f"Updated the branch of #{pr.number}",
+                               f"Couldn't update the branch of #{pr.number}")
 
     # ── Workflow runs: jobs, logs, rerun, cancel ────────────────────────
 
