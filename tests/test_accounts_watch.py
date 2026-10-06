@@ -115,6 +115,7 @@ def _frame(view, item=None, pane=1, repo="o/open", listed="o/listed"):
     f._focused_item = lambda: item
     f._announce = f.announced.append
     f._repo_in_front = lambda: Frame._repo_in_front(f)
+    f._repo_in_front_from = lambda: Frame._repo_in_front_from(f)
     return f
 
 
