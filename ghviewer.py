@@ -22,6 +22,10 @@ import updater
 from version import __version__ as APP_VERSION
 from pinned_repos import add_pinned, load_pinned, remove_pinned
 from favorites import FavoriteEntry, load_favorites, save_favorites, is_favorite, toggle_favorite
+from saved_searches import (
+    KIND_ISSUES, KIND_REPOS, SavedSearch, add_saved_search, load_saved_searches,
+    remove_saved_search,
+)
 
 from gh_data import (
     ACTIVITY_COLUMNS,
@@ -79,6 +83,14 @@ from gh_data import (
     add_comment,
     close_item,
     IssueCreatedUnreadable,
+    MY_WORK_COLUMNS,
+    MY_WORK_DEFAULT_COLUMNS,
+    SEARCH_ITEM_COLUMNS,
+    SEARCH_ITEM_DEFAULT_COLUMNS,
+    SEARCH_MAX,
+    fetch_my_work,
+    search_issues,
+    search_repos,
     MissingScope,
     WATCH_ALL,
     WATCH_IGNORE,
@@ -494,6 +506,9 @@ ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
+ID_SEARCH = wx.NewIdRef()
+ID_SAVE_SEARCH = wx.NewIdRef()
+ID_VIEW_MY_WORK = wx.NewIdRef()
 ID_WATCH_SETTINGS = wx.NewIdRef()
 ID_COPY_LINK = wx.NewIdRef()
 ID_COPY_MARKDOWN = wx.NewIdRef()
@@ -520,18 +535,33 @@ VIEW_ACTIVITY = "activity"     # your GitHub activity feed (not tied to a repo)
 VIEW_STARRED = "starred"       # repositories you have starred
 VIEW_WATCHED = "watched"       # repositories you watch
 VIEW_NOTIFICATIONS = "notifications"  # your GitHub notifications
+VIEW_MY_WORK = "my_work"       # open issues and PRs that need you, everywhere
+VIEW_SEARCH_ISSUES = "search_issues"  # GitHub-wide search: issues and PRs
+VIEW_SEARCH_REPOS = "search_repos"    # GitHub-wide search: repositories
 
 # Views that are not views *of a repo*, so they work with none selected.
-REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_NOTIFICATIONS, VIEW_ACTIVITY, VIEW_STARRED,
-                  VIEW_WATCHED)
+REPOLESS_VIEWS = (VIEW_FAVORITES, VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_ACTIVITY,
+                  VIEW_STARRED, VIEW_WATCHED, VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
 # The repoless views fetched from GitHub (Favorites is read from disk).
-FEED_VIEWS = (VIEW_NOTIFICATIONS, VIEW_ACTIVITY, VIEW_STARRED, VIEW_WATCHED)
+FEED_VIEWS = (VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_ACTIVITY, VIEW_STARRED,
+              VIEW_WATCHED, VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
+# Views listing issues and pull requests (Items), shown with the issue
+# details. Only Issues & PRs is of one repo; the issue actions (close,
+# reopen, comment) belong to it alone.
+ITEM_VIEWS = (VIEW_ISSUES, VIEW_MY_WORK, VIEW_SEARCH_ISSUES)
+SEARCH_VIEWS = (VIEW_SEARCH_ISSUES, VIEW_SEARCH_REPOS)
+# Lists across repositories where G opens the selected row's repository here.
+GO_TO_REPO_VIEWS = (VIEW_ACTIVITY, VIEW_NOTIFICATIONS, VIEW_MY_WORK, VIEW_SEARCH_ISSUES,
+                    VIEW_SEARCH_REPOS)
 # Views listing repositories; Enter on one opens it here.
 REPO_LIST_VIEWS = (VIEW_STARRED, VIEW_WATCHED)
 
 # clientData of the pseudo-entries at the top of the repository list.
 FAVORITES_ENTRY = "__favorites__"
 NOTIFICATIONS_ENTRY = "__notifications__"
+MY_WORK_ENTRY = "__my_work__"
+# A saved search in the repo list: this prefix and its name.
+SEARCH_ENTRY_PREFIX = "__search__:"
 ACTIVITY_ENTRY = "__activity__"
 STARRED_ENTRY = "__starred__"
 WATCHED_ENTRY = "__watched__"
@@ -539,6 +569,7 @@ WATCHED_ENTRY = "__watched__"
 # The category entries after ★ Favorites, in order, with their labels.
 CATEGORY_ENTRIES = [
     (NOTIFICATIONS_ENTRY, "Notifications"),
+    (MY_WORK_ENTRY, "My Work"),
     (ACTIVITY_ENTRY, "Activity"),
     (STARRED_ENTRY, "Starred Repositories"),
     (WATCHED_ENTRY, "Watched Repositories"),
@@ -547,6 +578,7 @@ CATEGORY_ENTRIES = [
 VIEW_ENTRIES = {
     VIEW_FAVORITES: FAVORITES_ENTRY,
     VIEW_NOTIFICATIONS: NOTIFICATIONS_ENTRY,
+    VIEW_MY_WORK: MY_WORK_ENTRY,
     VIEW_ACTIVITY: ACTIVITY_ENTRY,
     VIEW_STARRED: STARRED_ENTRY,
     VIEW_WATCHED: WATCHED_ENTRY,
@@ -595,7 +627,19 @@ VIEW_COLUMNS = {
     VIEW_STARRED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
     VIEW_WATCHED: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
     VIEW_NOTIFICATIONS: (NOTIFICATION_DEFAULT_COLUMNS, NOTIFICATION_COLUMNS),
+    VIEW_MY_WORK: (MY_WORK_DEFAULT_COLUMNS, MY_WORK_COLUMNS),
+    VIEW_SEARCH_ISSUES: (SEARCH_ITEM_DEFAULT_COLUMNS, SEARCH_ITEM_COLUMNS),
+    VIEW_SEARCH_REPOS: (REPO_DEFAULT_COLUMNS, REPO_COLUMNS),
 }
+
+
+def is_repo_entry(data) -> bool:
+    """Whether a repo-list entry's client data names a repository, rather
+    than Favorites, a category or a saved search."""
+    return (
+        isinstance(data, str) and bool(data) and data != FAVORITES_ENTRY
+        and data not in ENTRY_VIEWS and not data.startswith(SEARCH_ENTRY_PREFIX)
+    )
 
 
 # ── The item list ───────────────────────────────────────────────────────
@@ -1036,6 +1080,64 @@ class NewLabelDialog(wx.Dialog):
         )
 
 
+# ── Search dialog ───────────────────────────────────────────────────────
+
+
+class SearchDialog(wx.Dialog):
+    """What to search GitHub for, and how.
+
+    The query is GitHub's own search syntax, passed through untouched, so
+    every qualifier github.com accepts works here. Labelled as the other
+    dialogs: a StaticText before each control and a matching SetName.
+    """
+
+    KINDS = [(KIND_ISSUES, "Issues and pull requests"), (KIND_REPOS, "Repositories")]
+
+    def __init__(self, parent: wx.Window, kind: str = KIND_ISSUES, query: str = "") -> None:
+        super().__init__(parent, title="Search GitHub",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        outer = wx.BoxSizer(wx.VERTICAL)
+
+        label = "&Search for"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.kind_ctrl = wx.Choice(self, choices=[name for _, name in self.KINDS])
+        self.kind_ctrl.SetName(label.replace("&", ""))
+        keys = [k for k, _ in self.KINDS]
+        self.kind_ctrl.SetSelection(keys.index(kind) if kind in keys else 0)
+        outer.Add(self.kind_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        label = "&Query"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.query_ctrl = wx.TextCtrl(self, value=query)
+        self.query_ctrl.SetName(label.replace("&", ""))
+        outer.Add(self.query_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        help_text = (
+            "Words and GitHub's qualifiers, for example:\n"
+            "  is:open is:issue label:bug repo:nvaccess/nvda\n"
+            "  author:@me  review-requested:@me  updated:>2026-01-01\n"
+            "  screen reader language:python stars:>50   (repositories)"
+        )
+        outer.Add(wx.StaticText(self, label=help_text), 0, wx.ALL, 10)
+        outer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizerAndFit(outer)
+        self.SetMinSize((520, -1))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        wx.CallAfter(self.query_ctrl.SetFocus)
+        wx.CallAfter(self.query_ctrl.SelectAll)
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        if self.query_ctrl.GetValue().strip():
+            event.Skip()
+            return
+        wx.MessageBox("Type something to search for.", "Search GitHub",
+                      wx.OK | wx.ICON_INFORMATION, self)
+        self.query_ctrl.SetFocus()
+
+    def values(self) -> tuple[str, str]:
+        return self.KINDS[self.kind_ctrl.GetSelection()][0], self.query_ctrl.GetValue().strip()
+
+
 # ── New issue dialog ────────────────────────────────────────────────────
 
 
@@ -1205,6 +1307,11 @@ class GhViewerFrame(wx.Frame):
         # it when it lands, so a late reply can't touch the next account's
         # counts or lists.
         self._account_gen: int = 0
+        # The search on screen, or last run: (kind, query), and how many
+        # GitHub said match.
+        self._search: tuple[str, str] | None = None
+        self._search_total: int = 0
+        self.saved_searches: list[SavedSearch] = load_saved_searches()
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -1369,7 +1476,9 @@ class GhViewerFrame(wx.Frame):
         elif self.view_mode == VIEW_NOTIFICATIONS:
             widths.update({"status": 70, "reason": 130, "type": 80, "title": 420,
                            "repo": 220, "updated": 130})
-        elif self.view_mode in REPO_LIST_VIEWS:
+        elif self.view_mode in (VIEW_MY_WORK, VIEW_SEARCH_ISSUES):
+            widths.update({"why": 130, "repo": 200, "title": 380})
+        elif self.view_mode in REPO_LIST_VIEWS or self.view_mode == VIEW_SEARCH_REPOS:
             widths.update({"repo": 240, "description": 380, "language": 100,
                            "stars": 80, "pushed": 100, "owner": 140})
         for i, col in enumerate(self.columns):
@@ -1390,6 +1499,7 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
+        file_menu.Append(ID_SEARCH, "Search GitHub…\tCtrl+Shift+F")
         file_menu.Append(ID_GOTO, "Go To Issue…\tCtrl+G")
         file_menu.Append(ID_FILTER, "Quick Filter…\tCtrl+F")
         file_menu.AppendSeparator()
@@ -1423,6 +1533,7 @@ class GhViewerFrame(wx.Frame):
         self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         self._act_new_issue = actions_menu.Append(ID_NEW_ISSUE, "New Issue…\tCtrl+N")
         self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
+        self._act_save_search = actions_menu.Append(ID_SAVE_SEARCH, "Save Search…\tCtrl+S")
         actions_menu.AppendSeparator()
         # Ctrl+I and Ctrl+D are safe as accelerators; a bare Delete accelerator
         # would not be, since it would swallow the Delete key inside the list.
@@ -1483,6 +1594,7 @@ class GhViewerFrame(wx.Frame):
         show_menu.AppendRadioItem(ID_VIEW_FAVORITES, "★ Favorites\tCtrl+9")
         show_menu.AppendRadioItem(ID_VIEW_PAGES, "GitHub Pages\tCtrl+0")
         show_menu.AppendRadioItem(ID_VIEW_NOTIFICATIONS, "Notifications\tCtrl+Shift+N")
+        show_menu.AppendRadioItem(ID_VIEW_MY_WORK, "My Work\tCtrl+Shift+M")
         show_menu.AppendRadioItem(ID_VIEW_ACTIVITY, "Activity\tCtrl+Shift+A")
         show_menu.AppendRadioItem(ID_VIEW_STARRED, "Starred Repositories")
         show_menu.AppendRadioItem(ID_VIEW_WATCHED, "Watched Repositories")
@@ -1718,6 +1830,7 @@ class GhViewerFrame(wx.Frame):
         menu_bar.Check(ID_VIEW_FAVORITES, self.view_mode == VIEW_FAVORITES)
         menu_bar.Check(ID_VIEW_PAGES, self.view_mode == VIEW_PAGES)
         menu_bar.Check(ID_VIEW_NOTIFICATIONS, self.view_mode == VIEW_NOTIFICATIONS)
+        menu_bar.Check(ID_VIEW_MY_WORK, self.view_mode == VIEW_MY_WORK)
         menu_bar.Check(ID_VIEW_ACTIVITY, self.view_mode == VIEW_ACTIVITY)
         menu_bar.Check(ID_SHOW_READ, self._include_read)
         menu_bar.Check(ID_VIEW_STARRED, self.view_mode == VIEW_STARRED)
@@ -1758,11 +1871,14 @@ class GhViewerFrame(wx.Frame):
         # Always on: it can act on the repo selected in the repo list from any
         # view, and says "Select a repository first" when there is none.
         self._act_watch.Enable(True)
-        self._act_go_to_repo.Enable(self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS))
+        self._act_save_search.Enable(self.view_mode in SEARCH_VIEWS)
+        self._act_go_to_repo.Enable(self.view_mode in GO_TO_REPO_VIEWS)
         self._act_go_to_repo.SetItemLabel(
             "Go to Notification's Repository\tCtrl+Shift+G"
             if self.view_mode == VIEW_NOTIFICATIONS
             else "Go to Event's Repository\tCtrl+Shift+G"
+            if self.view_mode == VIEW_ACTIVITY
+            else "Go to Repository\tCtrl+Shift+G"
         )
         notifications = self.view_mode == VIEW_NOTIFICATIONS
         for entry in (self._act_mark_read, self._act_unsubscribe, self._act_mark_all_read):
@@ -1903,6 +2019,9 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_new_issue, id=ID_NEW_ISSUE)
         self.Bind(wx.EVT_MENU, lambda e: self._switch_account_flow(), id=ID_SWITCH_ACCOUNT)
         self.Bind(wx.EVT_MENU, lambda e: self._watch_settings_flow(), id=ID_WATCH_SETTINGS)
+        self.Bind(wx.EVT_MENU, lambda e: self._search_flow(), id=ID_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._save_search(), id=ID_SAVE_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._select_category(VIEW_MY_WORK), id=ID_VIEW_MY_WORK)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
@@ -2003,6 +2122,10 @@ class GhViewerFrame(wx.Frame):
         self.repo_list.Append(fav_label, clientData=FAVORITES_ENTRY)
         for entry, label in CATEGORY_ENTRIES:
             self.repo_list.Append(self._category_label(entry, label), clientData=entry)
+        # Saved searches next: Enter runs one.
+        for saved in getattr(self, "saved_searches", []):
+            self.repo_list.Append(f"🔍 {saved.name}",
+                                  clientData=SEARCH_ENTRY_PREFIX + saved.name)
         # Pinned (added-by-URL) repos next, marked with a pin
         shown = set()
         for name in self._pinned_repos:
@@ -2041,6 +2164,18 @@ class GhViewerFrame(wx.Frame):
     def _current_focus(self):
         return wx.Window.FindFocus()
 
+    def _current_entry(self):
+        """The repo-list entry for what the right-hand side shows, or None."""
+        if self.view_mode in VIEW_ENTRIES:
+            return VIEW_ENTRIES[self.view_mode]
+        if self.view_mode in SEARCH_VIEWS:
+            search = getattr(self, "_search", None)
+            for saved in getattr(self, "saved_searches", []):
+                if search == (saved.kind, saved.query):
+                    return SEARCH_ENTRY_PREFIX + saved.name
+            return None
+        return self.repo
+
     def _restore_repo_selection(self, previous) -> None:
         """Select the right row after a rebuild of the repo list.
 
@@ -2049,7 +2184,7 @@ class GhViewerFrame(wx.Frame):
         pinned repo just removed), select nothing rather than something that
         disagrees with the rest of the window.
         """
-        wanted = [previous, VIEW_ENTRIES.get(self.view_mode, self.repo)]
+        wanted = [previous, self._current_entry()]
         for target in wanted:
             if target is None:
                 continue
@@ -2090,6 +2225,10 @@ class GhViewerFrame(wx.Frame):
             self._select_favorites()
         elif name in ENTRY_VIEWS:
             self._select_category(ENTRY_VIEWS[name])
+        elif name.startswith(SEARCH_ENTRY_PREFIX):
+            saved = self._saved_search(name[len(SEARCH_ENTRY_PREFIX):])
+            if saved:
+                self._run_search(saved.kind, saved.query)
         else:
             self._select_repo(name)
 
@@ -2181,6 +2320,11 @@ class GhViewerFrame(wx.Frame):
         elif self.view_mode == VIEW_NOTIFICATIONS:
             self._set_view_status("Loading your notifications…")
             self._notif_more = None
+        elif self.view_mode == VIEW_MY_WORK:
+            self._set_view_status("Finding what needs you — five searches, a few seconds…")
+        elif self.view_mode in SEARCH_VIEWS:
+            query = self._search[1] if self._search else ""
+            self._set_view_status(f"Searching GitHub for {query}…")
         elif self.view_mode in REPO_LIST_VIEWS:
             self._set_view_status(f"Loading your {view_label.lower()}…")
         else:
@@ -2194,6 +2338,7 @@ class GhViewerFrame(wx.Frame):
         view = self.view_mode
         limit = self.current_limit
         include_read = self._include_read
+        search = self._search
         focus_row, self._pending_focus_row = self._pending_focus_row, 0
 
         def worker() -> None:
@@ -2255,6 +2400,16 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, token, assets, "assets")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, token, [], "assets")
+                elif view == VIEW_MY_WORK:
+                    work, capped = fetch_my_work()
+                    wx.CallAfter(self._on_my_work_loaded, token, work, focus_row, capped)
+                elif view in SEARCH_VIEWS:
+                    if not search:
+                        wx.CallAfter(self._on_search_loaded, token, [], 0, 0)
+                    else:
+                        fetch = search_issues if view == VIEW_SEARCH_ISSUES else search_repos
+                        found, total = fetch(search[1], limit)
+                        wx.CallAfter(self._on_search_loaded, token, found, total, focus_row)
                 elif view == VIEW_NOTIFICATIONS:
                     notes, more = fetch_notifications(limit, include_read)
                     wx.CallAfter(self._on_notifications_loaded, token, notes, more, focus_row)
@@ -2329,6 +2484,9 @@ class GhViewerFrame(wx.Frame):
         VIEW_STARRED: "Starred Repositories",
         VIEW_WATCHED: "Watched Repositories",
         VIEW_NOTIFICATIONS: "Notifications",
+        VIEW_MY_WORK: "My Work",
+        VIEW_SEARCH_ISSUES: "Search Results",
+        VIEW_SEARCH_REPOS: "Repository Search Results",
     }
 
     def _update_title(self) -> None:
@@ -2609,6 +2767,75 @@ class GhViewerFrame(wx.Frame):
         if filtered:
             wx.CallLater(100, self._focus_list, row)
 
+    def _on_search_loaded(self, token: int, results: list, total: int, focus=0) -> None:
+        """Search results: issues and PRs, or repositories, across GitHub."""
+        if not self._fetch_is_current(token):
+            return
+        self._search_total = total
+        if self.view_mode == VIEW_SEARCH_ISSUES:
+            self.items, self.git_items = results, []
+            noun = "issue or pull request" if total == 1 else "issues and pull requests"
+        else:
+            self.git_items, self.items = results, []
+            noun = "repository" if total == 1 else "repositories"
+        filtered = self._populate_filtered_list(results, use_favorite_prefix=True)
+        query = self._search[1] if self._search else ""
+        n = len(results)
+        if not n:
+            message = f"Search — nothing matches {query}."
+        else:
+            reach = min(total, SEARCH_MAX)
+            if n < reach:
+                tail = " Ctrl++ loads more."
+            elif total > SEARCH_MAX:
+                tail = f" GitHub returns at most the first {SEARCH_MAX:,}; narrow the search for the rest."
+            else:
+                tail = ""
+            message = f"Search — {total:,} {noun} match {query}, showing {n:,}.{tail}"
+        self._set_view_status(
+            message,
+            "Enter=open here  G=go to repository  Ctrl+O=open on GitHub  F=favorite  "
+            "Ctrl+S=save search  Ctrl+Shift+F=new search  Ctrl+F=filter",
+        )
+        self._update_title()
+        self._restore_repo_selection(None)
+        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
+    def _on_my_work_loaded(self, token: int, items: list, focus=0,
+                           capped: set | None = None) -> None:
+        """My Work: open issues and PRs that need you, grouped by why."""
+        if not self._fetch_is_current(token):
+            return
+        self.items, self.git_items = items, []
+        filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
+        self._category_counts[MY_WORK_ENTRY] = len(items)
+        self._refresh_category_labels()
+        if items:
+            counts: dict[str, int] = {}
+            for it in items:
+                counts[it.why] = counts.get(it.why, 0) + 1
+            if capped is None:
+                capped = getattr(self, "_my_work_capped", set())
+            self._my_work_capped = capped
+            parts = ", ".join(f"{n}{'+' if why in capped else ''} {why}"
+                              for why, n in counts.items())
+            message = f"My Work — {len(items)} open: {parts}."
+            if capped:
+                message += " Lists marked + have more than 100; search finds the rest."
+        else:
+            message = "My Work — nothing open needs you."
+        self._set_view_status(
+            message,
+            "Enter=open here  G=go to repository  Ctrl+O=open on GitHub  F=favorite  "
+            "R=refresh  Ctrl+F=filter",
+        )
+        self._update_title()
+        row = focus if isinstance(focus, int) else max(self._row_of(focus), 0)
+        if filtered:
+            wx.CallLater(100, self._focus_list, row)
+
     def _set_notifications_status(self) -> None:
         notes = self.git_items
         n = len(notes)
@@ -2818,7 +3045,7 @@ class GhViewerFrame(wx.Frame):
         item = self._row_item(row)
         source = self._view_source()
         idx = next((i for i, it in enumerate(source) if it is item), -1)
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             self._show_issue_details(idx)
         elif self.view_mode == VIEW_FAVORITES:
             self._show_favorite_details(idx)
@@ -2858,6 +3085,10 @@ class GhViewerFrame(wx.Frame):
         item = self.items[idx]
         lines = []
         lines.append(f"#{item.number} [{item.kind}] {item.title}")
+        if item.repo:
+            lines.append(f"Repository: {item.repo}")
+        if item.why:
+            lines.append(f"On My Work because: {item.why}")
         lines.append(f"State: {item.state_display}")
         lines.append(f"Author: {item.author}")
         lines.append(f"Created: {item.created_at}")
@@ -3199,7 +3430,7 @@ class GhViewerFrame(wx.Frame):
 
     def _view_source(self) -> list:
         """The full, unfiltered items behind the current view."""
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             return self.items
         if self.view_mode == VIEW_FAVORITES:
             return self.favorites
@@ -3226,6 +3457,9 @@ class GhViewerFrame(wx.Frame):
         VIEW_STARRED: "Repository Name",
         VIEW_WATCHED: "Repository Name",
         VIEW_NOTIFICATIONS: "Number or Repository",
+        VIEW_MY_WORK: "Number",
+        VIEW_SEARCH_ISSUES: "Number",
+        VIEW_SEARCH_REPOS: "Repository Name",
     }
 
     _COPY_WHAT = {
@@ -3241,7 +3475,7 @@ class GhViewerFrame(wx.Frame):
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
-            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+            if is_repo_entry(name):
                 return repo_copy_values(name)
             return None
         item = self._focused_item()
@@ -3399,6 +3633,13 @@ class GhViewerFrame(wx.Frame):
             return
         if self.view_mode == VIEW_NOTIFICATIONS and isinstance(item, Notification):
             self._open_notification(item)
+            return
+        # Across repositories: open the issue or PR here, Backspace returns
+        if self.view_mode in (VIEW_MY_WORK, VIEW_SEARCH_ISSUES) and isinstance(item, Item):
+            self._open_item_here(item)
+            return
+        if self.view_mode == VIEW_SEARCH_REPOS and isinstance(item, RepoEntry):
+            self._open_repo_from_list(item.name, item)
             return
         # In Activity view, Enter opens what the event was about
         if self.view_mode == VIEW_ACTIVITY and isinstance(item, ActivityEvent):
@@ -3663,7 +3904,7 @@ class GhViewerFrame(wx.Frame):
         # G here rather than in the list's handler so it also works from the
         # details panel, where "Press G" is read.
         if (key == ord("G") and not event.HasAnyModifiers()
-                and self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS)):
+                and self.view_mode in GO_TO_REPO_VIEWS):
             self._go_to_event_repo()
             return
         if self.view_mode == VIEW_NOTIFICATIONS and not event.HasAnyModifiers():
@@ -3793,7 +4034,10 @@ class GhViewerFrame(wx.Frame):
     def _go_to_event_repo(self) -> None:
         """Open the repository an activity event happened in (G key)."""
         item = self._focused_item()
-        if not isinstance(item, (ActivityEvent, Notification)) or not item.repo:
+        if isinstance(item, RepoEntry):
+            self._open_repo_from_list(item.name, item)
+            return
+        if not isinstance(item, (ActivityEvent, Notification, Item)) or not item.repo:
             self._announce("No repository for this item.")
             return
         self._open_repo_from_list(item.repo, item)
@@ -3812,7 +4056,7 @@ class GhViewerFrame(wx.Frame):
             more = self._notif_more
         else:
             more = False
-        saved = (self.view_mode, list(self.git_items), bool(more),
+        saved = (self.view_mode, list(self._view_source()), bool(more),
                  item, self.current_limit)
         self._select_repo(repo)
         # Set after _select_repo, which clears it for an ordinary repo change.
@@ -3837,6 +4081,10 @@ class GhViewerFrame(wx.Frame):
         token = self._begin_fetch()
         if view == VIEW_ACTIVITY:
             self._on_activity_loaded(token, items, more, item)
+        elif view == VIEW_MY_WORK:
+            self._on_my_work_loaded(token, items, item)
+        elif view in SEARCH_VIEWS:
+            self._on_search_loaded(token, items, self._search_total, item)
         elif view == VIEW_NOTIFICATIONS:
             if self._include_read != self._notif_loaded_include:
                 # Include Read was changed while you were away; the list you
@@ -3914,6 +4162,7 @@ class GhViewerFrame(wx.Frame):
         url = getattr(item, "url", "") or ""
         repo = self.repo or ""
         if isinstance(item, Item):
+            repo = item.repo or repo
             item_type = "PR" if item.is_pr else "issue"
             title = f"#{item.number} — {item.title}"
             subtitle = item.state_display
@@ -4077,6 +4326,16 @@ class GhViewerFrame(wx.Frame):
                 self._announce("That is all your notifications.")
                 return
             self._pending_focus_row = frozenset(x.id for x in self.git_items)
+        elif self.view_mode in SEARCH_VIEWS:
+            shown = len(self._view_source())
+            if shown >= min(self._search_total, SEARCH_MAX):
+                self._announce("That is every result GitHub gives for this search.")
+                return
+            self._pending_focus_row = len(self._shown)
+        elif self.view_mode == VIEW_MY_WORK:
+            self._announce("My Work shows up to 100 of each kind. Search (Ctrl+Shift+F) "
+                           "finds more.")
+            return
         elif self.view_mode in REPO_LIST_VIEWS:
             if len(self.git_items) < self.current_limit:
                 label = self._VIEW_LABELS[self.view_mode].lower()
@@ -4240,6 +4499,12 @@ class GhViewerFrame(wx.Frame):
         if name == FAVORITES_ENTRY or name in ENTRY_VIEWS:
             self._announce("That entry is always in the list.")
             return
+        if name.startswith(SEARCH_ENTRY_PREFIX):
+            label = name[len(SEARCH_ENTRY_PREFIX):]
+            self.saved_searches = remove_saved_search(label)
+            self._refresh_repo_list()
+            self._announce(f"Removed the saved search '{label}'.")
+            return
         if name not in self._pinned_repos:
             self._announce(
                 f"{name} is one of your own repositories and can't be removed from here."
@@ -4319,7 +4584,7 @@ class GhViewerFrame(wx.Frame):
 
     def _filtered_items(self) -> list:
         """Return the filtered list for the current view mode."""
-        if self.view_mode == VIEW_ISSUES:
+        if self.view_mode in ITEM_VIEWS:
             return [it for it in self.items if self._matches_filter(it)]
         elif self.view_mode == VIEW_FAVORITES:
             return [fav for fav in self.favorites if self._matches_filter(fav)]
@@ -4331,7 +4596,7 @@ class GhViewerFrame(wx.Frame):
         if not self.filter_text:
             self.status_bar.set_item("filter", "")
             return
-        total = len(self.items) if self.view_mode == VIEW_ISSUES else (
+        total = len(self.items) if self.view_mode in ITEM_VIEWS else (
             len(self.favorites) if self.view_mode == VIEW_FAVORITES else len(self.git_items)
         )
         shown = len(self._filtered_items())
@@ -4810,7 +5075,7 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_FAVORITES:
             self._load_favorites_view()
             return
-        items = self.items if self.view_mode == VIEW_ISSUES else self.git_items
+        items = self.items if self.view_mode in ITEM_VIEWS else self.git_items
         filtered = self._populate_filtered_list(items, use_favorite_prefix=True)
         if filtered:
             wx.CallLater(100, self._focus_list)
@@ -5221,6 +5486,67 @@ class GhViewerFrame(wx.Frame):
         self._announce("Including read notifications." if self._include_read
                        else "Unread notifications only.")
 
+    # ── Search ──────────────────────────────────────────────────────────
+
+    def _open_item_here(self, item: Item) -> None:
+        """An issue or PR from a list across repos, opened in its repo's issues."""
+        if not item.repo:
+            self._announce("No repository for this item.")
+            return
+        self._open_repo_from_list(item.repo, item)
+        self._set_pending_target(VIEW_ISSUES, "item", str(item.number))
+
+    def _saved_search(self, name: str) -> SavedSearch | None:
+        return next((s for s in self.saved_searches if s.name == name), None)
+
+    def _search_flow(self) -> None:
+        """File ▸ Search GitHub (Ctrl+Shift+F)."""
+        kind, query = self._search or (KIND_ISSUES, "")
+        dlg = SearchDialog(self, kind, query)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            kind, query = dlg.values()
+        finally:
+            dlg.Destroy()
+        self._run_search(kind, query)
+
+    def _run_search(self, kind: str, query: str) -> None:
+        self._search = (kind, query)
+        self._return_to = None
+        view = VIEW_SEARCH_REPOS if kind == KIND_REPOS else VIEW_SEARCH_ISSUES
+        if self.view_mode == view:
+            self.current_limit = self.page_size
+            self.filter_text = ""
+            self._load_items()
+        else:
+            self._switch_view(view)
+        self._restore_repo_selection(None)
+
+    def _save_search(self) -> None:
+        """Actions ▸ Save Search (Ctrl+S): keep this search in the repo list."""
+        if self.view_mode not in SEARCH_VIEWS or not self._search:
+            self._announce("Run a search first (Ctrl+Shift+F).")
+            return
+        kind, query = self._search
+        dlg = wx.TextEntryDialog(
+            self, f"Name this search. It goes in the repository list, where Enter runs it.\n\n"
+            f"{query}", "Save Search", query[:60],
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            name = dlg.GetValue().strip()
+        finally:
+            dlg.Destroy()
+        if not name:
+            self._announce("A saved search needs a name.")
+            return
+        self.saved_searches = add_saved_search(SavedSearch(name, query, kind))
+        self._refresh_repo_list()
+        self._announce(f"Saved '{name}'. It is in the repository list, after Watched "
+                       "Repositories; Enter there runs it again.")
+
     # ── Watching ────────────────────────────────────────────────────────
 
     _WATCH_CHOICES = [
@@ -5236,7 +5562,7 @@ class GhViewerFrame(wx.Frame):
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
-            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+            if is_repo_entry(name):
                 return name
         item = self._focused_item()
         if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):

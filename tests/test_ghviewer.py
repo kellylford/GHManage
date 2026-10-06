@@ -63,6 +63,7 @@ def _frame(**attrs):
     frame._line_to_position = lambda line: Frame._line_to_position(frame, line)
     frame._open_repo_from_list = lambda repo, item: Frame._open_repo_from_list(frame, repo, item)
     frame._VIEW_LABELS = Frame._VIEW_LABELS
+    frame._view_source = lambda: Frame._view_source(frame)
     for k, v in attrs.items():
         setattr(frame, k, v)
     return frame
@@ -345,7 +346,7 @@ def _repo_frame(pinned=(), repo=None, view=ghviewer.VIEW_ISSUES, focus=None, loa
         _repo_token=0, _repos_loaded_once=loaded_once, _category_counts={},
     )
     for name in ("_restore_repo_selection", "_category_label", "_refresh_category_labels",
-                 "_set_repo_list_label"):
+                 "_set_repo_list_label", "_current_entry"):
         setattr(f, name, getattr(Frame, name).__get__(f))
     f._current_focus = lambda: focus
     return f
@@ -355,7 +356,7 @@ def _row(name, desc=""):
     return {"nameWithOwner": name, "description": desc}
 
 
-CATEGORIES = ["★ Favorites", "Notifications", "Activity", "Starred Repositories", "Watched Repositories"]
+CATEGORIES = ["★ Favorites", "Notifications", "My Work", "Activity", "Starred Repositories", "Watched Repositories"]
 
 
 def test_categories_come_first_then_pinned_then_your_own():
@@ -363,7 +364,8 @@ def test_categories_come_first_then_pinned_then_your_own():
     Frame._on_repos_loaded(f, [_row("me/a", "Mine"), _row("p/pin", "Pinned one")])
     assert f.repo_list.labels == CATEGORIES + ["📌 p/pin — Pinned one", "me/a — Mine"]
     assert [d for _, d in f.repo_list.rows] == [
-        ghviewer.FAVORITES_ENTRY, ghviewer.NOTIFICATIONS_ENTRY, ghviewer.ACTIVITY_ENTRY,
+        ghviewer.FAVORITES_ENTRY, ghviewer.NOTIFICATIONS_ENTRY, ghviewer.MY_WORK_ENTRY,
+        ghviewer.ACTIVITY_ENTRY,
         ghviewer.STARRED_ENTRY, ghviewer.WATCHED_ENTRY, "p/pin", "me/a"]
     assert f.repo_list.selection == 0
     assert f.announced[-1] == "Loaded 2 repositories. Select one to view issues and PRs."
@@ -408,7 +410,7 @@ def test_rebuilt_list_keeps_the_current_repo_selected():
 def test_rebuilt_list_keeps_the_row_you_were_on():
     f = _repo_frame()
     Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")])
-    f.repo_list.SetSelection(6)  # me/b
+    f.repo_list.SetSelection(7)  # me/b
     Frame._on_repos_loaded(f, [_row("me/a"), _row("me/b")])
     assert f.repo_list.GetClientData(f.repo_list.selection) == "me/b"
 
@@ -421,8 +423,8 @@ def test_rebuilt_list_selects_nothing_when_the_shown_repo_is_gone():
 
 
 @pytest.mark.parametrize("view, row", [
-    (ghviewer.VIEW_ACTIVITY, 2), (ghviewer.VIEW_STARRED, 3), (ghviewer.VIEW_WATCHED, 4),
-    (ghviewer.VIEW_NOTIFICATIONS, 1),
+    (ghviewer.VIEW_ACTIVITY, 3), (ghviewer.VIEW_STARRED, 4), (ghviewer.VIEW_WATCHED, 5),
+    (ghviewer.VIEW_NOTIFICATIONS, 1), (ghviewer.VIEW_MY_WORK, 2),
 ])
 def test_rebuilt_list_keeps_the_category_selected(view, row):
     f = _repo_frame(view=view, repo="me/a")
@@ -806,6 +808,7 @@ def _activity_frame(limit=100):
         view_mode=ghviewer.VIEW_ACTIVITY, repo=None, current_limit=limit,
         page_size=100, _fetch_token=1, filter_text="", _pending_focus_row=0,
         _activity_more=False, _shown=[], _notif_more=False, _include_read=False,
+        _search=None,
     )
     f._fetch_is_current = lambda t: t == f._fetch_token
     def populate(items, use_favorite_prefix=False):
@@ -1049,14 +1052,14 @@ def test_backspace_after_g_with_a_filter_lands_on_that_event(call_later):
 
 
 @pytest.mark.parametrize("view, row", [
-    (ghviewer.VIEW_WATCHED, 4), (ghviewer.VIEW_ACTIVITY, 2), (ghviewer.VIEW_ISSUES, 5),
-    (ghviewer.VIEW_NOTIFICATIONS, 1),
+    (ghviewer.VIEW_WATCHED, 5), (ghviewer.VIEW_ACTIVITY, 3), (ghviewer.VIEW_ISSUES, 6),
+    (ghviewer.VIEW_NOTIFICATIONS, 1), (ghviewer.VIEW_MY_WORK, 2),
 ])
 def test_switching_view_moves_the_repo_list_selection_with_it(view, row):
     # Watched from the View menu while Starred was selected in the list
     f = _repo_frame(view=ghviewer.VIEW_STARRED, repo="me/a")
     Frame._on_repos_loaded(f, [_row("me/a")])
-    f.repo_list.SetSelection(3)
+    f.repo_list.SetSelection(4)
     f.page_size, f.current_limit, f._return_to = 100, 100, None
     for name in ("_rebuild_columns", "_rebuild_columns_menu", "_update_menu_checks",
                  "_load_items", "_load_favorites_view"):
@@ -1134,16 +1137,16 @@ def test_modifiers_from_a_key_event_come_from_the_event():
 def test_category_entries_show_their_counts_once_known():
     f = _repo_frame()
     Frame._on_repos_loaded(f, [_row("me/a")])
-    assert f.repo_list.labels[:5] == CATEGORIES   # not known yet: just the name
-    f.repo_list.SetSelection(5)
+    assert f.repo_list.labels[:6] == CATEGORIES   # not known yet: just the name
+    f.repo_list.SetSelection(6)
     Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7, ghviewer.WATCHED_ENTRY: 0})
-    assert f.repo_list.labels[:6] == [
-        "★ Favorites", "Notifications", "Activity", "Starred Repositories (7)",
+    assert f.repo_list.labels[:7] == [
+        "★ Favorites", "Notifications", "My Work", "Activity", "Starred Repositories (7)",
         "Watched Repositories (0)", "me/a"]
-    assert f.repo_list.selection == 5   # updated in place: you stay where you were
+    assert f.repo_list.selection == 6   # updated in place: you stay where you were
     # A rebuild keeps them
     Frame._on_repos_loaded(f, [_row("me/a")])
-    assert f.repo_list.labels[3] == "Starred Repositories (7)"
+    assert f.repo_list.labels[4] == "Starred Repositories (7)"
 
 
 def test_counts_from_a_superseded_load_are_dropped():
@@ -1151,7 +1154,7 @@ def test_counts_from_a_superseded_load_are_dropped():
     Frame._on_repos_loaded(f, [_row("me/a")])
     f._repo_token = 2
     Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 7}, 1)
-    assert f.repo_list.labels[3] == "Starred Repositories"
+    assert f.repo_list.labels[4] == "Starred Repositories"
 
 
 def test_load_repos_fetches_the_counts_after_the_list(monkeypatch, inline_worker):
@@ -1170,7 +1173,7 @@ def test_load_repos_fetches_the_counts_after_the_list(monkeypatch, inline_worker
     Frame._load_repos(f)
     assert order[:3] == ["list", "shown", "starred"]
     # A count that failed is left off, not shown as 0
-    assert f.repo_list.labels[3:5] == ["Starred Repositories (7)", "Watched Repositories"]
+    assert f.repo_list.labels[4:6] == ["Starred Repositories (7)", "Watched Repositories"]
 
 
 def test_a_complete_list_corrects_its_count(call_later):
@@ -1200,7 +1203,7 @@ def test_an_unchanged_count_does_not_rewrite_the_entry():
     Frame._refresh_category_labels(f)
     assert f.repo_list.set_strings == 1
     Frame._on_category_counts(f, {ghviewer.STARRED_ENTRY: 8})
-    assert f.repo_list.set_strings == 2 and f.repo_list.labels[3] == "Starred Repositories (8)"
+    assert f.repo_list.set_strings == 2 and f.repo_list.labels[4] == "Starred Repositories (8)"
 
 
 @pytest.mark.parametrize("view, entry", [

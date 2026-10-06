@@ -18,6 +18,8 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 - [Workflows and Workflow Runs](#workflows-and-workflow-runs)
 - [GitHub Pages](#github-pages)
 - [Notifications](#notifications)
+- [My Work](#my-work)
+- [Searching GitHub](#searching-github)
 - [Activity](#activity)
 - [Starred and Watched Repositories](#starred-and-watched-repositories)
 - [Favorites](#favorites)
@@ -160,7 +162,7 @@ If `gh` is installed but signed out, or its sign-in has expired, the error `gh` 
 
 The window has three panes and a status bar:
 
-1. **Repositories**, on the left: the repository list, with Favorites, Notifications, Activity, Starred Repositories and Watched Repositories at the top. See [The Repository List](#the-repository-list).
+1. **Repositories**, on the left: the repository list, with Favorites, Notifications, My Work, Activity, Starred Repositories, Watched Repositories and your saved searches at the top. See [The Repository List](#the-repository-list).
 2. **The item list**, top right: whatever the current view shows, such as issues and pull requests, branches, or releases. Its label, and the name your screen reader announces for it, is the name of the view, for example "Issues", "Branches" or "Release Assets", so you hear where you are as you move into it.
 3. **Details**, bottom right: everything about the item you are on in the list, as read-only text you can move through line by line. See [The Details Panel and Comment Navigation](#the-details-panel-and-comment-navigation).
 4. **The status bar**, at the bottom: what the view is showing, the keys that work in it, and anything GHManage has just done.
@@ -190,11 +192,12 @@ Each repository has several views. `Ctrl` and a number jumps straight to one fro
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
 | `Ctrl+Shift+N` | Notifications |
+| `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
 
 **Starred Repositories** and **Watched Repositories** are on the same menu, after Activity.
 
-Favorites, Notifications, Activity, Starred Repositories and Watched Repositories are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
+Favorites, Notifications, My Work, Activity, Starred Repositories, Watched Repositories and search results are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
 
 Several views lead into others. `Enter` on a branch shows its commits, on a release its files, on a workflow run its artifacts, on a label the issues that carry it. `Backspace` steps back up to where you came from.
 
@@ -222,7 +225,7 @@ Lists load 100 items to begin with. `Ctrl++` (**File → View More**) loads the 
 
 | Menu | What is on it |
 |------|---------------|
-| **File** | Open Repository or Address, Remove from List, Switch GitHub Account, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
+| **File** | Open Repository or Address, Remove from List, Switch GitHub Account, Refresh, Search GitHub, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
 | **Actions** | Everything that acts on the item you are on. See [The Actions Menu](#the-actions-menu). |
 | **View** | View Mode, List Mode, Sort Order, Columns, State, Filter |
 | **Help** | User Guide, Check for Updates, About GHManage |
@@ -239,13 +242,15 @@ It is in this order:
 
 1. **★ Favorites**, with how many you have, for example "★ Favorites (12)". See [Favorites](#favorites).
 2. **Notifications**, with how many are unread, for example "Notifications (12 unread)". See [Notifications](#notifications).
-3. **Activity**: your GitHub feed. See [Activity](#activity).
-4. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
-5. **Watched Repositories**: the repositories you watch, with how many.
-6. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
-7. **Your own repositories**, up to 100, each followed by its description.
+3. **My Work**: open issues and pull requests that need you, with how many once it has loaded. See [My Work](#my-work).
+4. **Activity**: your GitHub feed. See [Activity](#activity).
+5. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
+6. **Watched Repositories**: the repositories you watch, with how many.
+7. **Your saved searches**, each marked with a magnifying glass, for example "🔍 NVDA braille bugs". See [Saved searches](#saved-searches).
+8. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
+9. **Your own repositories**, up to 100, each followed by its description.
 
-The first five are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
+The first six are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
 
 The notification, starred and watched counts are asked for once the list is up, so they appear a moment after the names, without moving you from the entry you are on. If GitHub can't be asked, the entry shows just its name rather than a number that might be wrong. Opening Starred or Watched, or pressing `R` in it, brings its count up to date, so a repository you starred on the web since GHManage started is counted then.
 
@@ -275,7 +280,7 @@ A person's or organisation's address says so on the status bar; GHManage has no 
 
 **File → Remove from List…** removes the selected repository from the list. It applies to repositories you opened by address; the status bar confirms with "Removed owner/name from the pinned list." It does not delete anything on GitHub.
 
-Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The five entries at the top are always there too.
+Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The six entries at the top are always there too. A saved search can be removed the same way.
 
 ### Forks
 
@@ -519,6 +524,65 @@ The count beside **Notifications** in the repository list goes down as you read,
 
 ---
 
+## My Work
+
+**My Work** answers "what on GitHub needs me?": the open issues and pull requests, in every repository, where:
+
+- your review is requested,
+- you are assigned,
+- you opened the pull request,
+- you opened the issue,
+- you are mentioned.
+
+They come in that order, most recently updated first within each, and each is listed once, under the first reason that applies: a pull request you are asked to review and also mentioned in is a review request. Archived repositories are left out.
+
+Open it by choosing **My Work** near the top of the repository list, with `Ctrl+Shift+M` (`Cmd+Shift+M` on a Mac), or from **View → View Mode → My Work**. It takes five searches, so a few seconds; `R` asks again. The status bar adds it up, for example "My Work — 36 open: 14 review requested, 15 assigned, 7 your pull request". Each kind lists up to 100; a kind with more is marked with a +, and a search (`Ctrl+Shift+F`) with the same terms finds the rest.
+
+Each row reads why it is on the list, whether it is an issue or a pull request, its number, title, repository and when it last changed. The details panel adds the description.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open it here in GHManage, selected in its repository's issues; `Backspace` comes back |
+| `G` or `Ctrl+Shift+G` | Open its repository here |
+| `Ctrl+O` | Open it on GitHub |
+| `F` | Add it to favorites, or remove it |
+
+---
+
+## Searching GitHub
+
+**File → Search GitHub…** (`Ctrl+Shift+F`) searches all of GitHub, not just one repository. Choose what to search for, **Issues and pull requests** or **Repositories**, and type the query.
+
+The query is GitHub's own search language, exactly as on github.com, so every qualifier works:
+
+- `is:open is:issue label:bug repo:nvaccess/nvda`
+- `author:@me`, `review-requested:@me`, `mentions:@me`, `involves:@me`
+- `updated:>2026-01-01`, `created:2026-09-01..2026-09-30`
+- `org:nvaccess braille in:title`
+- for repositories: `screen reader language:python stars:>50`, `topic:accessibility archived:false`
+
+The results replace the list, best match first. Issue and pull request results read type, number, state, title, repository and when last updated; repository results read the same as Starred and Watched Repositories. The status bar says how many match: "Search — 512 issues and pull requests match repo:nvaccess/nvda braille is:open, showing 100."
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the issue, pull request or repository here in GHManage; `Backspace` comes back to the results |
+| `G` or `Ctrl+Shift+G` | Open the result's repository here |
+| `Ctrl+O` | Open it on GitHub |
+| `F` | Add it to favorites, or remove it |
+| `Ctrl++` | Load the next 100 |
+| `Ctrl+S` | Save this search |
+| `Ctrl+Shift+F` | A new search, starting from this one |
+
+GitHub returns at most the first 1,000 results of any search, and allows about 30 searches a minute. A search that matches more than 1,000 says so; narrow it to reach the rest.
+
+### Saved searches
+
+**Actions → Save Search…** (`Ctrl+S`, `Cmd+S` on a Mac) asks for a name and adds the search to the repository list, after Watched Repositories, marked with 🔍. `Enter` there runs it again, for fresh results. Saving under a name you have used replaces that search. **File → Remove from List…** with a saved search selected removes it.
+
+Saved searches are kept on this computer, beside your favorites.
+
+---
+
 ## Activity
 
 **Activity** is your GitHub feed, the one github.com shows on your dashboard: what happens in the repositories you star or watch, and what the people you follow do. That covers pushes, pull requests, issues, comments, reviews, releases, stars and forks, newest first, across every repository.
@@ -656,6 +720,7 @@ The fourth item is named for what it copies in the view you are in:
 | GitHub Pages | Copy Commit | the commit the publish was built from |
 | Published Pages | Copy Path | the page's path in the repository |
 | Favorites | Copy Name | the favorite's title, the same as Copy Title |
+| My Work, search results | Copy Number, or Copy Repository Name for repositories | `#208`, or `owner/name` |
 | Notifications | Copy Number or Repository | the issue or pull request number, or the repository for anything else |
 | Activity | Copy Number, Tag or Repository | the issue or pull request number, the release's tag, or the repository for events about a whole repository |
 | Starred, Watched | Copy Repository Name | `owner/name` |
@@ -703,6 +768,9 @@ The current mode is shown on the status bar, and the status bar says "Quick mode
 | Published Pages | page, url | size |
 | Favorites | type, repo, title, subtitle | |
 | Notifications | reason, type, title, repo, updated, status | |
+| My Work | why, type, number, title, repo, updated | author, labels |
+| Search results: issues and pull requests | type, number, state, title, repo, updated | author, labels, comments |
+| Search results: repositories | repo, description, language, stars, pushed | owner |
 | Activity | actor, action, repo, title, date | |
 | Starred and Watched Repositories | repo, description, language, stars, pushed | owner |
 
@@ -746,6 +814,7 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Add Comment… | `Ctrl+M` | Issues & PRs |
 | New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
 | Watch Settings… | `Ctrl+Shift+U` | Any view of a repository, Starred and Watched |
+| Save Search… | `Ctrl+S` | Search results |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
 | Delete | `Ctrl+D` | Labels (reads **Delete Label…**), Workflow Runs (reads **Delete Workflow Run…**) and Notifications (reads **Mark as Done**) |
 | Run Workflow on Branch… | | Workflows |
@@ -776,7 +845,9 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `F1` | Open this guide in your browser |
 | `Ctrl+1` … `Ctrl+0` | Switch view; see [Views](#views) |
 | `Ctrl+Shift+N` | Notifications |
+| `Ctrl+Shift+M` | My Work |
 | `Ctrl+Shift+A` | Activity |
+| `Ctrl+Shift+F` | Search GitHub |
 | `Ctrl+R` | Refresh the list |
 | `Ctrl++` | Load more |
 | `Ctrl+F` | Quick filter |
@@ -811,7 +882,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `O` or `Ctrl+Shift+W` | Reopen |
 | `M` or `Ctrl+M` | Add a comment |
 | `N` or `Ctrl+N` | New issue |
-| `Backspace` | Back to the labels, Notifications, the Activity feed, or the Starred or Watched list, when you came from one |
+| `Backspace` | Back to the labels, Notifications, My Work, search results, the Activity feed, or the Starred or Watched list, when you came from one |
 
 ### In Branches and Commits
 

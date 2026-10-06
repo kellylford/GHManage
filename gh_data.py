@@ -121,6 +121,11 @@ class Item:
     changed_files: int = 0
     base_branch: str = ""
     head_branch: str = ""
+    # Set when the item came from a search across repositories, which list
+    # many repos' issues together; empty in a repo's own issues list.
+    repo: str = ""
+    # My Work: why it is on the list ("review requested", "assigned", …).
+    why: str = ""
 
     @property
     def kind(self) -> str:
@@ -151,6 +156,8 @@ class Item:
             "files": str(self.changed_files) if self.is_pr else "",
             "base": self.base_branch if self.is_pr else "",
             "head": self.head_branch if self.is_pr else "",
+            "repo": self.repo,
+            "why": self.why,
         }
         return {col: mapping.get(col, "") for col in columns}
 
@@ -2832,3 +2839,128 @@ def set_watch_level(repo: str, level: str) -> None:
         _run_gh(args)
     except GhError as exc:
         raise _scope_error(exc) or exc
+
+
+# ── Search ─────────────────────────────────────────────────────────────
+#
+# GitHub's REST search endpoints, given the query exactly as typed:
+# `gh search issues` splits and re-quotes its arguments, which mangles
+# qualifiers such as review-requested:@me. Search has its own rate limit,
+# 30 requests a minute, and returns at most 1,000 results for any query.
+
+SEARCH_MAX = 1000
+
+SEARCH_ITEM_COLUMNS = [
+    "type", "number", "state", "title", "repo", "updated", "author", "labels", "comments",
+]
+SEARCH_ITEM_DEFAULT_COLUMNS = ["type", "number", "state", "title", "repo", "updated"]
+MY_WORK_COLUMNS = ["why", "type", "number", "title", "repo", "updated", "author", "labels"]
+MY_WORK_DEFAULT_COLUMNS = ["why", "type", "number", "title", "repo", "updated"]
+
+
+def _search_page(kind: str, query: str, per_page: int, page: int) -> dict:
+    raw = _run_gh([
+        "api", "-X", "GET", f"search/{kind}",
+        "-f", f"q={query}", "-f", f"per_page={per_page}", "-f", f"page={page}",
+    ])
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        raise GhError("Unexpected reply from GitHub search")
+    return data if isinstance(data, dict) else {}
+
+
+def _search(kind: str, query: str, limit: int) -> tuple[list[dict], int]:
+    """Up to ``limit`` raw results and the total GitHub says match."""
+    limit = max(1, min(limit, SEARCH_MAX))
+    per_page = min(limit, 100)
+    rows: list[dict] = []
+    total = 0
+    page = 1
+    while len(rows) < limit:
+        data = _search_page(kind, query, per_page, page)
+        total = int(data.get("total_count") or 0)
+        items = [r for r in (data.get("items") or []) if isinstance(r, dict)]
+        rows.extend(items)
+        if len(items) < per_page or len(rows) >= min(total, SEARCH_MAX):
+            break
+        page += 1
+    return rows[:limit], total
+
+
+def _repo_of(api_url: str) -> str:
+    """OWNER/NAME from https://api.github.com/repos/OWNER/NAME."""
+    tail = api_url.split("/repos/", 1)[-1] if "/repos/" in api_url else ""
+    return "/".join(tail.split("/")[:2]) if tail.count("/") >= 1 else ""
+
+
+def parse_search_item(raw: dict) -> Item:
+    """An issue or pull request from the search API, as an Item."""
+    pr = raw.get("pull_request")
+    is_pr = isinstance(pr, dict)
+    labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in raw.get("labels") or []]
+    assignees = [a.get("login", "") for a in raw.get("assignees") or [] if isinstance(a, dict)]
+    return Item(
+        number=int(raw.get("number") or 0),
+        title=raw.get("title") or "",
+        state=(raw.get("state") or "open").upper(),
+        url=raw.get("html_url") or "",
+        is_pr=is_pr,
+        author=_login_of(raw.get("user")),
+        created_at=raw.get("created_at") or "",
+        updated_at=raw.get("updated_at") or "",
+        body=raw.get("body") or "",
+        labels=labels,
+        assignees=assignees,
+        comments=int(raw.get("comments") or 0),
+        is_draft=bool(raw.get("draft")),
+        is_merged=bool(is_pr and pr.get("merged_at")),
+        repo=_repo_of(raw.get("repository_url") or ""),
+    )
+
+
+def search_issues(query: str, limit: int = 100) -> tuple[list[Item], int]:
+    """Issues and pull requests matching ``query``, best match first."""
+    rows, total = _search("issues", query, limit)
+    return [parse_search_item(r) for r in rows], total
+
+
+def search_repos(query: str, limit: int = 100) -> tuple[list[RepoEntry], int]:
+    """Repositories matching ``query``, best match first."""
+    rows, total = _search("repositories", query, limit)
+    return [_repo_entry(r) for r in rows if r.get("full_name")], total
+
+
+# My Work: what needs you, one search per reason. Earlier reasons win when
+# an item matches several — a PR you are asked to review and are also
+# mentioned in is listed once, as a review.
+MY_WORK_QUERIES = [
+    ("review requested", "is:open is:pr review-requested:@me archived:false"),
+    ("assigned", "is:open assignee:@me archived:false"),
+    ("your pull request", "is:open is:pr author:@me archived:false"),
+    ("your issue", "is:open is:issue author:@me archived:false"),
+    ("mentioned", "is:open mentions:@me archived:false"),
+]
+
+
+def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str]]:
+    """Open issues and pull requests that need you, grouped by why, most
+    recently updated first in each group; and the reasons that had more
+    than ``limit_each``, so the count can say "100+"."""
+    seen: set[str] = set()
+    out: list[Item] = []
+    capped: set[str] = set()
+    for why, query in MY_WORK_QUERIES:
+        items, total = search_issues(query + " sort:updated-desc", limit_each)
+        if total > len(items):
+            capped.add(why)
+        for item in items:
+            if item.url in seen:
+                continue
+            seen.add(item.url)
+            item.why = why
+            out.append(item)
+    order = {why: i for i, (why, _) in enumerate(MY_WORK_QUERIES)}
+    out.sort(key=lambda it: it.updated_at, reverse=True)
+    out.sort(key=lambda it: order.get(it.why, 99))
+    return out, capped
