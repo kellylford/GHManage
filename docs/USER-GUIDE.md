@@ -334,15 +334,15 @@ On a pull request in the issues list:
 |-----|--------|
 | `K` | Its checks: how many passed, failed or are still running, then each one, failures first, with its link |
 | `V` | Review it: approve, request changes, or comment, with a message |
-| `D` | Mark a draft ready for review, or an open pull request back to a draft |
+| `D` | Mark a draft ready for review, or an open pull request back to a draft, after asking |
 
 **Actions → Pull Request** has those three, and:
 
-- **Merge…** offers the ways the repository allows (a merge commit, squash, rebase) and whether to delete the branch afterwards. A draft has to be marked ready first. If GitHub won't merge it yet, because a required check or review is missing, the status bar gives GitHub's reason.
+- **Merge…** offers the ways the repository allows (a merge commit, squash, rebase) and whether to delete the branch afterwards. A draft has to be marked ready first. The status bar then says what happened: merged; or, when required checks are still running, that GitHub turned on auto-merge and will merge it when they pass; or that it accepted the merge but hasn't done it yet, as with a merge queue. If GitHub won't merge it at all, because a required review is missing say, the status bar gives GitHub's reason.
 - **Request Reviewers…** takes GitHub logins separated by commas, or a team as `org/team-name`.
 - **Update Branch…** merges the base branch into the pull request's branch, as the button on github.com does, after asking.
 
-The review form works like New Issue: `Ctrl+Enter` submits it from the message. Requesting changes or commenting needs a message; approving doesn't. After any of these the list reloads.
+`K`, `V` and `D` work from the details panel too. The review form works like New Issue: `Ctrl+Enter` submits it from the message. Requesting changes or commenting needs a message; approving doesn't. After a review, merge or change, the list reloads.
 
 When a check failed in a GitHub Actions workflow, Workflow Runs (`Ctrl+7`) and `L` on its run shows what failed.
 
@@ -625,7 +625,7 @@ An issue or pull request in a fork opens on GitHub rather than here: GHManage sh
 
 ### Saved searches
 
-**Actions → Save Search…** (`Ctrl+S`, `Cmd+S` on a Mac) asks for a name and adds the search to the repository list, after Watched Repositories, marked with 🔍. `Enter` there runs it again, for fresh results. Saving under a name you have used replaces that search. **File → Remove from List…** with a saved search selected removes it.
+**Actions → Save Search…** (`Ctrl+S`, `Cmd+S` on a Mac) asks for a name and adds the search to the repository list, after My Work, marked with 🔍. `Enter` there runs it again, for fresh results. Saving under a name you have used replaces that search. **File → Remove from List…** with a saved search selected removes it.
 
 Saved searches are kept on this computer, beside your favorites.
 
@@ -965,6 +965,15 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl+D` or `Delete` | Delete the run |
 | `Enter` on an artifact | Download it into a folder you choose |
 | `Backspace` | Artifacts or jobs back to runs |
+
+### In My Work and search results
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the issue, pull request or repository here; `Backspace` comes back |
+| `G` or `Ctrl+Shift+G` | Open its repository here |
+| `Ctrl+S` | Save the search (search results) |
+| `Ctrl+Shift+F` | A new search |
 
 ### In Labels
 

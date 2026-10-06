@@ -3192,16 +3192,21 @@ def cancel_workflow_run(repo: Optional[str], run_id: int) -> None:
 
 # ── Pull request actions ───────────────────────────────────────────────
 #
-# All go to the repo the issues list shows (the upstream, on a fork), as
-# close, reopen and comment do.
+# Each takes the pull request's own address, which gh accepts in place of a
+# number. Not number + repo: on a fork, the repo has to be resolved to its
+# upstream first, and if that lookup fails (it falls back to the fork) the
+# same number is a different pull request — the wrong one to merge.
 
 MERGE_METHODS = [("merge", "Create a merge commit"), ("squash", "Squash and merge"),
                  ("rebase", "Rebase and merge")]
 
 
-def _pr_args(number: int, repo: Optional[str]) -> list[str]:
-    effective = resolve_issue_repo(repo)
-    return [str(number), *(["--repo", effective] if effective else [])]
+def _pr_parts(pr_url: str) -> tuple[str, int]:
+    """(OWNER/NAME, number) from https://github.com/OWNER/NAME/pull/N."""
+    m = re.match(r"https?://[^/]+/([^/]+/[^/]+)/pull/(\d+)", pr_url or "")
+    if not m:
+        raise GhError(f"Not a pull request address: {pr_url!r}")
+    return m.group(1), int(m.group(2))
 
 
 @dataclass
@@ -3214,14 +3219,14 @@ class Check:
     description: str = ""
 
 
-def fetch_pr_checks(repo: Optional[str], number: int) -> list[Check]:
+def fetch_pr_checks(pr_url: str) -> list[Check]:
     """A pull request's checks, failing ones first.
 
     gh exits non-zero when checks fail (1) or are still running (8) while
     printing them all the same, so its output is read whatever it exits with.
     """
-    args = ["pr", "checks", *_pr_args(number, repo),
-            "--json", "name,state,bucket,link,workflow,description"]
+    _pr_parts(pr_url)
+    args = ["pr", "checks", pr_url, "--json", "name,state,bucket,link,workflow,description"]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
@@ -3250,10 +3255,10 @@ def fetch_pr_checks(repo: Optional[str], number: int) -> list[Check]:
     return checks
 
 
-def allowed_merge_methods(repo: Optional[str]) -> list[str]:
-    """Which of merge, squash and rebase the repository allows."""
-    effective = resolve_issue_repo(repo)
-    raw = _run_gh(["repo", "view", *([effective] if effective else []), "--json",
+def allowed_merge_methods(pr_url: str) -> list[str]:
+    """Which of merge, squash and rebase the pull request's repository allows."""
+    repo, _ = _pr_parts(pr_url)
+    raw = _run_gh(["repo", "view", repo, "--json",
                    "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"])
     try:
         data = json.loads(raw)
@@ -3264,38 +3269,54 @@ def allowed_merge_methods(repo: Optional[str]) -> list[str]:
     return [m for m, _ in MERGE_METHODS if allowed.get(m, True)]
 
 
-def merge_pr(repo: Optional[str], number: int, method: str, delete_branch: bool = False) -> None:
+def merge_pr(pr_url: str, method: str, delete_branch: bool = False) -> str:
+    """Merge, and say what actually happened: "merged"; "auto" when GitHub
+    turned on auto-merge to wait for required checks; or "queued" when it
+    accepted the request without merging yet (a merge queue)."""
     if method not in ("merge", "squash", "rebase"):
         raise ValueError(method)
-    args = ["pr", "merge", *_pr_args(number, repo), f"--{method}"]
+    _pr_parts(pr_url)
+    args = ["pr", "merge", pr_url, f"--{method}"]
     if delete_branch:
         args.append("--delete-branch")
     _run_gh(args)
+    try:
+        data = json.loads(_run_gh(["pr", "view", pr_url, "--json", "state,autoMergeRequest"]))
+    except (GhError, ValueError):
+        return "queued"
+    if data.get("state") == "MERGED":
+        return "merged"
+    return "auto" if data.get("autoMergeRequest") else "queued"
 
 
-def set_pr_ready(repo: Optional[str], number: int, ready: bool) -> None:
+def set_pr_ready(pr_url: str, ready: bool) -> None:
     """Ready for review, or (``ready=False``) back to a draft."""
-    args = ["pr", "ready", *_pr_args(number, repo)]
+    _pr_parts(pr_url)
+    args = ["pr", "ready", pr_url]
     if not ready:
         args.append("--undo")
     _run_gh(args)
 
 
-def review_pr(repo: Optional[str], number: int, kind: str, body: str = "") -> None:
+def review_pr(pr_url: str, kind: str, body: str = "") -> None:
     """Approve, request changes, or comment, as a review."""
     flag = {"approve": "--approve", "request-changes": "--request-changes",
             "comment": "--comment"}[kind]
-    args = ["pr", "review", *_pr_args(number, repo), flag]
+    _pr_parts(pr_url)
+    args = ["pr", "review", pr_url, flag]
     if body:
         args += ["--body-file", "-"]
     _run_gh(args, stdin=body or None)
 
 
-def request_reviewers(repo: Optional[str], number: int, logins: list[str]) -> None:
-    _run_gh(["pr", "edit", *_pr_args(number, repo), "--add-reviewer", ",".join(logins)])
+def request_reviewers(pr_url: str, logins: list[str]) -> None:
+    _pr_parts(pr_url)
+    _run_gh(["pr", "edit", pr_url, "--add-reviewer", ",".join(logins)])
 
 
-def update_pr_branch(repo: Optional[str], number: int) -> None:
+def update_pr_branch(pr_url: str) -> None:
     """Bring the pull request's branch up to date with its base (a merge)."""
-    effective = resolve_issue_repo(repo)
-    _api(["-X", "PUT", f"repos/{{owner}}/{{repo}}/pulls/{number}/update-branch"], effective)
+    repo, number = _pr_parts(pr_url)
+    _run_gh(["api", "-X", "PUT", f"repos/{repo}/pulls/{number}/update-branch"])
+
+

@@ -1346,7 +1346,7 @@ class MergeDialog(wx.Dialog):
         names = dict(MERGE_METHODS)
         outer = wx.BoxSizer(wx.VERTICAL)
         outer.Add(wx.StaticText(self, label=f"Merge {pr_label}"), 0, wx.ALL, 10)
-        self.method_ctrl = wx.RadioBox(self, label="How", choices=[names[m] for m in methods],
+        self.method_ctrl = wx.RadioBox(self, label="Merge method", choices=[names[m] for m in methods],
                                        majorDimension=1, style=wx.RA_SPECIFY_COLS)
         outer.Add(self.method_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
         self.delete_ctrl = wx.CheckBox(self, label="&Delete the branch afterwards")
@@ -4264,6 +4264,17 @@ class GhViewerFrame(wx.Frame):
                 and self.view_mode in GO_TO_REPO_VIEWS):
             self._go_to_event_repo()
             return
+        if self.view_mode == VIEW_ISSUES and not event.HasAnyModifiers():
+            # Pull request keys, here so they work from the details panel,
+            # where the line naming them is read.
+            action = {
+                ord("K"): self._pr_checks,
+                ord("V"): self._pr_review,
+                ord("D"): self._pr_toggle_draft,
+            }.get(key)
+            if action:
+                action()
+                return
         if self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS) and not event.HasAnyModifiers():
             action = {
                 ord("J"): self._show_run_jobs,
@@ -4371,12 +4382,6 @@ class GhViewerFrame(wx.Frame):
                 self._do_comment()
             elif key == ord("N"):
                 self._do_new_issue()
-            elif key == ord("K"):
-                self._pr_checks()
-            elif key == ord("V"):
-                self._pr_review()
-            elif key == ord("D"):
-                self._pr_toggle_draft()
             else:
                 event.Skip()
         else:
@@ -5905,7 +5910,10 @@ class GhViewerFrame(wx.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_fork_checked(self, item, parent) -> None:
-        self.__dict__.setdefault("_fork_parent", {})[item.repo] = parent
+        # parent_repo says None for "not a fork" and for "couldn't ask"; only
+        # a fork is certain enough to keep for the rest of the session.
+        if parent:
+            self.__dict__.setdefault("_fork_parent", {})[item.repo] = parent
         self._open_item_checked(item, parent)
 
     def _open_item_checked(self, item, parent) -> None:
@@ -5976,8 +5984,8 @@ class GhViewerFrame(wx.Frame):
             return
         self.saved_searches = add_saved_search(SavedSearch(name, query, kind))
         self._refresh_repo_list()
-        self._announce(f"Saved '{name}'. It is in the repository list, after Watched "
-                       "Repositories; Enter there runs it again.")
+        self._announce(f"Saved '{name}'. It is in the repository list, after My Work; "
+                       "Enter there runs it again.")
 
     # ── Pull requests ───────────────────────────────────────────────────
 
@@ -5992,19 +6000,29 @@ class GhViewerFrame(wx.Frame):
     def _pr_label(pr: Item) -> str:
         return f"#{pr.number} {pr.title}"
 
-    def _pr_in_background(self, call, done: str, error: str, reload: bool = True) -> None:
+    def _pr_in_background(self, call, done, error: str) -> None:
+        """Run ``call`` off the UI thread, then reload. ``done`` is what to
+        say, or a function of ``call``'s result giving it."""
         def worker() -> None:
             try:
-                call()
+                result = call()
             except GhError as exc:
                 wx.CallAfter(self._on_action_error, f"{error}: {exc}")
                 return
             except Exception as exc:  # noqa: BLE001
                 wx.CallAfter(self._on_action_error, f"{error}: {type(exc).__name__}: {exc}")
                 return
-            wx.CallAfter(self._on_action_done if reload else self._announce, done)
+            wx.CallAfter(self._on_action_done, done(result) if callable(done) else done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _open_pr(self) -> Item | None:
+        """The selected pull request, if it is still open; else say why not."""
+        pr = self._focused_pr()
+        if pr is not None and pr.state != "OPEN":
+            self._announce(f"#{pr.number} is {pr.state_display.lower()}.")
+            return None
+        return pr
 
     def _pr_checks(self) -> None:
         """K: the checks on a pull request, failures first."""
@@ -6016,7 +6034,7 @@ class GhViewerFrame(wx.Frame):
 
         def worker() -> None:
             try:
-                checks = fetch_pr_checks(repo, pr.number)
+                checks = fetch_pr_checks(pr.url)
             except GhError as exc:
                 wx.CallAfter(self._announce, f"Couldn't load the checks: {exc}")
                 return
@@ -6033,7 +6051,7 @@ class GhViewerFrame(wx.Frame):
 
     def _pr_review(self) -> None:
         """V: approve, request changes, or comment."""
-        pr = self._focused_pr()
+        pr = self._open_pr()
         if pr is None:
             return
         dlg = ReviewDialog(self, self._pr_label(pr))
@@ -6047,32 +6065,38 @@ class GhViewerFrame(wx.Frame):
         said = {"approve": "Approved", "request-changes": "Requested changes on",
                 "comment": "Commented on"}[kind]
         self._announce(f"Submitting your review of #{pr.number}…")
-        self._pr_in_background(lambda: review_pr(self.repo, pr.number, kind, body),
+        url = pr.url
+        self._pr_in_background(lambda: review_pr(url, kind, body),
                                f"{said} #{pr.number}", f"Couldn't review #{pr.number}")
 
     def _pr_merge(self) -> None:
         """Actions ▸ Pull Request ▸ Merge: how, from what the repo allows."""
-        pr = self._focused_pr()
+        pr = self._open_pr()
         if pr is None:
-            return
-        if pr.state != "OPEN":
-            self._announce(f"#{pr.number} is {pr.state_display.lower()}, so it can't be merged.")
             return
         if pr.is_draft:
             self._announce(f"#{pr.number} is a draft; mark it ready for review first (D).")
             return
         repo = self.repo
-        self._announce(f"Checking how {repo} lets pull requests merge…")
+        self._announce("Checking how this repository lets pull requests merge…")
 
         def worker() -> None:
             try:
-                methods = allowed_merge_methods(repo)
+                methods = allowed_merge_methods(pr.url)
             except GhError as exc:
                 wx.CallAfter(self._announce, f"Couldn't check the merge settings: {exc}")
                 return
             wx.CallAfter(self._choose_merge, repo, pr, methods)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    _MERGE_OUTCOMES = {
+        "merged": "Merged #{n}",
+        "auto": "#{n} will merge by itself once its required checks pass — "
+                "GitHub turned on auto-merge",
+        "queued": "GitHub took the merge of #{n} but hasn't merged it yet; it may be "
+                  "in a merge queue. Refresh to see",
+    }
 
     def _choose_merge(self, repo: str, pr: Item, methods: list[str]) -> None:
         if self.repo != repo:
@@ -6090,25 +6114,34 @@ class GhViewerFrame(wx.Frame):
         finally:
             dlg.Destroy()
         self._announce(f"Merging #{pr.number}…")
-        self._pr_in_background(lambda: merge_pr(repo, pr.number, method, delete),
-                               f"Merged #{pr.number}", f"Couldn't merge #{pr.number}")
+        url, n = pr.url, pr.number
+        self._pr_in_background(lambda: merge_pr(url, method, delete),
+                               lambda outcome: self._MERGE_OUTCOMES[outcome].format(n=n),
+                               f"Couldn't merge #{n}")
 
     def _pr_toggle_draft(self) -> None:
-        """D: a draft becomes ready for review; an open PR goes back to draft."""
-        pr = self._focused_pr()
+        """D: a draft becomes ready for review; an open PR goes back to draft.
+
+        Asks first: others see the change, and D is one stray key away.
+        """
+        pr = self._open_pr()
         if pr is None:
-            return
-        if pr.state != "OPEN":
-            self._announce(f"#{pr.number} is {pr.state_display.lower()}.")
             return
         ready = pr.is_draft
         what = "ready for review" if ready else "back to a draft"
+        confirm = wx.MessageBox(
+            f"Mark {self._pr_label(pr)} {what}?", "Pull Request",
+            wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
         self._announce(f"Marking #{pr.number} {what}…")
-        self._pr_in_background(lambda: set_pr_ready(self.repo, pr.number, ready),
+        url = pr.url
+        self._pr_in_background(lambda: set_pr_ready(url, ready),
                                f"#{pr.number} is {what}", f"Couldn't change #{pr.number}")
 
     def _pr_request_reviewers(self) -> None:
-        pr = self._focused_pr()
+        pr = self._open_pr()
         if pr is None:
             return
         dlg = wx.TextEntryDialog(
@@ -6125,12 +6158,13 @@ class GhViewerFrame(wx.Frame):
             self._announce("No reviewers named.")
             return
         self._announce(f"Requesting reviews from {', '.join(logins)}…")
-        self._pr_in_background(lambda: request_reviewers(self.repo, pr.number, logins),
+        url = pr.url
+        self._pr_in_background(lambda: request_reviewers(url, logins),
                                f"Requested reviews on #{pr.number} from {', '.join(logins)}",
                                f"Couldn't request reviewers on #{pr.number}")
 
     def _pr_update_branch(self) -> None:
-        pr = self._focused_pr()
+        pr = self._open_pr()
         if pr is None:
             return
         confirm = wx.MessageBox(
@@ -6141,7 +6175,8 @@ class GhViewerFrame(wx.Frame):
         if confirm != wx.YES:
             return
         self._announce(f"Updating the branch of #{pr.number}…")
-        self._pr_in_background(lambda: update_pr_branch(self.repo, pr.number),
+        url = pr.url
+        self._pr_in_background(lambda: update_pr_branch(url),
                                f"Updated the branch of #{pr.number}",
                                f"Couldn't update the branch of #{pr.number}")
 
@@ -6486,6 +6521,7 @@ class GhViewerFrame(wx.Frame):
         self._account_gen += 1
         self._search = None
         self._search_total = 0
+        self.__dict__.pop("_fork_parent", None)  # the new account may see other repos
         self.repo = None
         self._return_to = None
         self._pending_target = None

@@ -211,8 +211,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   J/L/E/X are in `on_char_hook` so they work from the details panel.
 - **Pull request actions** (Actions ▸ Pull Request; K/V/D in the issues list, list only
   like C/O/M) — gh_data `fetch_pr_checks` reads `gh pr checks --json` **whatever gh exits
-  with** (1 = a check failed, 8 = still running); `review_pr` sends the message on stdin;
-  everything resolves the fork's upstream via `_pr_args`. `format_checks` is pure.
+  with** (1 = a check failed, 8 = still running); `review_pr` sends the message on stdin.
+  Every PR call takes the PR's **address** (`pr.url`), never number + repo: resolving a
+  fork's upstream can fail and fall back to the fork, where the same number is another PR.
+  `merge_pr` reports what happened ("merged", "auto" when GitHub enabled auto-merge,
+  "queued") from `gh pr view --json state,autoMergeRequest`. K/V/D live in `on_char_hook`
+  (they work from the details panel); D asks first. `format_checks` is pure.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
