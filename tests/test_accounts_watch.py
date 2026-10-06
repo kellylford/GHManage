@@ -114,6 +114,8 @@ def _frame(view, item=None, pane=1, repo="o/open", listed="o/listed"):
     f._current_focus = lambda: None
     f._focused_item = lambda: item
     f._announce = f.announced.append
+    f._repo_in_front = lambda: Frame._repo_in_front(f)
+    f._repo_in_front_from = lambda: Frame._repo_in_front_from(f)
     return f
 
 
@@ -130,7 +132,7 @@ def test_watch_target_from_starred():
     assert Frame._watch_target(_frame(ghviewer.VIEW_STARRED, star)) == "o/star"
 
 
-def test_no_watch_target_in_activity():
+def test_no_watch_target_in_activity_with_nothing_selected():
     assert Frame._watch_target(_frame(ghviewer.VIEW_ACTIVITY)) is None
 
 

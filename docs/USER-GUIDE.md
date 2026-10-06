@@ -344,6 +344,14 @@ Closing and reopening ask first, naming the item: "Close issue #12?" with its ti
 
 **Actions → New Issue…** (`Ctrl+N`, or `N` in the issues list) opens a form with a title and a description. Write the description in Markdown, as on github.com. `Enter` in the title moves on to the description. In the description `Enter` starts a new line, so `Ctrl+Enter` (`Cmd+Enter` on a Mac) creates the issue from anywhere in the form, as does the **Create Issue** button; `Tab` moves between the fields, and on Windows `Alt+T` and `Alt+D` jump to them.
 
+New Issue works wherever you are, for the repository in front of you:
+
+- in a view of the open repository, that repository;
+- with focus in the repository list, the repository selected there;
+- in Notifications, My Work, Activity, search results, Starred, Watched or Favorites, the selected row's repository.
+
+When that isn't the repository open, GHManage opens it on its issues first, so the new issue shows in its list; from Notifications, My Work, Activity, search results, Starred or Watched, `Backspace` afterwards comes back to where you were. With no repository in front of you, the status bar says so.
+
 The form names the repository the issue goes to. On a fork that is the upstream repository, since that is where the issues you see in the list live.
 
 Once GitHub has it, the issues list reloads with the new issue selected, unless you have moved to another view or repository in the meantime; then the status bar just says it was created. While one issue is being created, `Ctrl+N` waits for it, so the same text can't be filed twice. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
@@ -720,7 +728,7 @@ Each row shows the repository's name, description, main language, stars, and whe
 
 **Actions → Watch Settings…** (`Ctrl+Shift+U`) sets how GitHub notifies you about a repository: **Participating and @mentions** (only what you take part in, GitHub's default), **All Activity** (watching: every issue, pull request, release and discussion), or **Ignore** (nothing, not even mentions). The current setting is selected when the list opens.
 
-It acts on the repository you have open, or on the repository selected in Starred or Watched, or in the repository list when that has focus. GitHub's **Custom** setting, to be told about only some kinds of activity, isn't available to programs, so for that use the repository's Watch button on github.com.
+It acts on the repository in front of you, the same one New Issue uses: the open repository, the one selected in the repository list when that has focus, or the selected row's repository in Notifications, My Work, Activity, search results, Starred, Watched or Favorites. GitHub's **Custom** setting, to be told about only some kinds of activity, isn't available to programs, so for that use the repository's Watch button on github.com.
 
 The first time, it will most likely tell you it needs `gh`'s "notifications" permission; see [Permissions gh does not ask for](#permissions-gh-does-not-ask-for).
 
@@ -884,9 +892,10 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Close Issue/PR | `Ctrl+W` | Issues & PRs |
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
-| New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
+| New Issue… | `Ctrl+N` | Everywhere, for the repository in front of you; shows the new issue in its Issues & PRs |
+| Search This Repository… | `Ctrl+Shift+S` | Everywhere, for the repository in front of you: a search starting `repo:owner/name` |
 | Pull Request ▸ Checks, Review…, Merge…, Ready for Review or Back to Draft, Request Reviewers…, Update Branch… | `K`, `V`, `D` in the list | Issues & PRs, on a pull request |
-| Watch Settings… | `Ctrl+Shift+U` | Any view of a repository, Starred and Watched |
+| Watch Settings… | `Ctrl+Shift+U` | Everywhere, for the repository in front of you |
 | Save Search… | `Ctrl+S` | Search results |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
 | Delete | `Ctrl+D` | Labels (reads **Delete Label…**), Workflow Runs (reads **Delete Workflow Run…**) and Notifications (reads **Mark as Done**) |
@@ -909,7 +918,7 @@ The **Applications** key, `Shift+F10`, or a right-click opens a context menu (on
 
 In the item list it starts with what `Enter` does in that view, for example **Show Commits** on a branch or **Open Here** on a search result, and then offers everything the Actions menu offers in that view, with Copy and Pull Request as submenus. It is built from the Actions menu each time, so the two always agree.
 
-In the repository list, a repository's menu has **Open**, **Open on GitHub**, **New Issue…**, **Search This Repository…** (a search starting `repo:owner/name`), **Watch Settings…**, Copy, and **Remove from List…** for a repository you opened by address. New Issue opens the repository first, so the new issue shows in its list. A saved search's menu has **Run Search** and **Remove Saved Search**; Favorites and the other entries at the top have **Open**.
+In the repository list, a repository's menu has **Open**, **Open on GitHub**, **New Issue…**, **Search This Repository…** (a search starting `repo:owner/name`), **Watch Settings…**, Copy, and **Remove from List…** for a repository you opened by address. These are the same commands as on the Actions menu, for the repository selected. A saved search's menu has **Run Search** and **Remove Saved Search**; Favorites and the other entries at the top have **Open**.
 
 ---
 
@@ -933,7 +942,8 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl++` | Load more |
 | `Ctrl+F` | Quick filter |
 | `Ctrl+G` | Go to an issue or pull request by number |
-| `Ctrl+N` | New issue in the current repository |
+| `Ctrl+N` | New issue in the repository in front of you |
+| `Ctrl+Shift+S` | Search the repository in front of you |
 | `Ctrl+O` | Open the selected item on GitHub |
 | `Ctrl+Shift+C` | Copy the selected item's link |
 | `Ctrl+Shift+L` | Copy a Markdown link to it |

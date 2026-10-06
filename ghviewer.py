@@ -606,11 +606,8 @@ ID_USER_GUIDE = wx.NewIdRef()
 ID_GO_TO_EVENT_REPO = wx.NewIdRef()
 ID_NEW_LABEL = wx.NewIdRef()
 ID_DELETE_LABEL = wx.NewIdRef()
-ID_BROWSE_LABEL = wx.NewIdRef()
 # Actions menu. ID_DELETE_ITEM is one item that deletes whatever the current
 # view can delete, so a single Ctrl+D covers labels and workflow runs alike.
-# The Run Workflow / Download Artifact entries get their own ids because the
-# right-click menus bind ID_RUN_WORKFLOW and ID_DOWNLOAD_ARTIFACT on the popup.
 ID_DELETE_ITEM = wx.NewIdRef()
 ID_ACT_RUN_WORKFLOW = wx.NewIdRef()
 ID_ACT_DOWNLOAD_ARTIFACT = wx.NewIdRef()
@@ -620,12 +617,15 @@ ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
-ID_RUN_WORKFLOW = wx.NewIdRef()
-ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
 ID_SEARCH = wx.NewIdRef()
+# Context menus: Enter's action in the item list, and the repository list's own.
+ID_CTX_OPEN = wx.NewIdRef()
+ID_REPO_OPEN = wx.NewIdRef()
+ID_REPO_BROWSER = wx.NewIdRef()
+ID_SEARCH_REPO = wx.NewIdRef()
 ID_RUN_JOBS = wx.NewIdRef()
 ID_PR_CHECKS = wx.NewIdRef()
 ID_PR_REVIEW = wx.NewIdRef()
@@ -1228,7 +1228,8 @@ class SearchDialog(wx.Dialog):
 
     KINDS = [(KIND_ISSUES, "Issues and pull requests"), (KIND_REPOS, "Repositories")]
 
-    def __init__(self, parent: wx.Window, kind: str = KIND_ISSUES, query: str = "") -> None:
+    def __init__(self, parent: wx.Window, kind: str = KIND_ISSUES, query: str = "",
+                 select: bool = True) -> None:
         super().__init__(parent, title="Search GitHub",
                          style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         outer = wx.BoxSizer(wx.VERTICAL)
@@ -1262,7 +1263,9 @@ class SearchDialog(wx.Dialog):
         self.SetMinSize((520, -1))
         self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
         wx.CallAfter(self.query_ctrl.SetFocus)
-        wx.CallAfter(self.query_ctrl.SelectAll)
+        # The last search, selected so typing replaces it; or a start such as
+        # "repo:owner/name ", with the cursor after it to go on typing.
+        wx.CallAfter(self.query_ctrl.SelectAll if select else self.query_ctrl.SetInsertionPointEnd)
 
     def _on_ok(self, event: wx.CommandEvent) -> None:
         if self.query_ctrl.GetValue().strip():
@@ -1790,6 +1793,8 @@ class GhViewerFrame(wx.Frame):
         pr_menu.Append(ID_PR_REVIEWERS, "Request &Reviewers…")
         pr_menu.Append(ID_PR_UPDATE, "&Update Branch…")
         self._act_pr = actions_menu.AppendSubMenu(pr_menu, "&Pull Request")
+        self._act_search_repo = actions_menu.Append(
+            ID_SEARCH_REPO, "Search This Repository…\tCtrl+Shift+S")
         self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
         self._act_save_search = actions_menu.Append(ID_SAVE_SEARCH, "Save Search…\tCtrl+S")
         actions_menu.AppendSeparator()
@@ -2134,7 +2139,10 @@ class GhViewerFrame(wx.Frame):
 
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
-        self._act_new_issue.Enable(in_repo)
+        # Always on: they act on the repository in front of you (see
+        # _repo_in_front) and say so when there is none.
+        self._act_new_issue.Enable(True)
+        self._act_search_repo.Enable(True)
         self._act_pr.Enable(issues)
         # Always on: it can act on the repo selected in the repo list from any
         # view, and says "Select a repository first" when there is none.
@@ -2257,6 +2265,7 @@ class GhViewerFrame(wx.Frame):
     def _bind_events(self) -> None:
         self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_repo_activated, self.repo_list)
         self.repo_list.Bind(wx.EVT_CHAR_HOOK, self.on_repo_key_down)
+        self.repo_list.Bind(wx.EVT_CONTEXT_MENU, self.on_repo_context_menu)
         # The two widgets emit different event families, so the bindings differ
         # even though the handlers are shared. The handlers below take their
         # row from list_ctrl.GetFirstSelected() rather than off the event, which
@@ -2275,7 +2284,10 @@ class GhViewerFrame(wx.Frame):
         else:
             self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_item_selected, self.list_ctrl)
             self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_item_activated, self.list_ctrl)
-            self.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self.on_item_context_menu, self.list_ctrl)
+            # EVT_CONTEXT_MENU, not EVT_LIST_ITEM_RIGHT_CLICK: the latter is the
+            # mouse alone, and the Applications key and Shift+F10 must open the
+            # menu too. A right-click on a row raises this as well.
+            self.list_ctrl.Bind(wx.EVT_CONTEXT_MENU, self.on_item_context_menu)
             self.Bind(wx.EVT_LIST_KEY_DOWN, self.on_list_key_down, self.list_ctrl)
         self.details_text.Bind(wx.EVT_CHAR_HOOK, self.on_details_key_down)
         # Frame-level, so Insert/Delete in the Labels view work wherever focus
@@ -2294,6 +2306,10 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda e: self._switch_account_flow(), id=ID_SWITCH_ACCOUNT)
         self.Bind(wx.EVT_MENU, lambda e: self._watch_settings_flow(), id=ID_WATCH_SETTINGS)
         self.Bind(wx.EVT_MENU, lambda e: self._search_flow(), id=ID_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self.on_item_activated(None), id=ID_CTX_OPEN)
+        self.Bind(wx.EVT_MENU, lambda e: self._activate_repo_entry(), id=ID_REPO_OPEN)
+        self.Bind(wx.EVT_MENU, lambda e: self._repo_entry_action("browser"), id=ID_REPO_BROWSER)
+        self.Bind(wx.EVT_MENU, lambda e: self._search_repo_in_front(), id=ID_SEARCH_REPO)
         self.Bind(wx.EVT_MENU, lambda e: self._search_from_view_menu(), id=ID_VIEW_SEARCH_RESULTS)
         self.Bind(wx.EVT_MENU, lambda e: self._show_run_jobs(), id=ID_RUN_JOBS)
         self.Bind(wx.EVT_MENU, lambda e: self._pr_checks(), id=ID_PR_CHECKS)
@@ -4011,63 +4027,195 @@ class GhViewerFrame(wx.Frame):
         else:
             self._announce("No URL for this item")
 
-    def on_item_context_menu(self, event) -> None:  # wx.ListEvent / DataViewEvent
-        """Right-click / Menu key — offer item-specific actions."""
+    # What Enter does in each view, for the first entry of the list's context
+    # menu. None where Enter opens the browser, which the Actions menu's own
+    # Open in Browser already offers.
+    _OPEN_LABELS = {
+        VIEW_BRANCHES: "Show Commits",
+        VIEW_WORKFLOWS: "Run on a Branch…",
+        VIEW_WORKFLOW: "List Artifacts",
+        VIEW_JOBS: "Read Log",
+        VIEW_ARTIFACTS: "Download…",
+        VIEW_RELEASES: "List Files",
+        VIEW_LABELS: "List Issues and PRs with This Label",
+        VIEW_PAGES: "Browse Published Pages",
+        VIEW_NOTIFICATIONS: "Open",
+        VIEW_MY_WORK: "Open Here",
+        VIEW_SEARCH_ISSUES: "Open Here",
+        VIEW_SEARCH_REPOS: "Open Here",
+        VIEW_STARRED: "Open Here",
+        VIEW_WATCHED: "Open Here",
+    }
+
+    def _context_entries(self) -> list:
+        """The item list's context menu, as data: Enter's action first, then
+        everything the Actions menu offers in this view.
+
+        Built from the Actions menu itself rather than listed again, so the two
+        can't drift apart — a new action there is in the context menu too, and
+        one greyed out there is left out here. Entries are ("item", id, label),
+        ("sub", label, entries) and ("sep",).
+        """
+        self._update_actions_menu()  # the enables must be this view's, now
+        entries: list = []
         item = self._focused_item()
-        if self.view_mode == VIEW_NOTIFICATIONS and isinstance(item, Notification):
-            menu = wx.Menu()
-            menu.Append(ID_OPEN_BROWSER, "Open in browser")
-            menu.Append(ID_MARK_READ, "Mark as read")
-            menu.Append(ID_DELETE_ITEM, "Mark as done")
-            menu.Append(ID_UNSUBSCRIBE, "Unsubscribe from thread")
-            menu.Append(ID_GO_TO_EVENT_REPO, f"Go to {item.repo}".replace("&", "&&"))
-            self.list_ctrl.PopupMenu(menu)
-            menu.Destroy()
+        label = self._OPEN_LABELS.get(self.view_mode)
+        if isinstance(item, Artifact) and item.expired:
+            label = None  # gone from GitHub; Enter would only say so
+        # Actions entries that do what the Enter entry already does.
+        same_as_enter = {ID_ACT_RUN_WORKFLOW, ID_ACT_DOWNLOAD_ARTIFACT}
+        if label and item is not None:
+            entries.append(("item", ID_CTX_OPEN, f"{label}\tEnter"))
+            entries.append(("sep",))
+        else:
+            same_as_enter = set()
+        if isinstance(item, Artifact) and item.expired:
+            same_as_enter = {ID_ACT_DOWNLOAD_ARTIFACT}
+
+        def walk(menu) -> list:
+            out: list = []
+            for mi in menu.GetMenuItems():
+                if mi.IsSeparator():
+                    if out and out[-1] != ("sep",):
+                        out.append(("sep",))
+                    continue
+                if not mi.IsEnabled() or mi.GetId() in same_as_enter:
+                    continue
+                sub = mi.GetSubMenu()
+                if sub is not None:
+                    inner = walk(sub)
+                    if inner:
+                        out.append(("sub", mi.GetItemLabel(), inner))
+                else:
+                    out.append(("item", mi.GetId(), mi.GetItemLabel()))
+            while out and out[-1] == ("sep",):
+                out.pop()
+            return out
+
+        entries += walk(self._actions_menu)
+        while entries and entries[-1] == ("sep",):
+            entries.pop()
+        return entries
+
+    @staticmethod
+    def _menu_from_entries(entries: list) -> wx.Menu:
+        menu = wx.Menu()
+        for entry in entries:
+            if entry[0] == "sep":
+                menu.AppendSeparator()
+            elif entry[0] == "sub":
+                menu.AppendSubMenu(GhViewerFrame._menu_from_entries(entry[2]), entry[1])
+            else:
+                menu.Append(entry[1], entry[2])
+        return menu
+
+    def _popup(self, window: wx.Window, menu: wx.Menu, event=None) -> None:
+        """Show ``menu`` by the selection when opened from the keyboard, where
+        the mouse is when opened by a click."""
+        pos = wx.DefaultPosition
+        from_keyboard = event is None or (
+            hasattr(event, "GetPosition") and event.GetPosition() == wx.DefaultPosition)
+        if from_keyboard and window is self.list_ctrl and not IS_MAC:
+            row = self.list_ctrl.GetFirstSelected()
+            if row >= 0:
+                self.list_ctrl.EnsureVisible(row)
+                pos = self.list_ctrl.GetItemRect(row).GetBottomLeft()
+        window.PopupMenu(menu, pos)
+        menu.Destroy()
+
+    def on_item_context_menu(self, event) -> None:  # ContextMenuEvent / DataViewEvent
+        """Applications key, Shift+F10 or right-click in the item list."""
+        if IS_MAC and hasattr(event, "GetItem"):
+            # A right- or Ctrl-click acts on the row clicked, which on macOS
+            # is not selected by the click itself.
+            clicked = event.GetItem()
+            if clicked and clicked.IsOk():
+                row = self.list_ctrl.ItemToRow(clicked)
+                if row >= 0 and row != self.list_ctrl.GetFirstSelected():
+                    self.list_ctrl.Select(row)
+                    self._show_details(row)
+        # Copy and Watch Settings act on the pane with focus; a click doesn't
+        # always move it, so the menu's commands could otherwise reach the
+        # other list.
+        self.list_ctrl.SetFocus()
+        clicked_off_rows = (
+            not IS_MAC and hasattr(event, "GetPosition")
+            and event.GetPosition() != wx.DefaultPosition and self._focused_item() is None
+        )
+        if clicked_off_rows:
+            return  # a click on empty space: nothing there to act on
+        entries = self._context_entries()
+        if not entries:
+            self._announce("Nothing to do here.")
             return
-        if self.view_mode == VIEW_ACTIVITY and isinstance(item, ActivityEvent):
-            menu = wx.Menu()
-            menu.Append(ID_OPEN_BROWSER, "Open in browser")
-            menu.Append(ID_GO_TO_EVENT_REPO, f"Go to {item.repo}".replace("&", "&&"))
-            self.list_ctrl.PopupMenu(menu)
-            menu.Destroy()
+        self._popup(self.list_ctrl, self._menu_from_entries(entries), event)
+
+    def _repo_context_entries(self, data) -> list:
+        """The repository list's context menu, for the entry ``data``."""
+        if is_repo_entry(data):
+            entries = [
+                ("item", ID_REPO_OPEN, "Open\tEnter"),
+                ("item", ID_REPO_BROWSER, "Open on GitHub"),
+                ("sep",),
+                ("item", ID_NEW_ISSUE, "New Issue…\tCtrl+N"),
+                ("item", ID_SEARCH_REPO, "Search This Repository…\tCtrl+Shift+S"),
+                ("item", ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U"),
+                ("sep",),
+                ("sub", "Copy", [
+                    ("item", ID_COPY_LINK, "Copy Link\tCtrl+Shift+C"),
+                    ("item", ID_COPY_MARKDOWN, "Copy Markdown Link\tCtrl+Shift+L"),
+                    ("item", ID_COPY_IDENT, "Copy Repository Name\tCtrl+Shift+I"),
+                ]),
+            ]
+            if data in self._pinned_repos:
+                entries += [("sep",), ("item", ID_REMOVE_REPO, "Remove from List")]
+            return entries
+        if isinstance(data, str) and data.startswith(SEARCH_ENTRY_PREFIX):
+            return [("item", ID_REPO_OPEN, "Run Search\tEnter"),
+                    ("item", ID_REMOVE_REPO, "Remove Saved Search")]
+        if data:
+            return [("item", ID_REPO_OPEN, "Open\tEnter")]
+        return []
+
+    def on_repo_context_menu(self, event: wx.ContextMenuEvent) -> None:
+        """Applications key, Shift+F10 or right-click in the repository list."""
+        pos = event.GetPosition()
+        if pos != wx.DefaultPosition:
+            # A click: act on the entry clicked, which a right-click on a list
+            # box does not select by itself.
+            hit = self.repo_list.HitTest(self.repo_list.ScreenToClient(pos))
+            if hit != wx.NOT_FOUND:
+                self.repo_list.SetSelection(hit)
+        # Copy and Watch Settings act on the pane with focus, and a right-click
+        # on a list box doesn't move it there by itself.
+        self.repo_list.SetFocus()
+        idx = self.repo_list.GetSelection()
+        data = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
+        entries = self._repo_context_entries(data)
+        if not entries:
             return
-        if self.view_mode == VIEW_WORKFLOWS and isinstance(item, Workflow):
-            menu = wx.Menu()
-            menu.Append(ID_RUN_WORKFLOW, "Run on branch…")
-            menu.Bind(
-                wx.EVT_MENU,
-                lambda evt, wf=item: self._run_workflow_flow(wf),
-                id=ID_RUN_WORKFLOW,
-            )
-            self.list_ctrl.PopupMenu(menu)
-            menu.Destroy()
-        elif self.view_mode == VIEW_LABELS:
-            menu = wx.Menu()
-            if isinstance(item, Label):
-                menu.Append(ID_BROWSE_LABEL, "Browse issues && PRs with this label")
-                menu.Bind(
-                    wx.EVT_MENU,
-                    lambda evt, lb=item: self._browse_label(lb),
-                    id=ID_BROWSE_LABEL,
-                )
-            menu.Append(ID_NEW_LABEL, "New label…")
-            menu.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
-            if isinstance(item, Label):
-                menu.Append(ID_DELETE_LABEL, "Delete label…")
-                menu.Bind(wx.EVT_MENU, self.on_delete_label, id=ID_DELETE_LABEL)
-            self.list_ctrl.PopupMenu(menu)
-            menu.Destroy()
-        elif self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
-            menu = wx.Menu()
-            dl = menu.Append(ID_DOWNLOAD_ARTIFACT, "Download…")
-            dl.Enable(not item.expired)
-            menu.Bind(
-                wx.EVT_MENU,
-                lambda evt, art=item: self._download_artifact_flow(art),
-                id=ID_DOWNLOAD_ARTIFACT,
-            )
-            self.list_ctrl.PopupMenu(menu)
-            menu.Destroy()
+        self._popup(self.repo_list, self._menu_from_entries(entries), event)
+
+    def _search_repo_in_front(self) -> None:
+        """Actions ▸ Search This Repository (Ctrl+Shift+S): a search that
+        starts repo:owner/name, for the repository in front of you."""
+        repo = self._repo_in_front()
+        if not repo:
+            self._announce("Select a repository first: Search This Repository needs one.")
+            return
+        self._search_flow(prefill=(KIND_ISSUES, f"repo:{repo} "))
+
+    def _repo_entry_action(self, action: str) -> None:
+        """A repository-list context menu action, on the repo selected there."""
+        idx = self.repo_list.GetSelection()
+        name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
+        if not is_repo_entry(name):
+            self._announce("Select a repository first.")
+            return
+        if action == "browser":
+            url = f"https://github.com/{name}"
+            webbrowser.open(url)
+            self._announce(f"Opened {name} on GitHub")
 
     # ── Run a workflow (workflow_dispatch) ──────────────────────────────
 
@@ -5558,6 +5706,35 @@ class GhViewerFrame(wx.Frame):
         dlg.Destroy()
 
     def on_new_issue(self, event: wx.CommandEvent) -> None:
+        self._new_issue_in_front()
+
+    def _new_issue_in_front(self) -> None:
+        """Actions ▸ New Issue (Ctrl+N), for the repository in front of you.
+
+        Already on that repository's issues, or in another of its views, the
+        issue is created there, as before. Anywhere else the repository is
+        opened on its issues first, so the new issue lands in a list you can
+        see: from a row of Notifications, My Work, Activity, search results,
+        Starred or Watched by the same path as Enter, so Backspace comes back;
+        from the repository list or Favorites, as choosing it there would.
+        """
+        if self._issue_busy:
+            # Before any switching: moving away would also cost the issue
+            # being created its landing in the list.
+            self._announce("Already creating an issue — wait for it to finish.")
+            return
+        repo, source = self._repo_in_front_from()
+        if not repo:
+            self._announce("Select a repository first: New Issue needs one.")
+            return
+        here = repo == self.repo and self.view_mode not in REPOLESS_VIEWS
+        if here and (source == "open" or self.view_mode == VIEW_ISSUES):
+            self._do_new_issue()
+            return
+        if source == "row" and self.view_mode != VIEW_FAVORITES:
+            self._open_repo_from_list(repo, self._focused_item())
+        else:
+            self._select_repo(repo)
         self._do_new_issue()
 
     def _do_new_issue(self) -> None:
@@ -5928,10 +6105,10 @@ class GhViewerFrame(wx.Frame):
     def _saved_search(self, name: str) -> SavedSearch | None:
         return next((s for s in self.saved_searches if s.name == name), None)
 
-    def _search_flow(self) -> None:
+    def _search_flow(self, prefill: tuple[str, str] | None = None) -> None:
         """File ▸ Search GitHub (Ctrl+Shift+F)."""
-        kind, query = self._search or (KIND_ISSUES, "")
-        dlg = SearchDialog(self, kind, query)
+        kind, query = prefill or self._search or (KIND_ISSUES, "")
+        dlg = SearchDialog(self, kind, query, select=prefill is None)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -6359,21 +6536,38 @@ class GhViewerFrame(wx.Frame):
         (WATCH_IGNORE, "Ignore — nothing, not even @mentions"),
     ]
 
-    def _watch_target(self) -> str | None:
-        """The repository Watch Settings is about: the one selected in the
-        repo list when that has focus, the one selected in Starred or
-        Watched, else the one open."""
+    def _repo_in_front(self) -> str | None:
+        """The repository the repository actions (New Issue, Search This
+        Repository, Watch Settings) are about — the one in front of you:
+
+        - the repository selected in the repository list, when that has focus;
+        - in a list across repositories (Notifications, My Work, Activity,
+          search results, Starred, Watched), the selected row's repository;
+        - otherwise the repository open.
+        """
+        return self._repo_in_front_from()[0]
+
+    def _repo_in_front_from(self) -> tuple[str | None, str]:
+        """``_repo_in_front`` and where it came from: "list" (the repository
+        list), "row" (the selected row of a list across repositories) or
+        "open" (the repository open). Opening it differs by source: from a
+        row, Backspace should come back to that row."""
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
             if is_repo_entry(name):
-                return name
+                return name, "list"
         item = self._focused_item()
-        if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):
-            return item.name
-        if self.view_mode not in REPOLESS_VIEWS:
-            return self.repo
-        return None
+        if self.view_mode in REPOLESS_VIEWS:
+            if isinstance(item, RepoEntry):
+                return item.name, "row"
+            if isinstance(item, FavoriteEntry):
+                return (item.repo or None), "row"
+            return (getattr(item, "repo", "") or None), "row"
+        return self.repo, "open"
+
+    def _watch_target(self) -> str | None:
+        return self._repo_in_front()
 
     def _watch_settings_flow(self) -> None:
         """Actions ▸ Watch Settings (Ctrl+Shift+U): how GitHub notifies you

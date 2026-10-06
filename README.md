@@ -138,7 +138,8 @@ python ghviewer.py --repo owner/repo-name
 | `Ctrl+Shift+O` | Open a repository, or an issue, PR, commit, release, run or branch, by its address |
 | `Ctrl+Shift+C` / `Ctrl+Shift+L` | Copy the selected item's link / a Markdown link to it |
 | `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
-| `Ctrl+N` | New issue in the current repository |
+| `Ctrl+N` | New issue — in the open repository, or the one selected in the repo list or the current list |
+| `Ctrl+Shift+S` | Search the repository in front of you |
 | `Ctrl+Shift+F` | Search GitHub; `Ctrl+S` in the results saves the search |
 | `Ctrl+Shift+U` | Watch settings for the repository |
 | `Ctrl+Shift+K` | Switch GitHub account |
