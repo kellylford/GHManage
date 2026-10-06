@@ -145,6 +145,100 @@ def _parse_repo_spec(value: str) -> str | None:
     return f"{owner}/{name}"
 
 
+@dataclass
+class GitHubTarget:
+    """Where a GitHub address points, in GHManage's terms.
+
+    ``kind`` is one of:
+      repo     the repository itself
+      item     an issue or pull request; ``ref`` is its number
+      commit   a commit; ``ref`` is its SHA (possibly abbreviated)
+      release  a release; ``ref`` is its tag
+      run      a workflow run; ``ref`` is its id
+      branch   a branch; ``ref`` is its name
+      view     one of the repo's lists; ``ref`` is the view mode
+      user     a person or organisation, not a repository; ``repo`` is empty
+    """
+
+    repo: str
+    kind: str = "repo"
+    ref: str = ""
+
+
+# Repo sub-pages that map onto a whole view rather than one thing in it.
+_URL_VIEWS = {
+    "issues": "issues",
+    "pulls": "issues",
+    "branches": "branches",
+    "commits": "commits",
+    "tags": "tags",
+    "releases": "releases",
+    "actions": "workflow",
+    "labels": "labels",
+}
+
+
+# github.com pages that are not OWNER/NAME, though they look like it.
+_SITE_PAGES = {
+    "settings", "notifications", "marketplace", "explore", "topics",
+    "sponsors", "search", "login", "features", "pulls", "issues", "codespaces",
+    "new", "organizations", "trending", "collections", "apps",
+}
+
+
+def parse_github_url(value: str) -> GitHubTarget | None:
+    """Work out what a GitHub address, or OWNER/NAME, points at.
+
+    Anything inside a repository that GHManage has no view for — a file, a
+    wiki page, the settings — still opens the repository.
+    """
+    v = value.strip()
+    if not v:
+        return None
+    if v.startswith("git@github.com:"):
+        return GitHubTarget(_parse_repo_spec(v)) if _parse_repo_spec(v) else None
+    is_url = "github.com/" in v
+    if is_url:
+        v = v.split("github.com/", 1)[1]
+    v = v.split("#", 1)[0].split("?", 1)[0].strip("/")
+    parts = [p for p in v.split("/") if p]
+    if not parts:
+        return None
+    if is_url and parts[0] in ("orgs", "users") and len(parts) > 1:
+        return GitHubTarget("", "user", parts[1])
+    if is_url and parts[0] in _SITE_PAGES:
+        return None
+    if len(parts) == 1:
+        # github.com/someone is a profile. A bare word is not an address.
+        return GitHubTarget("", "user", parts[0]) if is_url else None
+    owner, name = parts[0], parts[1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    if not owner or not name:
+        return None
+    repo = f"{owner}/{name}"
+    rest = parts[2:]
+    if not rest:
+        return GitHubTarget(repo)
+    section = rest[0]
+    arg = rest[1] if len(rest) > 1 else ""
+    if section in ("issues", "pull") and arg.isdigit():
+        return GitHubTarget(repo, "item", arg)
+    if section == "commit" and arg:
+        return GitHubTarget(repo, "commit", arg)
+    if section == "releases" and arg == "tag" and len(rest) > 2:
+        return GitHubTarget(repo, "release", "/".join(rest[2:]))
+    if section == "actions" and arg == "runs" and len(rest) > 2 and rest[2].isdigit():
+        return GitHubTarget(repo, "run", rest[2])
+    if section == "tree" and len(rest) == 2:
+        # tree/<name> is a branch. With more after it, it is a folder, and
+        # where the branch name ends and the path begins can't be told apart.
+        return GitHubTarget(repo, "branch", arg)
+    if section in _URL_VIEWS:
+        return GitHubTarget(repo, "view", _URL_VIEWS[section])
+    return GitHubTarget(repo)
+
+
 # ── Copy ────────────────────────────────────────────────────────────────
 
 
@@ -886,6 +980,10 @@ class GhViewerFrame(wx.Frame):
         # brings you back to the same item without fetching the list again:
         # (view, items, more, item, limit).
         self._return_to: tuple | None = None
+        # Something to select once the view now loading arrives — set when a
+        # GitHub address names one thing in a list (an issue, a release, a
+        # run): (view, kind, ref). Taken by the first load of that view.
+        self._pending_target: tuple[str, str, str] | None = None
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -1060,7 +1158,7 @@ class GhViewerFrame(wx.Frame):
 
         # File menu — the repository and the list itself
         file_menu = wx.Menu()
-        file_menu.Append(ID_OPEN_REPO, "Open Repository…\tCtrl+Shift+O")
+        file_menu.Append(ID_OPEN_REPO, "Open Repository or Address…\tCtrl+Shift+O")
         file_menu.Append(ID_REMOVE_REPO, "Remove from List…")
         file_menu.AppendSeparator()
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
@@ -1717,19 +1815,20 @@ class GhViewerFrame(wx.Frame):
         else:
             self._select_repo(name)
 
-    def _select_repo(self, repo: str) -> None:
+    def _select_repo(self, repo: str, view: str = VIEW_ISSUES) -> None:
         if " — " in repo:
             repo = repo.split(" — ")[0].strip()
         self.repo = repo
         self._return_to = None
+        self._pending_target = None
         self.current_limit = self.page_size  # reset to first page
         self.filter_text = ""  # clear filter on repo switch
         self.label_filter = ""  # a label of the old repo means nothing here
         self._update_actions_menu()  # repo-dependent items (New Label…)
         self._update_title()
-        # Reset to issues view when switching repos
-        if self.view_mode != VIEW_ISSUES:
-            self._switch_view(VIEW_ISSUES)
+        # A new repo opens on its issues, unless asked for another view
+        if self.view_mode != view:
+            self._switch_view(view)
         else:
             self._load_items()
 
@@ -2040,8 +2139,9 @@ class GhViewerFrame(wx.Frame):
             f"{label_hint}",
         )
         self._update_title()
+        row = self._take_pending_row(items)
         if filtered:
-            wx.CallLater(100, self._focus_list)
+            wx.CallLater(100, self._focus_list, row)
 
     def _on_pages_loaded(self, token: int, site: "PagesSite | None", builds: list) -> None:
         """Pages view: keep the site config, list its publish history."""
@@ -2142,8 +2242,9 @@ class GhViewerFrame(wx.Frame):
             f"Ctrl++=view more  R=refresh{branch_hint}  Ctrl+F=filter{compare_hint}",
         )
         self._update_title()
+        row = self._take_pending_row(items)
         if filtered:
-            wx.CallLater(100, self._focus_list)
+            wx.CallLater(100, self._focus_list, row)
 
     def _on_activity_loaded(
         self, token: int, events: list, more: bool = False, focus=0,
@@ -2229,6 +2330,93 @@ class GhViewerFrame(wx.Frame):
         if hasattr(self.list_ctrl, "EnsureVisible"):
             self.list_ctrl.EnsureVisible(row)
         self._show_details(row)
+
+    def _take_pending_row(self, items: list) -> int:
+        """The row to land on for a pending GitHub address, else the first.
+
+        Takes the target only when this load is of the view it was for. When
+        the thing isn't among what loaded, an issue or PR is fetched by number
+        (Go To does the same), a commit by SHA; anything else is announced.
+        """
+        target = self._pending_target
+        if not target or target[0] != self.view_mode:
+            return 0
+        self._pending_target = None
+        _, kind, ref = target
+
+        def matches(it) -> bool:
+            if kind == "item":
+                return isinstance(it, Item) and str(it.number) == ref
+            if kind == "commit":
+                return isinstance(it, Commit) and it.sha.startswith(ref.lower())
+            if kind == "release":
+                return isinstance(it, Release) and it.tag == ref
+            if kind == "run":
+                return isinstance(it, WorkflowRun) and str(it.run_id) == ref
+            return False
+
+        found = next((it for it in items if matches(it)), None)
+        if found is not None:
+            row = self._row_of(found)
+            if row < 0:  # filtered out; a filter can't be on yet, but be safe
+                return 0
+            wx.CallLater(150, self._announce, self._describe_landing(found))
+            return row
+        if kind == "item":
+            # After the list has settled on its first row, or that would
+            # land on top of the item Go To selects.
+            wx.CallLater(150, self._goto_issue, int(ref))
+        elif kind == "commit":
+            wx.CallLater(150, self._goto_commit, ref)
+        elif kind == "release":
+            wx.CallLater(150, self._announce,
+                         f"Release {ref} isn't among the {len(items)} newest releases.")
+        elif kind == "run":
+            wx.CallLater(150, self._announce,
+                         f"Run {ref} isn't among the {len(items)} newest runs. "
+                         "Ctrl++ loads more.")
+        return 0
+
+    @staticmethod
+    def _describe_landing(item) -> str:
+        if isinstance(item, Item):
+            return f"Opened #{item.number} — {item.title}"
+        if isinstance(item, Commit):
+            return f"Opened commit {item.short_sha} — {_first_line(item.message)}"
+        if isinstance(item, Release):
+            return f"Opened release {item.tag}"
+        if isinstance(item, WorkflowRun):
+            return f"Opened run #{item.run_number} {item.name}"
+        return "Opened"
+
+    def _goto_commit(self, sha: str) -> None:
+        """Show a commit that isn't in the list: fetched, and put at the top."""
+        if self.view_mode != VIEW_COMMITS or not self.repo:
+            return
+        self._announce(f"Commit {sha[:7]} isn't among the newest on this branch, fetching…")
+        repo = self.repo
+
+        def worker() -> None:
+            try:
+                commit = fetch_commit_detail(repo, sha)
+            except GhError as exc:
+                wx.CallAfter(self._on_items_error, f"Couldn't fetch commit {sha[:7]}: {exc}")
+                return
+            wx.CallAfter(self._on_commit_fetched, commit, repo)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_commit_fetched(self, commit: Commit, repo: str) -> None:
+        if self.view_mode != VIEW_COMMITS or self.repo != repo:
+            return  # moved on while it was fetched
+        self.filter_text = ""
+        self.git_items = [commit] + [c for c in self.git_items if c.sha != commit.sha]
+        self._populate_filtered_list(self.git_items, use_favorite_prefix=True)
+        self._focus_list(0)
+        self._announce(
+            f"Opened commit {commit.short_sha} — {_first_line(commit.message)}. "
+            "It is not on this branch's latest commits, so it is shown first."
+        )
 
     def _on_items_error(self, msg: str) -> None:
         self._announce(f"Error: {msg}")
@@ -3469,31 +3657,86 @@ class GhViewerFrame(wx.Frame):
         self._do_comment()
 
     def on_open_repo(self, event: wx.CommandEvent) -> None:
-        """Ctrl+Shift+O — open any repo by URL or OWNER/NAME without cloning."""
+        """Ctrl+Shift+O — open a repository, or anything in one, by its address.
+
+        Takes OWNER/NAME or any github.com address. An issue, pull request,
+        commit, release, workflow run or branch address opens the repository
+        on the view that shows it, with it selected. A GitHub address already
+        on the clipboard is offered, so pasting from an email is one Enter.
+        """
         dlg = wx.TextEntryDialog(
             self,
-            "Enter a GitHub repository URL or OWNER/NAME\n"
-            "(e.g. https://github.com/Community-Access/quill or Community-Access/quill)",
-            "Open Repository",
-            "",
+            "Enter a GitHub address or OWNER/NAME.\n"
+            "Repository, issue, pull request, commit, release, workflow run "
+            "and branch addresses open in GHManage.",
+            "Open Repository or Address",
+            self._clipboard_github_url(),
         )
-        if dlg.ShowModal() == wx.ID_OK:
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
             value = dlg.GetValue().strip()
+        finally:
             dlg.Destroy()
-            if not value:
-                return
-            repo = _parse_repo_spec(value)
-            if not repo:
-                self._announce(
-                    "Couldn't parse that. Use a github.com URL or OWNER/NAME."
-                )
-                return
-            # Pin it so it shows in the left list across sessions
+        if value:
+            self._open_address(value)
+
+    def _clipboard_github_url(self) -> str:
+        """The clipboard's text when it is a single GitHub address, else ""."""
+        clip = wx.TheClipboard
+        if not clip.Open():
+            return ""
+        try:
+            data = wx.TextDataObject()
+            if not clip.GetData(data):
+                return ""
+            text = data.GetText().strip()
+        finally:
+            clip.Close()
+        if "\n" in text or len(text) > 500 or "github.com/" not in text:
+            return ""
+        return text if parse_github_url(text) else ""
+
+    def _open_address(self, value: str) -> None:
+        target = parse_github_url(value)
+        if target is None:
+            self._announce("Couldn't read that. Use a github.com address or OWNER/NAME.")
+            return
+        if target.kind == "user":
+            self._announce(
+                f"{target.ref} is a person or organisation, not a repository. "
+                "GHManage can't show profiles yet."
+            )
+            return
+        repo = target.repo
+        if target.kind == "repo":
+            # Pin it so it shows in the left list across sessions. Only a
+            # repository's own address does this: links to single issues,
+            # opened from email, would otherwise fill the list.
             self._pinned_repos = add_pinned(repo)
             self._refresh_repo_list()
             self._select_repo(repo)
-        else:
-            dlg.Destroy()
+            return
+        view = {
+            "item": VIEW_ISSUES,
+            "commit": VIEW_COMMITS,
+            "branch": VIEW_COMMITS,
+            "release": VIEW_RELEASES,
+            "run": VIEW_WORKFLOW,
+        }.get(target.kind, target.ref if target.kind == "view" else VIEW_ISSUES)
+        if view == VIEW_COMMITS:
+            # Set before the switch, which loads the commits of commit_branch:
+            # the branch named, or the default branch for a commit address.
+            self.commit_branch = target.ref if target.kind == "branch" else ""
+        self._select_repo(repo, view)
+        if target.kind in ("item", "commit", "release", "run"):
+            self._pending_target = (view, target.kind, target.ref)
+        # Select it in the repo list when it is there; otherwise nothing.
+        self.repo_list.SetSelection(wx.NOT_FOUND)
+        for i in range(self.repo_list.GetCount()):
+            if self.repo_list.GetClientData(i) == repo:
+                self.repo_list.SetSelection(i)
+                break
 
     def on_remove_repo(self, event: wx.CommandEvent) -> None:
         """Remove the currently selected repo from the pinned list."""

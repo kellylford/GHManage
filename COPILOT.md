@@ -151,6 +151,13 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   current view and is called from `_update_menu_checks` (so every `_switch_view` covers
   it) plus `_select_repo` / `_select_favorites`, where the repo changes without the view
   doing so. A new action belongs there, with an entry in that method.
+- **Open Repository or Address** (Ctrl+Shift+O) — `parse_github_url` (pure, module
+  level) turns an address into a `GitHubTarget(repo, kind, ref)`. `_open_address` picks
+  the view, calls `_select_repo(repo, view)` and then sets `_pending_target =
+  (view, kind, ref)`. Every list load passes its items through `_take_pending_row`, which
+  consumes the target only on a load of the view it was for and returns the row to land
+  on — or schedules the fallback (`_goto_issue` for an issue not in the list,
+  `_goto_commit` for a commit). Only a repository's own address pins it.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names

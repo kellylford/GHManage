@@ -204,7 +204,7 @@ Lists load 100 items to begin with. `Ctrl++` (**File → View More**) loads the 
 
 | Menu | What is on it |
 |------|---------------|
-| **File** | Open Repository, Remove from List, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
+| **File** | Open Repository or Address, Remove from List, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
 | **Actions** | Everything that acts on the item you are on. See [The Actions Menu](#the-actions-menu). |
 | **View** | View Mode, List Mode, Sort Order, Columns, State, Filter |
 | **Help** | User Guide, Check for Updates, About GHManage |
@@ -232,15 +232,21 @@ The starred and watched counts are asked for once the list is up, so they appear
 
 Opening a repository shows its **Issues & PRs**. Use `Ctrl+2` through `Ctrl+0` to reach its other views.
 
-### Opening a repository by address
+### Opening a repository or a GitHub address
 
-**File → Open Repository…** (`Ctrl+Shift+O`) opens any repository on GitHub, yours or not, without cloning it. Type or paste its address in any of these forms:
+**File → Open Repository or Address…** (`Ctrl+Shift+O`) opens any repository on GitHub, yours or not, without cloning it, and goes straight to most things inside one. Type or paste:
 
-- `owner/name`
-- `https://github.com/owner/name`, including a longer address such as one ending `/issues/12`, which is trimmed back to the repository
-- `git@github.com:owner/name.git`
+- `owner/name`, `https://github.com/owner/name` or `git@github.com:owner/name.git` to open the repository on its issues and pull requests. It is added to the repository list with a pin, where it stays between sessions until you remove it.
+- The address of an issue or pull request (`…/issues/12`, `…/pull/12`, `…/pull/12/files`) to open the repository's issues with that one selected. When it is not among those loaded, closed say, it is fetched and added, as Go To Issue does.
+- A commit (`…/commit/<sha>`) to open the commits with it selected. A commit that isn't among the default branch's latest is fetched and shown first.
+- A release (`…/releases/tag/v1.2`), a workflow run (`…/actions/runs/<id>`) or a branch (`…/tree/<branch>`) to open the releases, the workflow runs or that branch's commits.
+- A list (`…/releases`, `…/pulls`, `…/actions`, `…/labels`, `…/branches`, `…/tags`, `…/commits`) to open that view.
 
-GHManage opens it and adds it to the repository list with a pin, where it stays between sessions until you remove it. If the address cannot be read as a repository, the status bar says "Couldn't parse that. Use a github.com URL or OWNER/NAME."
+Any other address inside a repository, a file or the wiki say, opens the repository. Only a repository's own address pins it: an issue link from an email opens without adding to your list.
+
+When the clipboard already holds a GitHub address, the box starts with it filled in, so opening a link you have copied is `Ctrl+Shift+O` and `Enter`.
+
+A person's or organisation's address says so on the status bar; GHManage has no profile view. An address it cannot read at all gets "Couldn't read that. Use a github.com address or OWNER/NAME."
 
 ### Removing a repository from the list
 
@@ -686,7 +692,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl+Shift+C` | Copy the selected item's link |
 | `Ctrl+Shift+L` | Copy a Markdown link to it |
 | `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
-| `Ctrl+Shift+O` | Open a repository by address |
+| `Ctrl+Shift+O` | Open a repository, or an issue, pull request, commit, release or run, by its address |
 | `Alt+N` / `Alt+P` | Next / previous comment in the details panel |
 | `Ctrl+Q` | Quit |
 
