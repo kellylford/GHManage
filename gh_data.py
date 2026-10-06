@@ -62,13 +62,17 @@ def _find_gh() -> str:
     return _gh_exe
 
 
-def _run_gh(args: list[str]) -> str:
-    """Run a `gh` command and return stdout, raising GhError on failure."""
+def _run_gh(args: list[str], stdin: Optional[str] = None) -> str:
+    """Run a `gh` command and return stdout, raising GhError on failure.
+
+    ``stdin`` is fed to the command, for the `--body-file -` style options.
+    """
     # On Windows, suppress the console window that subprocess would otherwise pop up.
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
             [_find_gh(), *args],
+            input=stdin,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -535,6 +539,27 @@ def add_comment(item: Item, comment: str, repo: Optional[str]) -> None:
     if effective:
         args += ["--repo", effective]
     _run_gh(args)
+
+
+def create_issue(repo: Optional[str], title: str, body: str) -> tuple[int, str]:
+    """Open a new issue and return its number and address.
+
+    Goes to the repo the issues list shows, so on a fork that is the
+    upstream, the same as every other issue action here. The body goes in on
+    stdin rather than the command line, where a long one could exceed the
+    length Windows allows.
+    """
+    effective = resolve_issue_repo(repo)
+    args = ["issue", "create", "--title", title, "--body-file", "-"]
+    if effective:
+        args += ["--repo", effective]
+    out = _run_gh(args, stdin=body)
+    # gh prints the new issue's address as its last line.
+    url = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    if not tail.isdigit():
+        raise GhError(f"The issue was created, but gh didn't say where: {out.strip()!r}")
+    return int(tail), url
 
 
 def open_in_browser(item: Item) -> None:

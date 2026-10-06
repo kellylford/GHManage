@@ -72,6 +72,7 @@ from gh_data import (
     WorkflowInput,
     add_comment,
     close_item,
+    create_issue,
     create_label,
     detect_repo,
     delete_label,
@@ -396,6 +397,7 @@ ID_REMOVE_REPO = wx.NewIdRef()
 ID_RUN_WORKFLOW = wx.NewIdRef()
 ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
+ID_NEW_ISSUE = wx.NewIdRef()
 ID_COPY_LINK = wx.NewIdRef()
 ID_COPY_MARKDOWN = wx.NewIdRef()
 ID_COPY_TITLE = wx.NewIdRef()
@@ -930,6 +932,82 @@ class NewLabelDialog(wx.Dialog):
         )
 
 
+# ── New issue dialog ────────────────────────────────────────────────────
+
+
+class NewIssueDialog(wx.Dialog):
+    """Title and body for a new issue.
+
+    Same labelling discipline as the other dialogs: a StaticText before each
+    field and a matching SetName. The body is plain multi-line text, written
+    in Markdown as on github.com. In it Enter starts a new line, so Ctrl+Enter
+    (Cmd+Enter on a Mac) creates the issue from anywhere in the dialog; Tab
+    still moves between the fields.
+    """
+
+    def __init__(self, parent: wx.Window, repo: str, title: str = "", body: str = "") -> None:
+        super().__init__(
+            parent,
+            title="New Issue",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+            size=(620, 480),
+        )
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=f"Create an issue in {repo}"), 0, wx.ALL, 10)
+
+        label = "Title (required)"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT, 10)
+        self.title_ctrl = wx.TextCtrl(self, value=title)
+        self.title_ctrl.SetName(label)
+        outer.Add(self.title_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        label = "Description (Markdown, optional)"
+        outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT, 10)
+        self.body_ctrl = wx.TextCtrl(self, value=body, style=wx.TE_MULTILINE)
+        self.body_ctrl.SetName(label)
+        outer.Add(self.body_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        buttons = self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
+        ok = self.FindWindow(wx.ID_OK)
+        if ok:
+            ok.SetLabel("&Create Issue")
+        outer.Add(buttons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizer(outer)
+        self.SetMinSize((420, 320))
+
+        submit = wx.NewIdRef()
+        self.Bind(wx.EVT_MENU, self._on_submit, id=submit)
+        self.SetAcceleratorTable(wx.AcceleratorTable([
+            (wx.ACCEL_CTRL, wx.WXK_RETURN, submit),
+            (wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER, submit),
+        ]))
+        self.Bind(wx.EVT_BUTTON, self._on_ok, id=wx.ID_OK)
+        # After the dialog is up: focus set during construction can be lost
+        # to the dialog's own default-button handling on some platforms.
+        wx.CallAfter(self.title_ctrl.SetFocus)
+        wx.CallAfter(self.title_ctrl.SetInsertionPointEnd)
+
+    def _on_submit(self, event: wx.CommandEvent) -> None:
+        if self._valid():
+            self.EndModal(wx.ID_OK)
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        if self._valid():
+            event.Skip()
+
+    def _valid(self) -> bool:
+        if self.title_ctrl.GetValue().strip():
+            return True
+        wx.MessageBox("An issue needs a title.", "New Issue",
+                      wx.OK | wx.ICON_INFORMATION, self)
+        self.title_ctrl.SetFocus()
+        return False
+
+    def values(self) -> tuple[str, str]:
+        """(title, body). The body is kept as typed, apart from trailing space."""
+        return self.title_ctrl.GetValue().strip(), self.body_ctrl.GetValue().rstrip()
+
+
 # ── Main frame ──────────────────────────────────────────────────────────
 
 
@@ -997,6 +1075,9 @@ class GhViewerFrame(wx.Frame):
         # GitHub address names one thing in a list (an issue, a release, a
         # run): (view, kind, ref). Taken by the first load of that view.
         self._pending_target: tuple[str, str, str] | None = None
+        # Unsent new-issue text per repo, (title, body): kept when the dialog
+        # is cancelled or creating fails, so nothing typed is lost.
+        self._issue_drafts: dict[str, tuple[str, str]] = {}
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -1208,6 +1289,7 @@ class GhViewerFrame(wx.Frame):
         self._act_close = actions_menu.Append(ID_CLOSE_ITEM, "Close Issue/PR\tCtrl+W")
         self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
         self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
+        self._act_new_issue = actions_menu.Append(ID_NEW_ISSUE, "New Issue…\tCtrl+N")
         actions_menu.AppendSeparator()
         # Ctrl+I and Ctrl+D are safe as accelerators; a bare Delete accelerator
         # would not be, since it would swallow the Delete key inside the list.
@@ -1516,7 +1598,9 @@ class GhViewerFrame(wx.Frame):
         self._act_reopen.Enable(issues)
         self._act_comment.Enable(issues)
 
-        self._act_new.Enable(bool(self.repo) and self.view_mode not in REPOLESS_VIEWS)
+        in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
+        self._act_new.Enable(in_repo)
+        self._act_new_issue.Enable(in_repo)
         self._act_go_to_repo.Enable(self.view_mode == VIEW_ACTIVITY)
 
         if self.view_mode == VIEW_LABELS:
@@ -1648,6 +1732,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_close_item, id=ID_CLOSE_ITEM)
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
+        self.Bind(wx.EVT_MENU, self.on_new_issue, id=ID_NEW_ISSUE)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
@@ -3363,6 +3448,8 @@ class GhViewerFrame(wx.Frame):
                 self._do_reopen()
             elif key == ord("M"):
                 self._do_comment()
+            elif key == ord("N"):
+                self._do_new_issue()
             else:
                 event.Skip()
         else:
@@ -4413,6 +4500,81 @@ class GhViewerFrame(wx.Frame):
 
             threading.Thread(target=worker, daemon=True).start()
         dlg.Destroy()
+
+    def on_new_issue(self, event: wx.CommandEvent) -> None:
+        self._do_new_issue()
+
+    def _do_new_issue(self) -> None:
+        """New Issue (Ctrl+N, or N in the issues list).
+
+        The dialog names the repo the issue will go to, which on a fork is the
+        upstream — that takes a gh call, so it is made first, off the UI thread.
+        """
+        if not self.repo or self.view_mode in REPOLESS_VIEWS:
+            self._announce("Select a repository first.")
+            return
+        repo = self.repo
+        self._announce("Preparing a new issue…")
+
+        def worker() -> None:
+            target = parent_repo(repo) or repo
+            wx.CallAfter(self._show_new_issue_dialog, repo, target)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_new_issue_dialog(self, repo: str, target: str) -> None:
+        if self.repo != repo:
+            return  # moved to another repository while it was looked up
+        title, body = self._issue_drafts.get(repo, ("", ""))
+        dlg = NewIssueDialog(self, target, title, body)
+        try:
+            ok = dlg.ShowModal() == wx.ID_OK
+            title, body = dlg.values()
+        finally:
+            dlg.Destroy()
+        if not ok:
+            if title or body:
+                self._issue_drafts[repo] = (title, body)
+                self._announce("New issue cancelled. What you typed is kept for next time.")
+            else:
+                self._issue_drafts.pop(repo, None)
+                self._announce("New issue cancelled.")
+            return
+        self._issue_drafts[repo] = (title, body)  # until GitHub has it
+        self._announce(f"Creating issue in {target}…")
+
+        def worker() -> None:
+            try:
+                number, _url = create_issue(repo, title, body)
+            except GhError as exc:
+                wx.CallAfter(self._on_issue_error, str(exc))
+                return
+            wx.CallAfter(self._on_issue_created, repo, number, title)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_issue_error(self, msg: str) -> None:
+        self._announce(f"Couldn't create the issue: {msg} What you typed is kept; "
+                       "Ctrl+N opens it again.")
+        wx.MessageBox(
+            f"The issue was not created.\n\n{msg}\n\n"
+            "What you typed is kept. Press Ctrl+N to try again.",
+            "New Issue", wx.OK | wx.ICON_WARNING, self,
+        )
+
+    def _on_issue_created(self, repo: str, number: int, title: str) -> None:
+        self._issue_drafts.pop(repo, None)
+        if self.repo != repo:
+            self._announce(f"Created issue #{number} — {title}")
+            return
+        # Show it: the issues list, reloaded, landing on the new one.
+        if self.view_mode != VIEW_ISSUES:
+            self._switch_view(VIEW_ISSUES)
+        else:
+            self.current_limit = self.page_size
+            self._load_items()
+        self._pending_target = (VIEW_ISSUES, "item", str(number))
+        self._announce(f"Created issue #{number} — {title}")
 
     def _on_action_done(self, msg: str) -> None:
         self._announce(f"{msg}. Refreshing…")

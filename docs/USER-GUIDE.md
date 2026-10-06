@@ -283,11 +283,21 @@ Both reload the list from GitHub, so they reach items that were never in the lis
 | `C` or `Ctrl+W` | Close it |
 | `O` or `Ctrl+Shift+W` | Reopen it |
 | `M` or `Ctrl+M` | Add a comment |
+| `N` or `Ctrl+N` | New issue |
 | `F` | Add it to favorites, or remove it |
 | `Ctrl+G` | Go to an issue or pull request by number |
+| `Ctrl+N` | New issue in the current repository |
 | `Ctrl+O` | Open it on GitHub |
 
 Closing and reopening ask first, naming the item: "Close issue #12?" with its title. A comment is typed into the **Add Comment** box, which takes several lines. When the change has gone through, the status bar says so, for example "Closed #12. Refreshing…", and the list reloads.
+
+### Creating an issue
+
+**Actions → New Issue…** (`Ctrl+N`, or `N` in the issues list) opens a form with a title and a description. Write the description in Markdown, as on github.com. In the description `Enter` starts a new line, so `Ctrl+Enter` (`Cmd+Enter` on a Mac) creates the issue from anywhere in the form, as does the **Create Issue** button; `Tab` moves between the fields.
+
+The form names the repository the issue goes to. On a fork that is the upstream repository, since that is where the issues you see in the list live.
+
+Once GitHub has it, the issues list reloads with the new issue selected. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
 
 ### Go to an issue by number
 
@@ -663,6 +673,7 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Close Issue/PR | `Ctrl+W` | Issues & PRs |
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
+| New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
 | Delete | `Ctrl+D` | Labels (reads **Delete Label…**) and Workflow Runs (reads **Delete Workflow Run…**) |
 | Run Workflow on Branch… | | Workflows |

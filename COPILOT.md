@@ -158,6 +158,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   consumes the target only on a load of the view it was for and returns the row to land
   on — or schedules the fallback (`_goto_issue` for an issue not in the list,
   `_goto_commit` for a commit). Only a repository's own address pins it.
+- **New Issue** (Ctrl+N / N) — `NewIssueDialog` (title + multiline Markdown body,
+  Ctrl+Enter submits). `create_issue` sends the body on **stdin** (`--body-file -`,
+  `_run_gh(args, stdin=…)`) because a long body on the command line can exceed the
+  Windows limit; it resolves the fork's upstream like every other issue action, and the
+  dialog names that repo. Unsent text lives in `_issue_drafts[repo]` until created.
+  After creation the list reloads with `_pending_target` on the new number.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
