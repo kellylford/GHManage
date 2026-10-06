@@ -1298,6 +1298,20 @@ def fetch_workflow_runs(repo: Optional[str], limit: int = 30) -> list[WorkflowRu
     return runs
 
 
+def fetch_workflow_run(repo: Optional[str], run_id: int) -> WorkflowRun:
+    """One run as it stands now — its status changes as it runs and reruns."""
+    row = _api_json([f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}"], repo)
+    if not isinstance(row, dict):
+        raise GhError(f"Unexpected reply about run {run_id}")
+    return WorkflowRun(
+        name=row.get("name") or "", status=row.get("status") or "",
+        conclusion=row.get("conclusion") or "", branch=row.get("head_branch") or "",
+        event=row.get("event") or "", created_at=row.get("created_at") or "",
+        url=row.get("html_url") or "", run_number=row.get("run_number") or 0,
+        run_id=row.get("id") or run_id,
+    )
+
+
 @dataclass
 class Artifact:
     """A build artifact attached to a workflow run."""
@@ -3044,10 +3058,19 @@ def _repo_args(repo: Optional[str]) -> list[str]:
 
 def fetch_run_jobs(repo: Optional[str], run_id: int) -> list[WorkflowJob]:
     """The jobs of a run's latest attempt, in the order they ran."""
-    data = _api_json([f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs?per_page=100"], repo)
-    rows = data.get("jobs") if isinstance(data, dict) else None
+    rows: list = []
+    page = 1
+    while True:  # a big matrix has more than one page of jobs
+        data = _api_json(
+            [f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs?per_page=100&page={page}"], repo)
+        batch = (data.get("jobs") if isinstance(data, dict) else None) or []
+        rows.extend(batch)
+        total = int(data.get("total_count") or 0) if isinstance(data, dict) else 0
+        if len(batch) < 100 or len(rows) >= total or page >= 10:
+            break
+        page += 1
     jobs = []
-    for r in rows or []:
+    for r in rows:
         if not isinstance(r, dict):
             continue
         steps = [
@@ -3065,7 +3088,12 @@ def fetch_run_jobs(repo: Optional[str], run_id: int) -> list[WorkflowJob]:
 
 
 # Terminal colour codes, which logs keep from the tools that wrote them.
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\^\[\[[0-9;]*m")
+_ANSI = re.compile(
+    r"\x1b\[[0-9;:?]*[ -/]*[@-~]"           # CSI: colours, cursor moves, line clears
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"   # OSC: hyperlinks, titles
+    r"|\x1b[()][A-Za-z0-9]"                  # character set switches
+    r"|\^\[\[[0-9;:?]*[A-Za-z]"               # the same, written out as ^[[
+)
 # The timestamp GitHub puts at the start of every log line.
 _STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
 
@@ -3075,7 +3103,9 @@ def clean_log_line(line: str) -> str:
     and GitHub's ##[error] / ##[warning] markers in words."""
     line = _STAMP.sub("", _ANSI.sub("", line))
     for marker, word in (("##[error]", "ERROR: "), ("##[warning]", "WARNING: "),
-                         ("##[group]", "▸ "), ("##[endgroup]", ""), ("##[notice]", "NOTE: ")):
+                         ("##[group]", ""), ("##[endgroup]", ""), ("##[notice]", "NOTE: "),
+                         ("##[command]", "Command: "), ("[command]", "Command: "),
+                         ("##[debug]", "Debug: ")):
         if line.startswith(marker):
             return word + line[len(marker):]
     return line
@@ -3087,9 +3117,14 @@ def parse_run_log(text: str) -> list[tuple[str, str, list[str]]]:
     Each line arrives as job TAB step TAB stamped text.
     """
     out: list[tuple[str, str, list[str]]] = []
-    for raw in text.splitlines():
+    # "\n" only: splitlines() also breaks at form feeds and other characters
+    # tools print mid-line, leaving a piece with no job and step in front.
+    for raw in text.split("\n"):
+        raw = raw.rstrip("\r")
         parts = raw.split("\t", 2)
         if len(parts) != 3:
+            if out and raw.strip():
+                out[-1][2].append(clean_log_line(raw))  # a piece of the line before
             continue
         job, step, rest = parts
         line = clean_log_line(rest)

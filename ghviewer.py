@@ -99,6 +99,7 @@ from gh_data import (
     fetch_job_annotations,
     fetch_job_log,
     fetch_run_jobs,
+    fetch_workflow_run,
     rerun_workflow_run,
     MY_WORK_COLUMNS,
     MY_WORK_DEFAULT_COLUMNS,
@@ -357,20 +358,37 @@ FAILED_TAIL_LINES = 40
 JOB_LOG_MAX_LINES = 20000
 
 
+# gh labels every line this way when it can't tell the steps of a log apart,
+# which happens on some repositories; the whole job's log then comes back.
+UNKNOWN_STEP = "UNKNOWN STEP"
+
+FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+
+
 def format_failure_report(run, jobs: list, annotations: dict, failed_log: list) -> str:
     """What failed in ``run``, as text to read top to bottom.
 
     ``annotations`` maps job id to that job's annotations; ``failed_log`` is
     fetch_failed_log's (job, step, lines).
     """
-    failed = [j for j in jobs if j.conclusion in ("failure", "timed_out", "cancelled")]
+    failed = [j for j in jobs if j.conclusion in FAILED_CONCLUSIONS]
+    cancelled = [j for j in jobs if j.conclusion == "cancelled"]
     head = f"Run #{run.run_number} {run.name} on {run.branch} — {run.conclusion or run.status}"
     lines = [head]
-    if not failed:
+    if not jobs:
+        lines.append("It failed before any job started: a problem in the workflow file, or "
+                     "it is waiting for someone to approve it. The run's page on GitHub says which.")
+        return "\n".join(lines)
+    if not failed and not cancelled:
         lines.append("No job failed.")
         return "\n".join(lines)
-    names = ", ".join(j.name for j in failed)
-    lines.append(f"{len(failed)} of {len(jobs)} jobs failed: {names}.")
+    if failed:
+        lines.append(f"{len(failed)} of {len(jobs)} jobs failed: {', '.join(j.name for j in failed)}.")
+    if cancelled:
+        names = ", ".join(j.name for j in cancelled[:10])
+        more = f" and {len(cancelled) - 10} more" if len(cancelled) > 10 else ""
+        lines.append(f"{len(cancelled)} cancelled, often because another job failed first: "
+                     f"{names}{more}.")
     for job in failed:
         lines.append("")
         lines.append("─" * 60)
@@ -384,18 +402,23 @@ def format_failure_report(run, jobs: list, annotations: dict, failed_log: list) 
             lines.append("")
             lines.append("What GitHub flagged:")
             for a in flagged:
-                place = f"{a.path} line {a.line}: " if a.path and a.path != ".github" else (
-                    f"Line {a.line}: " if a.line else "")
+                # An annotation on ".github" points into the raw log, not a
+                # file; its line number means nothing here.
+                place = f"{a.path} line {a.line}: " if a.path and a.path != ".github" and a.line else ""
                 title = f"{a.title}: " if a.title else ""
                 lines.append(f"  {place}{title}{a.message}")
         for log_job, step, step_lines in failed_log:
             if log_job != job.name:
                 continue
-            tail = [ln for ln in step_lines if ln.strip()][-FAILED_TAIL_LINES:]
+            kept = [ln for ln in step_lines if ln.strip()]
+            tail = kept[-FAILED_TAIL_LINES:]
+            if step == UNKNOWN_STEP:
+                name = f"the job's log (it failed at \"{steps[0].name}\")" if steps else "the job's log"
+            else:
+                name = f"\"{step}\""
             lines.append("")
-            shown = len(tail)
-            lines.append(f"Last {shown} lines of \"{step}\":" if shown < len(step_lines)
-                         else f"Log of \"{step}\":")
+            lines.append(f"Last {len(tail)} lines of {name}:" if len(tail) < len(kept)
+                         else f"Log of {name}:")
             lines.extend(f"  {ln}" for ln in tail)
     lines.append("")
     lines.append("The whole log of a job: J for the jobs, then Enter on one.")
@@ -403,21 +426,25 @@ def format_failure_report(run, jobs: list, annotations: dict, failed_log: list) 
 
 
 def format_job_log(job, log: list) -> tuple[str, int]:
-    """A job's log as text, and where its first error starts (or 0)."""
+    """A job's log as text, and the line its first error is on (or 0).
+
+    A line number rather than a character offset: text controls count in
+    UTF-16 units, so an emoji earlier in the log would put an offset off.
+    """
     lines = [f"Log of job {job.name} — {job.conclusion or job.status}"]
     body: list[str] = []
     for _job, step, step_lines in log:
-        body.append("")
-        body.append(f"── Step: {step} ──")
+        if step != UNKNOWN_STEP:
+            body.append("")
+            body.append(f"── Step: {step} ──")
         body.extend(step_lines)
     if len(body) > JOB_LOG_MAX_LINES:
         dropped = len(body) - JOB_LOG_MAX_LINES
         body = body[dropped:]
         lines.append(f"(The first {dropped:,} lines are left out; this is the end of the log.)")
     lines.extend(body)
-    text = "\n".join(lines)
-    at = text.find("\nERROR: ")
-    return text, (at + 1 if at >= 0 else 0)
+    first_error = next((i for i, ln in enumerate(lines) if ln.startswith("ERROR: ")), 0)
+    return "\n".join(lines), first_error
 
 
 # ── Copy ────────────────────────────────────────────────────────────────
@@ -2652,7 +2679,10 @@ class GhViewerFrame(wx.Frame):
                 elif view == VIEW_JOBS:
                     run = self.jobs_run
                     jobs = fetch_run_jobs(self.repo, run.run_id) if run else []
-                    wx.CallAfter(self._on_git_items_loaded, token, jobs, "jobs")
+                    # The run as it is now, not as it was when J was pressed:
+                    # it may have finished, or been rerun, since.
+                    fresh = fetch_workflow_run(self.repo, run.run_id) if run else None
+                    wx.CallAfter(self._on_jobs_loaded, token, jobs, fresh)
                 elif view == VIEW_ASSETS:
                     if self.assets_release:
                         assets = fetch_release_assets(
@@ -2860,6 +2890,13 @@ class GhViewerFrame(wx.Frame):
         row = self._take_pending_row(items, token)
         if filtered:
             wx.CallLater(100, self._focus_list, row)
+
+    def _on_jobs_loaded(self, token: int, jobs: list, fresh) -> None:
+        if not self._fetch_is_current(token):
+            return
+        if fresh is not None and self.jobs_run and fresh.run_id == self.jobs_run.run_id:
+            self.jobs_run = fresh
+        self._on_git_items_loaded(token, jobs, "jobs")
 
     def _on_pages_loaded(self, token: int, site: "PagesSite | None", builds: list) -> None:
         """Pages view: keep the site config, list its publish history."""
@@ -5243,7 +5280,7 @@ class GhViewerFrame(wx.Frame):
             lines.append("  (none)")
         return "\n".join(lines)
 
-    def _show_text_dialog(self, title: str, text: str, start: int = 0) -> None:
+    def _show_text_dialog(self, title: str, text: str, start_line: int = 0) -> None:
         """Show read-only, focusable, scrollable text in a modal dialog.
 
         Used for content a screen reader needs to navigate line by line
@@ -5267,9 +5304,14 @@ class GhViewerFrame(wx.Frame):
             sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 8)
         dlg.SetSizer(sizer)
         wx.CallAfter(txt.SetFocus)
-        # After focus, or some platforms put the caret back at the start.
-        wx.CallAfter(txt.SetInsertionPoint, start)
-        wx.CallAfter(txt.ShowPosition, start)
+        # After focus, or some platforms put the caret back at the start. By
+        # line, which the control converts in its own units.
+        def place() -> None:
+            pos = txt.XYToPosition(0, start_line) if start_line else 0
+            pos = max(pos, 0)
+            txt.SetInsertionPoint(pos)
+            txt.ShowPosition(pos)
+        wx.CallAfter(place)
         dlg.ShowModal()
         dlg.Destroy()
 
@@ -6138,17 +6180,24 @@ class GhViewerFrame(wx.Frame):
         if run.conclusion == "success":
             self._announce(f"Nothing failed in run #{run.run_number} — it succeeded.")
             return
+        if getattr(self, "_report_busy", False):
+            self._announce("Still putting the last report together.")
+            return
         repo = self.repo
+        self._report_busy = True
         self._announce(f"Finding what failed in run #{run.run_number}…")
 
         def worker() -> None:
+            from concurrent.futures import ThreadPoolExecutor
             try:
                 jobs = fetch_run_jobs(repo, run.run_id)
-                failed = [j for j in jobs if j.conclusion in ("failure", "timed_out", "cancelled")]
-                annotations = {j.id: fetch_job_annotations(repo, j.id) for j in failed}
+                failed = [j for j in jobs if j.conclusion in FAILED_CONCLUSIONS]
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    found = list(pool.map(lambda j: fetch_job_annotations(repo, j.id), failed))
+                annotations = {j.id: a for j, a in zip(failed, found)}
                 log = fetch_failed_log(repo, run.run_id) if failed else []
             except GhError as exc:
-                wx.CallAfter(self._announce, f"Couldn't read run #{run.run_number}: {exc}")
+                wx.CallAfter(self._report_failed, f"Couldn't read run #{run.run_number}: {exc}")
                 return
             text = format_failure_report(run, jobs, annotations, log)
             wx.CallAfter(self._on_report_ready, repo,
@@ -6161,21 +6210,37 @@ class GhViewerFrame(wx.Frame):
         run = self.jobs_run
         if not run or not self.repo:
             return
+        if job.conclusion == "skipped":
+            self._announce(f"{job.name} was skipped, so it has no log.")
+            return
+        if job.status != "completed":
+            self._announce(f"{job.name} is still {job.status.replace('_', ' ')}; its log "
+                           "is ready when it finishes.")
+            return
+        if getattr(self, "_report_busy", False):
+            self._announce("Still putting the last report together.")
+            return
         repo = self.repo
+        self._report_busy = True
         self._announce(f"Loading the log of {job.name}…")
 
         def worker() -> None:
             try:
                 log = fetch_job_log(repo, run.run_id, job.id)
             except GhError as exc:
-                wx.CallAfter(self._announce, f"Couldn't load the log of {job.name}: {exc}")
+                wx.CallAfter(self._report_failed, f"Couldn't load the log of {job.name}: {exc}")
                 return
             text, start = format_job_log(job, log)
             wx.CallAfter(self._on_report_ready, repo, f"Log — {job.name}", text, start)
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _report_failed(self, msg: str) -> None:
+        self._report_busy = False
+        self._announce(msg)
+
     def _on_report_ready(self, repo: str, title: str, text: str, start: int) -> None:
+        self._report_busy = False
         if self.repo != repo or self.view_mode not in (VIEW_WORKFLOW, VIEW_JOBS):
             self._announce(f"{title} is ready, but you have moved on; ask again there.")
             return
@@ -6204,7 +6269,8 @@ class GhViewerFrame(wx.Frame):
             failed_only = dlg.GetStringSelection() == "Rerun failed jobs only"
         finally:
             dlg.Destroy()
-        self._run_change(run, lambda: rerun_workflow_run(self.repo, run.run_id, failed_only),
+        repo = self.repo
+        self._run_change(run, lambda: rerun_workflow_run(repo, run.run_id, failed_only),
                          f"Rerunning {'the failed jobs of ' if failed_only else ''}"
                          f"#{run.run_number} {run.name}")
 
@@ -6222,7 +6288,8 @@ class GhViewerFrame(wx.Frame):
         )
         if confirm != wx.YES:
             return
-        self._run_change(run, lambda: cancel_workflow_run(self.repo, run.run_id),
+        repo = self.repo
+        self._run_change(run, lambda: cancel_workflow_run(repo, run.run_id),
                          f"Cancelling #{run.run_number} {run.name}")
 
     def _run_change(self, run: WorkflowRun, call, said: str) -> None:

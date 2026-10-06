@@ -473,15 +473,17 @@ Deleting a run cannot be undone, and the question says so. On a Mac keyboard, us
 
 `L` on a failed run gathers what you would otherwise hunt for across the run's page and its logs, into one text to read from the top:
 
-- which jobs failed, at which step, after how long;
-- what GitHub flagged in each: the errors shown as annotations on the run's page, such as "Line 323: Process completed with exit code 1.", or a failing test's file and line;
-- the last 40 lines of each failed step's log, where the error usually is.
+- which jobs failed, at which step, after how long; jobs that were cancelled, usually because another failed first, are named on one line rather than reported as failures;
+- what GitHub flagged in each: the errors shown as annotations on the run's page, such as "Process completed with exit code 1.", or a failing test's file and line;
+- the last 40 lines of each failed step's log, where the error usually is. Some repositories' logs don't say where one step ends and the next begins; then it is the end of the job's log, and the report says so.
 
-Logs are tidied for reading: no colour codes, no timestamp on every line, and GitHub's error and warning markers read as "ERROR:" and "WARNING:". Warnings that are not failures are left out. On a run that succeeded, `L` just says so.
+A run that failed before any job started, because of a mistake in the workflow file or because it is waiting for someone to approve it, says that instead.
+
+Logs are tidied for reading: no colour codes or other terminal control codes, no timestamp on every line, GitHub's error and warning markers read as "ERROR:" and "WARNING:", and the commands it ran as "Command:". Warnings that are not failures are left out. On a run that succeeded, `L` just says so.
 
 ### Jobs
 
-`J` on a run lists its jobs: each job's name, status, result, how long it took and the step that failed, if one did. The details panel lists every step with its result, "Step 4, Run tests: failure". `Enter` on a job opens its whole log, with the cursor on the first error when there is one; a very long log keeps its last 20,000 lines. `L`, `E` and `X` work here on the run the jobs belong to. `Backspace` returns to the runs.
+`J` on a run lists its jobs: each job's name, status, result, how long it took and the step that failed, if one did. The details panel lists every step with its result, "Step 4, Run tests: failure". `Enter` on a job opens its whole log, with the cursor on the first error when there is one; a very long log keeps its last 20,000 lines. A skipped job has no log, and a running one's log is ready when it finishes; GHManage says so rather than opening an empty window. `L`, `E` and `X` work here on the run the jobs belong to. `Backspace` returns to the runs.
 
 ### Rerun and cancel
 
