@@ -223,6 +223,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   `_update_actions_menu` only. Bound to `EVT_CONTEXT_MENU` on Windows (not
   `EVT_LIST_ITEM_RIGHT_CLICK`, which is mouse-only) so the Applications key and Shift+F10
   work. The repo list's is `_repo_context_entries`.
+- **Repository actions** (New Issue Ctrl+N, Search This Repository Ctrl+Shift+S, Watch
+  Settings Ctrl+Shift+U) are **always enabled** and act on `_repo_in_front()`: the repo
+  selected in the repo list when it has focus; in a repoless view, the selected row's
+  repo (RepoEntry.name, Item/Notification/ActivityEvent.repo, FavoriteEntry.repo); else
+  the open repo. New Issue opens that repo on its issues first when it isn't the open one
+  (via `_open_repo_from_list` from cross-repo lists, so Backspace returns).
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names

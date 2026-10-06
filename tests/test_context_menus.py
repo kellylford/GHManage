@@ -127,8 +127,8 @@ def _ids(entries):
 
 def test_a_repository_s_menu():
     ids = _ids(Frame._repo_context_entries(_repo_frame(), "o/r"))
-    for wanted in (ghviewer.ID_REPO_OPEN, ghviewer.ID_REPO_BROWSER, ghviewer.ID_REPO_NEW_ISSUE,
-                   ghviewer.ID_REPO_SEARCH, ghviewer.ID_WATCH_SETTINGS, ghviewer.ID_COPY_LINK):
+    for wanted in (ghviewer.ID_REPO_OPEN, ghviewer.ID_REPO_BROWSER, ghviewer.ID_NEW_ISSUE,
+                   ghviewer.ID_SEARCH_REPO, ghviewer.ID_WATCH_SETTINGS, ghviewer.ID_COPY_LINK):
         assert wanted in ids
     assert ghviewer.ID_REMOVE_REPO not in ids      # one of your own: can't be removed
 
@@ -155,23 +155,6 @@ class RepoList:
     def GetClientData(self, i): return self.data
 
 
-def test_new_issue_from_the_repo_list_opens_that_repo_first():
-    events = []
-    f = SimpleNamespace(repo="o/other", view_mode=ghviewer.VIEW_ISSUES, repo_list=RepoList("o/r"))
-    f._select_repo = lambda r: events.append(("open", r))
-    f._do_new_issue = lambda: events.append("new issue")
-    Frame._repo_entry_action(f, "new_issue")
-    assert events == [("open", "o/r"), "new issue"]
-
-
-def test_search_this_repository_starts_the_query(monkeypatch):
-    got = []
-    f = SimpleNamespace(repo_list=RepoList("o/r"))
-    f._search_flow = lambda prefill=None: got.append(prefill)
-    Frame._repo_entry_action(f, "search")
-    assert got == [(ghviewer.KIND_ISSUES, "repo:o/r ")]
-
-
 def test_repo_actions_on_a_category_entry_say_so():
     f = SimpleNamespace(repo_list=RepoList(ghviewer.MY_WORK_ENTRY), announced=[])
     f._announce = f.announced.append
@@ -194,12 +177,3 @@ def test_an_expired_artifact_offers_no_download():
                        FakeItem(9, "Copy"))
     f = _frame(ghviewer.VIEW_ARTIFACTS, Artifact(1, "build", 10, True, "", 9), actions)
     assert Frame._context_entries(f) == [("item", 9, "Copy")]
-
-
-def test_new_issue_from_the_repo_list_switches_to_issues_even_in_the_same_repo():
-    events = []
-    f = SimpleNamespace(repo="o/r", view_mode=ghviewer.VIEW_BRANCHES, repo_list=RepoList("o/r"))
-    f._select_repo = lambda r: events.append(("open", r))
-    f._do_new_issue = lambda: events.append("new issue")
-    Frame._repo_entry_action(f, "new_issue")
-    assert events == [("open", "o/r"), "new issue"]

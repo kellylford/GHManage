@@ -625,8 +625,7 @@ ID_SEARCH = wx.NewIdRef()
 ID_CTX_OPEN = wx.NewIdRef()
 ID_REPO_OPEN = wx.NewIdRef()
 ID_REPO_BROWSER = wx.NewIdRef()
-ID_REPO_NEW_ISSUE = wx.NewIdRef()
-ID_REPO_SEARCH = wx.NewIdRef()
+ID_SEARCH_REPO = wx.NewIdRef()
 ID_RUN_JOBS = wx.NewIdRef()
 ID_PR_CHECKS = wx.NewIdRef()
 ID_PR_REVIEW = wx.NewIdRef()
@@ -1794,6 +1793,8 @@ class GhViewerFrame(wx.Frame):
         pr_menu.Append(ID_PR_REVIEWERS, "Request &Reviewers…")
         pr_menu.Append(ID_PR_UPDATE, "&Update Branch…")
         self._act_pr = actions_menu.AppendSubMenu(pr_menu, "&Pull Request")
+        self._act_search_repo = actions_menu.Append(
+            ID_SEARCH_REPO, "Search This Repository…\tCtrl+Shift+S")
         self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
         self._act_save_search = actions_menu.Append(ID_SAVE_SEARCH, "Save Search…\tCtrl+S")
         actions_menu.AppendSeparator()
@@ -2138,7 +2139,10 @@ class GhViewerFrame(wx.Frame):
 
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
-        self._act_new_issue.Enable(in_repo)
+        # Always on: they act on the repository in front of you (see
+        # _repo_in_front) and say so when there is none.
+        self._act_new_issue.Enable(True)
+        self._act_search_repo.Enable(True)
         self._act_pr.Enable(issues)
         # Always on: it can act on the repo selected in the repo list from any
         # view, and says "Select a repository first" when there is none.
@@ -2305,8 +2309,7 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda e: self.on_item_activated(None), id=ID_CTX_OPEN)
         self.Bind(wx.EVT_MENU, lambda e: self._activate_repo_entry(), id=ID_REPO_OPEN)
         self.Bind(wx.EVT_MENU, lambda e: self._repo_entry_action("browser"), id=ID_REPO_BROWSER)
-        self.Bind(wx.EVT_MENU, lambda e: self._repo_entry_action("new_issue"), id=ID_REPO_NEW_ISSUE)
-        self.Bind(wx.EVT_MENU, lambda e: self._repo_entry_action("search"), id=ID_REPO_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._search_repo_in_front(), id=ID_SEARCH_REPO)
         self.Bind(wx.EVT_MENU, lambda e: self._search_from_view_menu(), id=ID_VIEW_SEARCH_RESULTS)
         self.Bind(wx.EVT_MENU, lambda e: self._show_run_jobs(), id=ID_RUN_JOBS)
         self.Bind(wx.EVT_MENU, lambda e: self._pr_checks(), id=ID_PR_CHECKS)
@@ -4154,8 +4157,8 @@ class GhViewerFrame(wx.Frame):
                 ("item", ID_REPO_OPEN, "Open\tEnter"),
                 ("item", ID_REPO_BROWSER, "Open on GitHub"),
                 ("sep",),
-                ("item", ID_REPO_NEW_ISSUE, "New Issue…"),
-                ("item", ID_REPO_SEARCH, "Search This Repository…"),
+                ("item", ID_NEW_ISSUE, "New Issue…\tCtrl+N"),
+                ("item", ID_SEARCH_REPO, "Search This Repository…\tCtrl+Shift+S"),
                 ("item", ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U"),
                 ("sep",),
                 ("sub", "Copy", [
@@ -4193,6 +4196,15 @@ class GhViewerFrame(wx.Frame):
             return
         self._popup(self.repo_list, self._menu_from_entries(entries), event)
 
+    def _search_repo_in_front(self) -> None:
+        """Actions ▸ Search This Repository (Ctrl+Shift+S): a search that
+        starts repo:owner/name, for the repository in front of you."""
+        repo = self._repo_in_front()
+        if not repo:
+            self._announce("Select a repository first: Search This Repository needs one.")
+            return
+        self._search_flow(prefill=(KIND_ISSUES, f"repo:{repo} "))
+
     def _repo_entry_action(self, action: str) -> None:
         """A repository-list context menu action, on the repo selected there."""
         idx = self.repo_list.GetSelection()
@@ -4204,14 +4216,6 @@ class GhViewerFrame(wx.Frame):
             url = f"https://github.com/{name}"
             webbrowser.open(url)
             self._announce(f"Opened {name} on GitHub")
-        elif action == "new_issue":
-            # Open it on its issues first, so the new issue lands in a list
-            # you can see.
-            if self.repo != name or self.view_mode != VIEW_ISSUES:
-                self._select_repo(name)
-            self._do_new_issue()
-        elif action == "search":
-            self._search_flow(prefill=(KIND_ISSUES, f"repo:{name} "))
 
     # ── Run a workflow (workflow_dispatch) ──────────────────────────────
 
@@ -5702,6 +5706,28 @@ class GhViewerFrame(wx.Frame):
         dlg.Destroy()
 
     def on_new_issue(self, event: wx.CommandEvent) -> None:
+        self._new_issue_in_front()
+
+    def _new_issue_in_front(self) -> None:
+        """Actions ▸ New Issue (Ctrl+N), for the repository in front of you.
+
+        In a view of the open repository it is created there, as before.
+        Anywhere else the repository is opened on its issues first, so the
+        new issue lands in a list you can see — from a list across
+        repositories by the same path as Enter, so Backspace comes back.
+        """
+        repo = self._repo_in_front()
+        if not repo:
+            self._announce("Select a repository first: New Issue needs one.")
+            return
+        if repo == self.repo and self.view_mode not in REPOLESS_VIEWS \
+                and self._pane_index(self._current_focus()) != 0:
+            self._do_new_issue()
+            return
+        if self._pane_index(self._current_focus()) == 0 or self.view_mode not in REPOLESS_VIEWS:
+            self._select_repo(repo)
+        else:
+            self._open_repo_from_list(repo, self._focused_item())
         self._do_new_issue()
 
     def _do_new_issue(self) -> None:
@@ -6503,21 +6529,32 @@ class GhViewerFrame(wx.Frame):
         (WATCH_IGNORE, "Ignore — nothing, not even @mentions"),
     ]
 
-    def _watch_target(self) -> str | None:
-        """The repository Watch Settings is about: the one selected in the
-        repo list when that has focus, the one selected in Starred or
-        Watched, else the one open."""
+    def _repo_in_front(self) -> str | None:
+        """The repository the repository actions (New Issue, Search This
+        Repository, Watch Settings) are about — the one in front of you:
+
+        - the repository selected in the repository list, when that has focus;
+        - in a list across repositories (Notifications, My Work, Activity,
+          search results, Starred, Watched), the selected row's repository;
+        - otherwise the repository open.
+        """
         if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
             if is_repo_entry(name):
                 return name
         item = self._focused_item()
-        if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):
-            return item.name
-        if self.view_mode not in REPOLESS_VIEWS:
-            return self.repo
-        return None
+        if self.view_mode in REPOLESS_VIEWS:
+            if isinstance(item, RepoEntry):
+                return item.name
+            if isinstance(item, FavoriteEntry):
+                return item.repo or None
+            repo = getattr(item, "repo", "")
+            return repo or None
+        return self.repo
+
+    def _watch_target(self) -> str | None:
+        return self._repo_in_front()
 
     def _watch_settings_flow(self) -> None:
         """Actions ▸ Watch Settings (Ctrl+Shift+U): how GitHub notifies you
