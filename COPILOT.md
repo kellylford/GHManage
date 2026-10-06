@@ -151,6 +151,52 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   current view and is called from `_update_menu_checks` (so every `_switch_view` covers
   it) plus `_select_repo` / `_select_favorites`, where the repo changes without the view
   doing so. A new action belongs there, with an entry in that method.
+- **Open Repository or Address** (Ctrl+Shift+O) — `parse_github_url` (pure, module
+  level) turns an address into a `GitHubTarget(repo, kind, ref)`. `_open_address` picks
+  the view, calls `_select_repo(repo, view)` and then `_set_pending_target(view, kind,
+  ref)`, which records the **fetch token of the load just started**. `_on_items_loaded`
+  and `_on_git_items_loaded` pass their items and token through `_take_pending_row`: the
+  target is consumed by the first load that lands, and only acts if that load is the one
+  it was set for — otherwise the user moved on and it is dropped, never fired later.
+  Fallbacks: `_goto_issue` for an issue not in the list (or hidden by the filter),
+  `_goto_commit` for a commit; both capture repo (and token, for commits) on the UI thread
+  and drop stale results. Any other async path that wants to land on an item after a
+  load should use `_set_pending_target` the same way (New Issue and Notifications do).
+  `parse_github_url` only reads github.com; a page inside a repo GHManage has no view for
+  is kind `inside`, which opens the repo **without pinning** — only kind `repo` pins.
+- **New Issue** (Ctrl+N / N) — `NewIssueDialog` (title + multiline Markdown body,
+  Ctrl+Enter submits). `create_issue` sends the body on **stdin** (`--body-file -`,
+  `_run_gh(args, stdin=…)`) because a long body on the command line can exceed the
+  Windows limit; it resolves the fork's upstream like every other issue action, and the
+  dialog names that repo. Unsent text lives in `_issue_drafts[repo]` until created.
+  After creation the list reloads with `_pending_target` on the new number.
+- **Notifications** (`VIEW_NOTIFICATIONS`, Ctrl+Shift+N, entry second in the repo list,
+  counted as "(N unread)"). Data: `fetch_notifications(limit, include_read)` pages **50**
+  at a time (GitHub's cap), `Notification` maps the subject's API address to a github.com
+  page and number (`_notification_url`). Enter on an issue/PR opens it via
+  `_open_repo_from_list` + `_pending_target`, so Backspace returns; anything else opens the
+  browser; both mark read. M/U/I/G live in `on_char_hook` (work from the details panel);
+  Delete/Ctrl+D is "Mark as Done" through `_delete_focused_item`. Changes run through
+  `_run_notification_change`, which looks the gh_data function up **by name at call time**
+  (`_NOTIFICATION_CHANGES`) — a dict of the functions themselves bound them at import and
+  a test stub of `mark_notification_read` did not take, which marked a real notification
+  read. Keep it by name. Read rows stay put until refresh; done rows leave at once.
+- **Switch GitHub Account** (File, Ctrl+Shift+K) — `list_accounts` (`gh auth status --json
+  hosts`, github.com only) and `switch_account` (`gh auth switch`, also resets the cached
+  login). `_on_account_switched` drops everything tied to the old account (repo, return
+  path, pending target, drafts, counts), reloads the repo list and lands on Notifications.
+- **Watch Settings** (Actions, Ctrl+Shift+U) — `get_watch_level`/`set_watch_level` on
+  `repos/{r}/subscription` (404 = participating, the default; DELETE sets it). These need
+  gh's **notifications** scope, which `gh auth login` does not request: `_scope_error`
+  turns gh's "needs the X scope" message into `MissingScope(scope)`, whose text gives the
+  `gh auth refresh` command. Use `MissingScope` for any future feature that needs an extra
+  scope (Follow needs `user:follow`, Projects `read:project`).
+- **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
+  module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
+  for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
+  the fourth entry per view and must agree with the `ident_noun` the view's items
+  give; a new view needs an entry there. With focus in the repo list the commands
+  act on that repository instead (`_copy_target`).
 - `_delete_focused_item` is the single dispatcher behind Delete, Ctrl+D, and the Actions
   menu entry, so the key and the menu cannot disagree about what Delete means in a view.
   Add new deletable views there and in `_update_actions_menu`.
@@ -252,6 +298,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Starred repos (Starred view) | `user/starred?per_page=&page=` |
 | Watched repos (Watched view) | `user/subscriptions?per_page=&page=` |
 | Signed-in login | `user` (`-q .login`, cached) |
+| Notifications | `notifications?all=false|true&per_page=50&page=` |
+| Mark read / done / unsubscribe | `PATCH`/`DELETE notifications/threads/{id}`, `DELETE …/{id}/subscription` |
+| Mark all read | `PUT notifications -F read=true` |
 | Activity feed | `users/{login}/received_events?per_page=100&page=` (max 3 pages; page 4 is HTTP 422; pages are not reliably full) |
 | PR titles for the feed | GraphQL `repository(owner,name){ pN: pullRequest(number:N){title body} }`, batched, per repo on error |
 

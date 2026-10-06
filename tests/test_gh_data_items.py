@@ -384,3 +384,33 @@ def test_find_gh_honours_override(monkeypatch):
 def test_find_gh_falls_back_to_bare_name(monkeypatch):
     monkeypatch.setattr(gh_data.shutil, "which", lambda *a, **k: None)
     assert gh_data._find_gh() == "gh"
+
+
+# ── New issue ───────────────────────────────────────────────────────────
+
+
+def test_create_issue_sends_the_body_on_stdin(fake_gh, monkeypatch):
+    monkeypatch.setattr(gh_data, "parent_repo", lambda r: None)
+    fake_gh.route("issue create", "Creating issue in o/r\n\nhttps://github.com/o/r/issues/42\n")
+    number, url = gh_data.create_issue("o/r", "Title", "Body\nline two")
+    assert (number, url) == (42, "https://github.com/o/r/issues/42")
+    call = fake_gh.called_with("issue create")[0]
+    assert call[call.index("--title") + 1] == "Title"
+    assert "--body-file" in call and call[call.index("--body-file") + 1] == "-"
+    assert call[call.index("--repo") + 1] == "o/r"
+    assert fake_gh.stdin[-1] == "Body\nline two"
+
+
+def test_create_issue_on_a_fork_goes_upstream(fake_gh, monkeypatch):
+    monkeypatch.setattr(gh_data, "parent_repo", lambda r: "up/r")
+    fake_gh.route("issue create", "https://github.com/up/r/issues/7\n")
+    assert gh_data.create_issue("me/r", "T", "")[0] == 7
+    call = fake_gh.called_with("issue create")[0]
+    assert call[call.index("--repo") + 1] == "up/r"
+
+
+def test_create_issue_without_an_address_is_an_error(fake_gh, monkeypatch):
+    monkeypatch.setattr(gh_data, "parent_repo", lambda r: None)
+    fake_gh.route("issue create", "something odd\n")
+    with pytest.raises(gh_data.GhError):
+        gh_data.create_issue("o/r", "T", "")

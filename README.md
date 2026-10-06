@@ -10,8 +10,16 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 ## Features
 
 - **Repo chooser** — list shows your GitHub repositories; arrow through and press Enter to load.
-  Above them sit **★ Favorites**, **Activity**, **Starred Repositories** and **Watched Repositories**,
-  the counted ones with how many they hold, e.g. "Starred Repositories (7)"
+  Above them sit **★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
+  **Watched Repositories**, the counted ones with how many they hold, e.g. "Notifications (12 unread)"
+- **Notifications** — your GitHub inbox: why you were told, what it is, mark read, mark done,
+  unsubscribe; Enter opens an issue or PR right here, and Backspace comes back
+- **Open any GitHub address** — paste a link to an issue, PR, commit, release, workflow run or
+  branch into Ctrl+Shift+O and it opens in its own view with that item selected
+- **New issue** — Ctrl+N, a title and a Markdown description
+- **Copy** — the link, a Markdown link, the title, the number/SHA/tag, or the details, for anything
+- **Watch settings and account switching** — Participating, All Activity or Ignore for a
+  repository; switch between the github.com accounts gh is signed in to
 - **Activity** — your GitHub feed: what happens in the repositories you star or watch and
   what the people you follow do, newest first, across every repository
 - **Issues & PRs view** — issues and PRs in one list, like an email inbox
@@ -24,15 +32,16 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 - **Comment navigation** — press Alt+N/Alt+P in the details box to jump between comments
 - **View More** — press Ctrl++ to load more items (100 at a time)
 - **View menu** with:
-  - **View Mode** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, GitHub Pages, Activity, Starred Repositories and Watched Repositories
+  - **View Mode** — switch between Issues & PRs, Branches, Commits, Tags, Releases, Workflows, Workflow Runs, Labels, GitHub Pages, Notifications, Activity, Starred Repositories and Watched Repositories
   - **Quick / Full list mode** — Quick shows compact rows; Full includes field names (e.g. "number: 208, type: PR, state: OPEN, title: …") for screen readers
   - **Sort order** — by number, title, created date, updated date, or comments
   - **Column selection** — toggle columns on/off (columns change per view mode)
   - **State filter** — open, closed, or all (issues/PRs view)
   - **Show filter** — issues only, PRs only, or both (issues/PRs view)
 - **Actions menu** — one home for everything that acts on what the list is
-  showing: close, reopen, comment, create and delete labels, delete a workflow
-  run, run a workflow, download an artifact, open in browser. Each item names
+  showing: close, reopen, comment, new issue, copy, watch settings, create and
+  delete labels, delete a workflow run, run a workflow, download an artifact,
+  mark notifications read or done, open in browser. Each item names
   what it would act on in the current view and is greyed out where it does not
   apply, so the menu answers "what can I do here?" without trial and error
 
@@ -119,10 +128,16 @@ python ghviewer.py --repo owner/repo-name
 | `R` or `Ctrl+R` | Refresh the list (resets to first page) |
 | `Ctrl++` | View More — load the next page of items |
 | `Ctrl+O` | Open the selected item on GitHub in your browser |
+| `Ctrl+Shift+O` | Open a repository, or an issue, PR, commit, release, run or branch, by its address |
+| `Ctrl+Shift+C` / `Ctrl+Shift+L` | Copy the selected item's link / a Markdown link to it |
+| `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
+| `Ctrl+N` | New issue in the current repository |
+| `Ctrl+Shift+U` | Watch settings for the repository |
+| `Ctrl+Shift+K` | Switch GitHub account |
 | `Ctrl+G` | Go to a specific issue/PR by number (issues view only) |
 | `Ctrl+B` | Select a branch for the Commits view (commits view only) |
 | `Ctrl+I` | Create — a new label (Labels view) |
-| `Ctrl+D` | Delete — the selected label or workflow run |
+| `Ctrl+D` | Delete — the selected label or workflow run; mark a notification done |
 | `Ctrl+1` … `Ctrl+0` | Switch view — see below |
 | `Alt+N` | Jump to the next comment in the details box |
 | `Alt+P` | Jump to the previous comment in the details box |
@@ -159,18 +174,19 @@ details panel).
 | `Ctrl+8` | Labels |
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
+| `Ctrl+Shift+N` | Notifications |
 | `Ctrl+Shift+A` | Activity |
 
-Every view except Favorites, Activity, Starred Repositories and Watched
-Repositories needs a repository, so with none selected the status bar says
-"Select a repository first" and the view is left alone. Those four don't change
+Every view except Favorites, Notifications, Activity, Starred Repositories and
+Watched Repositories needs a repository, so with none selected the status bar says
+"Select a repository first" and the view is left alone. Those five don't change
 the repository you are in, so `Ctrl+1` takes you back to it.
 
 ### Starred and watched repositories
 
-The repository list starts with four entries that aren't single repositories:
-**★ Favorites**, **Activity**, **Starred Repositories** and **Watched
-Repositories**. After them come any repositories you opened by address, then
+The repository list starts with five entries that aren't single repositories:
+**★ Favorites**, **Notifications**, **Activity**, **Starred Repositories** and
+**Watched Repositories**. After them come any repositories you opened by address, then
 your own. Starred and Watched are also on View ▸ View Mode.
 
 - **Starred Repositories** — the repositories you have starred, most recently
@@ -188,6 +204,23 @@ description. The details panel adds forks and open issues.
 | `Ctrl+O` | Open the repository on GitHub |
 | `F` | Favorite the repository |
 | `Ctrl++` | Load 100 more |
+
+### In the Notifications view
+
+| Key | Action |
+|-----|--------|
+| `Enter` (or double-click) | Open an issue or PR here in GHManage (`Backspace` comes back); anything else on GitHub. Marks it read |
+| `M` | Mark read |
+| `Delete` or `Ctrl+D` | Mark done |
+| `U` | Unsubscribe from the thread |
+| `I` | Include read notifications, or not |
+| `G` or `Ctrl+Shift+G` | Open its repository here |
+| `Ctrl++` | Load more |
+
+Choose **Notifications** near the top of the repository list, press
+`Ctrl+Shift+N`, or use View ▸ View Mode ▸ Notifications. Each row reads why
+GitHub told you, what it is, its title, the repository, when it changed, and
+whether it is read. **Actions ▸ Mark All as Read** asks first.
 
 ### In the Activity view
 
@@ -228,6 +261,7 @@ from the details panel as well as the list.
 | `C` | Close the selected issue/PR |
 | `O` | Reopen the selected issue/PR |
 | `M` or `Ctrl+M` | Add a comment to the selected item |
+| `N` or `Ctrl+N` | New issue |
 | `Backspace` | Return to the labels list (only when the list is restricted to a label) |
 
 ### In the branches view
@@ -365,8 +399,8 @@ so does the bare `Delete` key, which additionally works from the details panel.
 Switch between **Issues & PRs**, **Branches**, **Commits**, **Tags**, **Releases**
 (with download counts), **Workflows** (the workflow definitions, which you can run
 on a branch), **Workflow Runs** (recent run history), **Labels**,
-**GitHub Pages** (a published site and the pages it serves), and **Activity**
-(your GitHub feed, across all repositories).
+**GitHub Pages** (a published site and the pages it serves), **Notifications**
+(your GitHub inbox) and **Activity** (your GitHub feed, across all repositories).
 Each view has its own set of columns and detail formatting.
 
 ## Building

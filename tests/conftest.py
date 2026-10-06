@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -39,13 +40,15 @@ class FakeGh:
         self.routes: list[tuple[str, object]] = []
         self.fallbacks: list[tuple[str, object]] = []
         self.calls: list[list[str]] = []
+        self.stdin: list[Optional[str]] = []  # what each call was fed, in step with calls
 
     def route(self, match: str, reply: object) -> "FakeGh":
         self.routes.append((match, reply))
         return self
 
-    def __call__(self, args: list[str]) -> str:
+    def __call__(self, args: list[str], stdin: Optional[str] = None) -> str:
         self.calls.append(list(args))
+        self.stdin.append(stdin)
         joined = " ".join(args)
         for match, reply in self.routes + self.fallbacks:
             if match in joined:
@@ -62,7 +65,7 @@ class FakeGh:
         return [c for c in self.calls if fragment in " ".join(c)]
 
 
-def _no_real_gh(args):
+def _no_real_gh(args, stdin=None):
     raise AssertionError(
         f"test reached the real gh CLI: gh {' '.join(args)} — use the fake_gh fixture"
     )

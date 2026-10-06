@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,13 +63,17 @@ def _find_gh() -> str:
     return _gh_exe
 
 
-def _run_gh(args: list[str]) -> str:
-    """Run a `gh` command and return stdout, raising GhError on failure."""
+def _run_gh(args: list[str], stdin: Optional[str] = None) -> str:
+    """Run a `gh` command and return stdout, raising GhError on failure.
+
+    ``stdin`` is fed to the command, for the `--body-file -` style options.
+    """
     # On Windows, suppress the console window that subprocess would otherwise pop up.
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
             [_find_gh(), *args],
+            input=stdin,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -537,6 +542,37 @@ def add_comment(item: Item, comment: str, repo: Optional[str]) -> None:
     _run_gh(args)
 
 
+class IssueCreatedUnreadable(GhError):
+    """The issue was created, but gh's reply didn't say which number it got."""
+
+
+def create_issue(
+    repo: Optional[str], title: str, body: str, effective: Optional[str] = None,
+) -> tuple[int, str]:
+    """Open a new issue and return its number and address.
+
+    Goes to the repo the issues list shows, so on a fork that is the
+    upstream, the same as every other issue action here. A caller that has
+    already worked that out — to tell the user where it is going — passes it
+    as ``effective``, so the issue goes exactly where it said. The body goes
+    in on stdin rather than the command line, where a long one could exceed
+    the length Windows allows.
+    """
+    effective = effective or resolve_issue_repo(repo)
+    args = ["issue", "create", "--title", title, "--body-file", "-"]
+    if effective:
+        args += ["--repo", effective]
+    out = _run_gh(args, stdin=body)
+    # gh prints the new issue's address as its last line.
+    url = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    if not tail.isdigit():
+        raise IssueCreatedUnreadable(
+            f"The issue was created, but gh didn't say where: {out.strip()!r}"
+        )
+    return int(tail), url
+
+
 def open_in_browser(item: Item) -> None:
     """Open the item's GitHub URL in the default browser."""
     if item.url:
@@ -913,7 +949,9 @@ class Commit:
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {
             "sha": self.short_sha,
-            "message": self.message[:80],
+            # First line only: a commit fetched on its own carries its whole
+            # message, and a row should not read the body out.
+            "message": (self.message.splitlines() or [""])[0][:80],
             "author": self.author,
             "date": self.date[:10] if self.date else "",
             "files": str(self.files_changed) if self.files_changed else "",
@@ -2426,3 +2464,371 @@ def fetch_activity(limit: int = 100) -> tuple[list[ActivityEvent], bool]:
     _fill_pr_titles(events)
     more = not exhausted and read < _ACTIVITY_PAGES
     return events, more
+
+
+# ── Notifications ──────────────────────────────────────────────────────
+#
+# The REST notifications API: GET /notifications lists threads (one per
+# issue, pull request, release, discussion or CI run you are told about),
+# newest first; PATCH marks one read, DELETE marks it done, PUT marks every
+# one read. The `repo` scope gh asks for at login covers all of it.
+
+# Status goes last: with only unread ones listed it would open every row
+# with the same word.
+NOTIFICATION_COLUMNS = ["reason", "type", "title", "repo", "updated", "status"]
+NOTIFICATION_DEFAULT_COLUMNS = ["reason", "type", "title", "repo", "updated", "status"]
+
+# GitHub's page size for notifications is at most 50, whatever is asked for.
+_NOTIFICATION_PAGE = 50
+
+# Why GitHub says it told you, in words.
+_REASONS = {
+    "approval_requested": "approval requested",
+    "assign": "assigned",
+    "author": "author",
+    "ci_activity": "CI activity",
+    "comment": "comment",
+    "invitation": "invitation",
+    "manual": "subscribed",
+    "member_feature_requested": "feature requested",
+    "mention": "mention",
+    "review_requested": "review requested",
+    "security_advisory_credit": "security credit",
+    "security_alert": "security alert",
+    "state_change": "state change",
+    "subscribed": "watching",
+    "team_mention": "team mention",
+}
+
+_SUBJECT_KINDS = {
+    "Issue": "issue",
+    "PullRequest": "PR",
+    "Release": "release",
+    "Discussion": "discussion",
+    "Commit": "commit",
+    "CheckSuite": "CI run",
+    "RepositoryVulnerabilityAlert": "security alert",
+    "RepositoryDependabotAlertsThread": "Dependabot alert",
+    "RepositoryAdvisory": "security advisory",
+    "RepositoryInvitation": "invitation",
+}
+
+
+@dataclass
+class Notification:
+    """One notification thread."""
+
+    id: str
+    title: str
+    repo: str                 # OWNER/NAME
+    reason: str = ""          # GitHub's code, e.g. "review_requested"
+    subject_type: str = ""    # GitHub's type, e.g. "PullRequest"
+    unread: bool = True
+    updated_at: str = ""
+    api_url: str = ""         # the subject's API address, when it has one
+    url: str = ""             # where to read it on github.com
+    number: int = 0           # issue or pull request number, else 0
+    # Whether ``url`` is this thing's own page, or only the repository's page
+    # for its kind (all its releases, all its runs) — not something to
+    # favorite, since every notification of that kind shares it.
+    own_page: bool = False
+
+    @property
+    def reason_display(self) -> str:
+        return _REASONS.get(self.reason, self.reason.replace("_", " "))
+
+    @property
+    def kind(self) -> str:
+        return _SUBJECT_KINDS.get(self.subject_type, self.subject_type)
+
+    @property
+    def is_item(self) -> bool:
+        """An issue or pull request, which GHManage can open itself."""
+        return bool(self.number) and self.subject_type in ("Issue", "PullRequest")
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        mapping = {
+            "status": "unread" if self.unread else "read",
+            "reason": self.reason_display,
+            "type": self.kind,
+            "title": f"#{self.number} {self.title}" if self.number else self.title,
+            "repo": self.repo,
+            "updated": _local_time(self.updated_at),
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
+
+
+def _notification_url(subject_type: str, api_url: str, repo: str) -> tuple[str, int, bool]:
+    """The github.com address for a notification's subject, its number, and
+    whether that address is the subject's own page.
+
+    The API gives the subject's *API* address, which is not a page anyone can
+    open: repos/o/r/pulls/12 is github.com/o/r/pull/12. Some subjects have no
+    address at all (CI runs), or one that doesn't map without asking GitHub
+    (a release by id); those fall back to the repository's page for that kind
+    of thing.
+    """
+    base = f"https://github.com/{repo}" if repo else "https://github.com"
+    prefix = f"https://api.github.com/repos/{repo}/"
+    rest = api_url[len(prefix):] if api_url.lower().startswith(prefix.lower()) else ""
+    parts = rest.split("/")
+    if len(parts) == 2 and parts[1].isdigit():
+        if parts[0] == "issues":
+            return f"{base}/issues/{parts[1]}", int(parts[1]), True
+        if parts[0] == "pulls":
+            return f"{base}/pull/{parts[1]}", int(parts[1]), True
+        if parts[0] == "discussions":
+            return f"{base}/discussions/{parts[1]}", 0, True
+    if len(parts) == 2 and parts[0] == "commits" and parts[1]:
+        return f"{base}/commit/{parts[1]}", 0, True
+    if len(parts) == 2 and parts[0] == "security-advisories" and parts[1]:
+        return f"{base}/security/advisories/{parts[1]}", 0, True
+    fallback = {
+        "Release": "/releases",
+        "Discussion": "/discussions",
+        "CheckSuite": "/actions",
+        "RepositoryVulnerabilityAlert": "/security",
+        "RepositoryDependabotAlertsThread": "/security/dependabot",
+        "RepositoryAdvisory": "/security/advisories",
+        "RepositoryInvitation": "/invitations",
+    }.get(subject_type, "")
+    return base + fallback, 0, False
+
+
+def parse_notification(raw: dict) -> Notification:
+    subject = raw.get("subject") or {}
+    repo = ((raw.get("repository") or {}).get("full_name")) or ""
+    subject_type = subject.get("type") or ""
+    api_url = subject.get("url") or ""
+    url, number, own_page = _notification_url(subject_type, api_url, repo)
+    return Notification(
+        id=str(raw.get("id") or ""),
+        title=subject.get("title") or "",
+        repo=repo,
+        reason=raw.get("reason") or "",
+        subject_type=subject_type,
+        unread=bool(raw.get("unread")),
+        updated_at=raw.get("updated_at") or "",
+        api_url=api_url,
+        url=url,
+        number=number,
+        own_page=own_page,
+    )
+
+
+def release_page(api_url: str) -> str:
+    """A release's github.com page, from its API address (repos/o/r/releases/<id>)."""
+    try:
+        data = json.loads(_run_gh(["api", api_url.split("api.github.com/", 1)[-1]]))
+    except (GhError, ValueError):
+        return ""
+    return (data.get("html_url") or "") if isinstance(data, dict) else ""
+
+
+def _api_page(endpoint: str) -> tuple[list, bool]:
+    """One page of a REST list, and whether GitHub says there is a next one.
+
+    The Link header's rel="next" is the only reliable answer: a full page
+    may be the last, when the total is a whole number of pages.
+    """
+    raw = _run_gh(["api", "-i", endpoint])
+    head, blank, body = raw.replace("\r\n", "\n").partition("\n\n")
+    if not blank:
+        raise GhError(f"Unexpected reply from {endpoint}")
+    more = any(
+        line.lower().startswith("link:") and 'rel="next"' in line
+        for line in head.splitlines()
+    )
+    try:
+        rows = json.loads(body) if body.strip() else []
+    except ValueError:
+        raise GhError(f"Unexpected reply from {endpoint}")
+    return (rows if isinstance(rows, list) else []), more
+
+
+def fetch_notifications(limit: int = 50, include_read: bool = False) -> tuple[list[Notification], bool]:
+    """Your notifications, most recently updated first.
+
+    Returns them and whether GitHub has more. Unread ones only unless
+    ``include_read``, which is what github.com's inbox shows by default too.
+    """
+    base = "notifications?all=true" if include_read else "notifications?all=false"
+    out: list[Notification] = []
+    seen: set[str] = set()
+    page = 1
+    more = False
+    while len(out) < limit:
+        rows, more = _api_page(f"{base}&per_page={_NOTIFICATION_PAGE}&page={page}")
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            note = parse_notification(r)
+            # Pages are offsets into an inbox that changes as you read, so a
+            # thread can turn up on two of them.
+            if note.id in seen:
+                continue
+            seen.add(note.id)
+            out.append(note)
+        if not more:
+            break
+        page += 1
+    if len(out) > limit:
+        out = out[:limit]
+        more = True
+    return out, more
+
+
+def count_unread_notifications() -> int:
+    """How many unread notifications you have."""
+    return _count_items("notifications")
+
+
+def mark_notification_read(thread_id: str) -> None:
+    _run_gh(["api", "-X", "PATCH", f"notifications/threads/{thread_id}"])
+
+
+def mark_notification_done(thread_id: str) -> None:
+    """Done: off the inbox for good, as the Done button on github.com does."""
+    _run_gh(["api", "-X", "DELETE", f"notifications/threads/{thread_id}"])
+
+
+def mark_all_notifications_read(last_read_at: str = "") -> None:
+    """Every notification read, up to ``last_read_at`` when given (ISO 8601).
+
+    Pass the time the list was loaded, so anything that arrived since — that
+    you have not seen — stays unread. GitHub may finish this in the background.
+    """
+    args = ["api", "-X", "PUT", "notifications", "-F", "read=true"]
+    if last_read_at:
+        args += ["-f", f"last_read_at={last_read_at}"]
+    _run_gh(args)
+
+
+def unsubscribe_notification(thread_id: str) -> None:
+    """Stop notifications for this thread until you comment or are mentioned."""
+    _run_gh(["api", "-X", "DELETE", f"notifications/threads/{thread_id}/subscription"])
+
+
+# ── Accounts ───────────────────────────────────────────────────────────
+#
+# gh keeps the accounts; GHManage only asks which there are and which is in
+# use, and asks gh to switch. Only github.com accounts are offered: every
+# other call here talks to github.com.
+
+
+@dataclass
+class Account:
+    login: str
+    host: str = "github.com"
+    active: bool = False
+
+
+def list_accounts() -> list[Account]:
+    """The github.com accounts gh is signed in to, the one in use first."""
+    # gh exits non-zero when any stored account's token has gone bad, but
+    # still prints the list; that list is what is needed, bad entry and all.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [_find_gh(), "auth", "status", "--json", "hosts"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise GhError(str(exc))
+    raw = result.stdout
+    if not raw.strip():
+        err = result.stderr.strip()
+        if "unknown flag" in err:
+            raise GhError("Switching accounts needs a newer gh. Update it from "
+                          "https://cli.github.com/ and try again.")
+        raise GhError(err or "gh didn't list its accounts.")
+    try:
+        hosts = (json.loads(raw) or {}).get("hosts") or {}
+    except ValueError:
+        raise GhError("gh's account list couldn't be read.")
+    out = [
+        Account(a.get("login") or "", host, bool(a.get("active")))
+        for host, accounts in hosts.items() if host == "github.com"
+        for a in (accounts or []) if isinstance(a, dict) and a.get("login")
+    ]
+    out.sort(key=lambda a: not a.active)
+    return out
+
+
+def switch_account(login: str, host: str = "github.com") -> None:
+    """Make ``login`` the account gh uses — for GHManage and the terminal alike."""
+    global _login
+    _run_gh(["auth", "switch", "--hostname", host, "--user", login])
+    _login = None  # current_login() must ask again
+
+
+# ── Watching a repository ──────────────────────────────────────────────
+#
+# GitHub's three plain levels. The web's "Custom" (only issues, only
+# releases, …) is not in the API.
+
+WATCH_PARTICIPATING = "participating"
+WATCH_ALL = "all"
+WATCH_IGNORE = "ignore"
+
+
+class MissingScope(GhError):
+    """gh's sign-in lacks a permission this needs; ``scope`` names it."""
+
+    def __init__(self, scope: str) -> None:
+        super().__init__(
+            f'This needs gh\'s "{scope}" permission, which gh doesn\'t ask for '
+            f"when you sign in. Run this in a terminal, then try again:\n\n"
+            f"gh auth refresh -h github.com -s {scope}"
+        )
+        self.scope = scope
+
+
+def _scope_error(exc: GhError) -> Optional[MissingScope]:
+    text = str(exc)
+    if "needs the" in text and "scope" in text:
+        m = re.search(r'needs the "([^"]+)" scope', text)
+        return MissingScope(m.group(1) if m else "notifications")
+    return None
+
+
+def get_watch_level(repo: str) -> str:
+    """How you watch ``repo``: all activity, ignoring, or participating only."""
+    try:
+        raw = _run_gh(["api", f"repos/{repo}/subscription"])
+    except GhError as exc:
+        missing = _scope_error(exc)
+        if missing:
+            raise missing
+        if _is_not_found(exc):
+            return WATCH_PARTICIPATING  # no subscription: the default
+        raise
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        raise GhError(f"Unexpected reply about watching {repo}")
+    if not isinstance(data, dict):
+        data = {}
+    if data.get("ignored"):
+        return WATCH_IGNORE
+    return WATCH_ALL if data.get("subscribed") else WATCH_PARTICIPATING
+
+
+def set_watch_level(repo: str, level: str) -> None:
+    if level == WATCH_PARTICIPATING:
+        args = ["api", "-X", "DELETE", f"repos/{repo}/subscription"]
+    elif level == WATCH_ALL:
+        args = ["api", "-X", "PUT", f"repos/{repo}/subscription", "-F", "subscribed=true"]
+    elif level == WATCH_IGNORE:
+        args = ["api", "-X", "PUT", f"repos/{repo}/subscription", "-F", "ignored=true"]
+    else:
+        raise ValueError(level)
+    try:
+        _run_gh(args)
+    except GhError as exc:
+        raise _scope_error(exc) or exc
