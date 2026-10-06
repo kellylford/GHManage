@@ -10,6 +10,7 @@ import argparse
 import sys
 import threading
 import webbrowser
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import wx
@@ -144,6 +145,96 @@ def _parse_repo_spec(value: str) -> str | None:
     return f"{owner}/{name}"
 
 
+# ── Copy ────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class CopyValues:
+    """What the Copy commands put on the clipboard for one item.
+
+    ``ident`` is the short thing you would type to find the item again — an
+    issue number, a SHA, a tag, a branch name — and ``ident_noun`` says which,
+    for the status bar. ``text`` is the visible part of the Markdown link.
+    """
+
+    link: str = ""
+    title: str = ""
+    ident: str = ""
+    ident_noun: str = "Name"
+    text: str = ""
+
+    @property
+    def markdown(self) -> str:
+        """``[#12 Fix the thing](https://…)``, or "" when there is no link."""
+        if not self.link:
+            return ""
+        label = (self.text or self.title or self.ident or self.link)
+        # Brackets and backslashes in a title would end or break the label.
+        for ch in ("\\", "[", "]"):
+            label = label.replace(ch, "\\" + ch)
+        return f"[{label}]({self.link})"
+
+
+def _first_line(text: str) -> str:
+    return text.splitlines()[0].strip() if text else ""
+
+
+def copy_values(item) -> CopyValues | None:
+    """The Copy commands' view of ``item``, or None for an unknown kind."""
+    if isinstance(item, Item):
+        number = f"#{item.number}"
+        return CopyValues(item.url, item.title, number, "Number",
+                          f"{number} {item.title}")
+    if isinstance(item, Branch):
+        return CopyValues(item.url, item.name, item.name, "Branch Name", item.name)
+    if isinstance(item, Commit):
+        msg = _first_line(item.message)
+        return CopyValues(item.url, msg, item.sha, "SHA",
+                          f"{item.short_sha} {msg}".strip())
+    if isinstance(item, Tag):
+        return CopyValues(item.url, item.name, item.name, "Tag", item.name)
+    if isinstance(item, Release):
+        title = item.name or item.tag
+        text = f"{item.tag} {item.name}" if item.name and item.name != item.tag else item.tag
+        return CopyValues(item.url, title, item.tag, "Tag", text)
+    if isinstance(item, ReleaseAsset):
+        return CopyValues(item.url, item.name, item.name, "File Name", item.name)
+    if isinstance(item, Workflow):
+        return CopyValues(item.url, item.name, item.path, "File Path", item.name)
+    if isinstance(item, WorkflowRun):
+        return CopyValues(item.url, item.name, str(item.run_id), "Run ID",
+                          f"{item.name} #{item.run_number}")
+    if isinstance(item, Artifact):
+        # Artifacts have no page of their own on github.com.
+        return CopyValues("", item.name, item.name, "Name", item.name)
+    if isinstance(item, Label):
+        return CopyValues(item.url, item.name, item.name, "Label Name", item.name)
+    if isinstance(item, PagesBuild):
+        return CopyValues(item.url, item.status, item.commit, "Commit", item.status)
+    if isinstance(item, PagesFile):
+        return CopyValues(item.url, item.path, item.path, "Path", item.path)
+    if isinstance(item, RepoEntry):
+        return CopyValues(item.url, item.name, item.name, "Repository Name", item.name)
+    if isinstance(item, ActivityEvent):
+        # What the event is about, when it is about something with an address
+        # of its own — the same thing F favorites.
+        if item.number:
+            number = f"#{item.number}"
+            text = f"{number} {item.title}".strip()
+            return CopyValues(item.subject_url or item.url, item.title or item.action,
+                              number, "Number", text)
+        return CopyValues(item.subject_url or item.url, item.title or item.summary,
+                          item.repo, "Repository Name", item.title or item.summary)
+    if isinstance(item, FavoriteEntry):
+        return CopyValues(item.url, item.title, item.title, "Name", item.title)
+    return None
+
+
+def repo_copy_values(name: str) -> CopyValues:
+    """Copy values for a repository named in the repository list."""
+    return CopyValues(f"https://github.com/{name}", name, name, "Repository Name", name)
+
+
 # ── IDs ─────────────────────────────────────────────────────────────────
 
 ID_REFRESH = wx.NewIdRef()
@@ -198,6 +289,11 @@ ID_REMOVE_REPO = wx.NewIdRef()
 ID_RUN_WORKFLOW = wx.NewIdRef()
 ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
+ID_COPY_LINK = wx.NewIdRef()
+ID_COPY_MARKDOWN = wx.NewIdRef()
+ID_COPY_TITLE = wx.NewIdRef()
+ID_COPY_IDENT = wx.NewIdRef()
+ID_COPY_DETAILS = wx.NewIdRef()
 
 
 # View modes
@@ -374,6 +470,18 @@ if IS_MAC:
         def Focus(self, idx):
             if 0 <= idx < self.GetItemCount():
                 self.EnsureVisible(self.RowToItem(idx))
+
+        def EnsureVisible(self, row, column=None):
+            # wx.ListCtrl takes a row number; DataViewCtrl wants an item and
+            # raises TypeError on an int — which it did on every list load.
+            if isinstance(row, int):
+                if not 0 <= row < self.GetItemCount():
+                    return
+                row = self.RowToItem(row)
+            if column is None:
+                super().EnsureVisible(row)
+            else:
+                super().EnsureVisible(row, column)
 
 else:
     class ItemList(wx.ListCtrl):
@@ -973,6 +1081,16 @@ class GhViewerFrame(wx.Frame):
         # reliable answer to "what can I do here?" rather than a list to sift.
         actions_menu = wx.Menu()
         actions_menu.Append(ID_OPEN_BROWSER, "Open in Browser\tCtrl+O")
+        # Copy acts on the item in the list, or on the repository when the
+        # repository list has focus. The fourth entry is renamed per view for
+        # what it copies there: Copy Number, Copy SHA, Copy Tag…
+        copy_menu = wx.Menu()
+        copy_menu.Append(ID_COPY_LINK, "Copy Link\tCtrl+Shift+C")
+        copy_menu.Append(ID_COPY_MARKDOWN, "Copy Markdown Link\tCtrl+Shift+L")
+        copy_menu.Append(ID_COPY_TITLE, "Copy Title\tCtrl+Shift+T")
+        self._act_copy_ident = copy_menu.Append(ID_COPY_IDENT, "Copy Number\tCtrl+Shift+I")
+        copy_menu.Append(ID_COPY_DETAILS, "Copy Details\tCtrl+Shift+D")
+        actions_menu.AppendSubMenu(copy_menu, "Copy")
         actions_menu.AppendSeparator()
         self._act_close = actions_menu.Append(ID_CLOSE_ITEM, "Close Issue/PR\tCtrl+W")
         self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
@@ -1116,6 +1234,11 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_view_starred, id=ID_VIEW_STARRED)
         self.Bind(wx.EVT_MENU, self.on_view_watched, id=ID_VIEW_WATCHED)
         self.Bind(wx.EVT_MENU, self.on_go_to_event_repo, id=ID_GO_TO_EVENT_REPO)
+        self.Bind(wx.EVT_MENU, lambda e: self._copy("link"), id=ID_COPY_LINK)
+        self.Bind(wx.EVT_MENU, lambda e: self._copy("markdown"), id=ID_COPY_MARKDOWN)
+        self.Bind(wx.EVT_MENU, lambda e: self._copy("title"), id=ID_COPY_TITLE)
+        self.Bind(wx.EVT_MENU, lambda e: self._copy("ident"), id=ID_COPY_IDENT)
+        self.Bind(wx.EVT_MENU, lambda e: self._copy("details"), id=ID_COPY_DETAILS)
 
     # ── Updates ─────────────────────────────────────────────────────────
 
@@ -1302,6 +1425,8 @@ class GhViewerFrame(wx.Frame):
         )
         self._act_select_branch.Enable(self.view_mode == VIEW_COMMITS)
         self._act_compare.Enable(self.view_mode == VIEW_BRANCHES)
+        noun = self._COPY_IDENT_NOUNS.get(self.view_mode, "Name")
+        self._act_copy_ident.SetItemLabel(f"Copy {noun}\tCtrl+Shift+I")
 
     def _rebuild_columns_menu(self) -> None:
         """Rebuild the Columns submenu for the current view mode."""
@@ -2498,6 +2623,88 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_FAVORITES:
             return self.favorites
         return self.git_items
+
+    # What Actions ▸ Copy ▸ Copy <noun> copies in each view. Mirrors the
+    # ident_noun copy_values() gives that view's items; Activity mixes
+    # numbered events with repository-wide ones, so it says both.
+    _COPY_IDENT_NOUNS = {
+        VIEW_ISSUES: "Number",
+        VIEW_BRANCHES: "Branch Name",
+        VIEW_COMMITS: "SHA",
+        VIEW_TAGS: "Tag",
+        VIEW_RELEASES: "Tag",
+        VIEW_WORKFLOWS: "File Path",
+        VIEW_WORKFLOW: "Run ID",
+        VIEW_ARTIFACTS: "Name",
+        VIEW_ASSETS: "File Name",
+        VIEW_LABELS: "Label Name",
+        VIEW_FAVORITES: "Name",
+        VIEW_PAGES: "Commit",
+        VIEW_PAGEFILES: "Path",
+        VIEW_ACTIVITY: "Number or Repository",
+        VIEW_STARRED: "Repository Name",
+        VIEW_WATCHED: "Repository Name",
+    }
+
+    _COPY_WHAT = {
+        "link": "link",
+        "markdown": "Markdown link",
+        "title": "title",
+        "details": "details",
+    }
+
+    def _copy_target(self) -> CopyValues | None:
+        """What Copy acts on: the repository when the repo list has focus,
+        else the item selected in the list."""
+        if self._current_focus() is self.repo_list:
+            idx = self.repo_list.GetSelection()
+            name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
+            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+                return repo_copy_values(name)
+            return None
+        item = self._focused_item()
+        return copy_values(item) if item is not None else None
+
+    def _copy(self, what: str) -> None:
+        """Actions ▸ Copy: put one thing about the current item on the clipboard."""
+        if what == "details":
+            text = self.details_text.GetValue().strip()
+            noun = "details"
+            if not text:
+                self._announce("The details panel is empty — nothing to copy.")
+                return
+        else:
+            values = self._copy_target()
+            if values is None:
+                self._announce("Nothing selected to copy.")
+                return
+            if what == "ident":
+                text, noun = values.ident, values.ident_noun.lower()
+            elif what == "markdown":
+                text, noun = values.markdown, "Markdown link"
+            else:
+                text, noun = getattr(values, what), self._COPY_WHAT[what]
+            if not text:
+                self._announce(f"This item has no {noun} to copy.")
+                return
+        if self._set_clipboard(text):
+            # Say what was copied when it is short enough to be worth hearing.
+            shown = text if len(text) <= 120 and "\n" not in text else ""
+            self._announce(f"Copied {noun}: {shown}" if shown else f"Copied {noun}.")
+        else:
+            self._announce("Couldn't open the clipboard. Try again.")
+
+    def _set_clipboard(self, text: str) -> bool:
+        clip = wx.TheClipboard
+        if not clip.Open():
+            return False
+        try:
+            clip.SetData(wx.TextDataObject(text))
+            # Leave it on the clipboard after GHManage quits.
+            clip.Flush()
+        finally:
+            clip.Close()
+        return True
 
     def _announce(self, msg: str) -> None:
         """Update status bar (screen reader accessible)."""

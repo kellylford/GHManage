@@ -21,6 +21,7 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 - [Starred and Watched Repositories](#starred-and-watched-repositories)
 - [Favorites](#favorites)
 - [Quick Filter](#quick-filter)
+- [Copying](#copying)
 - [List Mode, Sorting and Columns](#list-mode-sorting-and-columns)
 - [The Details Panel and Comment Navigation](#the-details-panel-and-comment-navigation)
 - [The Actions Menu](#the-actions-menu)
@@ -542,6 +543,38 @@ With a filter on, every key acts on the row you are on: `Enter`, `F`, `C`, `O`, 
 
 ---
 
+## Copying
+
+**Actions → Copy** puts something about the item you are on onto the clipboard, ready to paste into an email, a document or a chat. The status bar says what was copied, and reads it out when it is short.
+
+| Item | Key | Copies |
+|------|-----|--------|
+| Copy Link | `Ctrl+Shift+C` | The item's address on github.com |
+| Copy Markdown Link | `Ctrl+Shift+L` | A Markdown link, for example `[#11538 Improve diagnostics](https://github.com/nvaccess/nvda/issues/11538)` |
+| Copy Title | `Ctrl+Shift+T` | The title: an issue's title, a commit's first line, a release's name |
+| Copy Number, Copy SHA, … | `Ctrl+Shift+I` | The short thing that names the item; see below |
+| Copy Details | `Ctrl+Shift+D` | Everything in the details panel |
+
+The fourth item is named for what it copies in the view you are in:
+
+| View | Item reads | Copies |
+|------|------------|--------|
+| Issues & PRs | Copy Number | `#208` |
+| Branches | Copy Branch Name | the branch name |
+| Commits | Copy SHA | the full 40-character SHA |
+| Tags, Releases | Copy Tag | the tag |
+| Workflows | Copy File Path | the workflow file, such as `.github/workflows/ci.yml` |
+| Workflow Runs | Copy Run ID | the run's id, as `gh run view` takes it |
+| Labels | Copy Label Name | the label |
+| Activity | Copy Number or Repository | the issue or pull request number, or the repository for events about a whole repository |
+| Starred, Watched | Copy Repository Name | `owner/name` |
+
+In Activity, Copy Link and Copy Markdown Link copy what the event is about (the issue, pull request or release) rather than the event itself, the same thing `F` favorites.
+
+With focus in the repository list, the Copy commands copy that repository: its address, `owner/name`, or a Markdown link to it.
+
+---
+
 ## List Mode, Sorting and Columns
 
 ### Quick and Full mode
@@ -613,6 +646,7 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Item | Key | Works in |
 |------|-----|----------|
 | Open in Browser | `Ctrl+O` | Every view |
+| Copy ▸ Link, Markdown Link, Title, Number, Details | `Ctrl+Shift+C`, `L`, `T`, `I`, `D` | Every view; see [Copying](#copying) |
 | Close Issue/PR | `Ctrl+W` | Issues & PRs |
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
@@ -649,6 +683,9 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl+F` | Quick filter |
 | `Ctrl+G` | Go to an issue or pull request by number |
 | `Ctrl+O` | Open the selected item on GitHub |
+| `Ctrl+Shift+C` | Copy the selected item's link |
+| `Ctrl+Shift+L` | Copy a Markdown link to it |
+| `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
 | `Ctrl+Shift+O` | Open a repository by address |
 | `Alt+N` / `Alt+P` | Next / previous comment in the details panel |
 | `Ctrl+Q` | Quit |

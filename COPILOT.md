@@ -151,6 +151,12 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   current view and is called from `_update_menu_checks` (so every `_switch_view` covers
   it) plus `_select_repo` / `_select_favorites`, where the repo changes without the view
   doing so. A new action belongs there, with an entry in that method.
+- **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
+  module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
+  for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
+  the fourth entry per view and must agree with the `ident_noun` the view's items
+  give; a new view needs an entry there. With focus in the repo list the commands
+  act on that repository instead (`_copy_target`).
 - `_delete_focused_item` is the single dispatcher behind Delete, Ctrl+D, and the Actions
   menu entry, so the key and the menu cannot disagree about what Delete means in a view.
   Add new deletable views there and in `_update_actions_menu`.
