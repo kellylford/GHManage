@@ -23,6 +23,7 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 - **Open any GitHub address** — paste a link to an issue, PR, commit, release, workflow run or
   branch into Ctrl+Shift+O and it opens in its own view with that item selected
 - **New issue** — Ctrl+N, a title and a Markdown description
+- **Pull requests** — checks (K), review (V), draft/ready (D), merge, request reviewers, update branch
 - **Copy** — the link, a Markdown link, the title, the number/SHA/tag, or the details, for anything
 - **Watch settings and account switching** — Participating, All Activity or Ignore for a
   repository; switch between the github.com accounts gh is signed in to
@@ -270,6 +271,9 @@ from the details panel as well as the list.
 | `O` | Reopen the selected issue/PR |
 | `M` or `Ctrl+M` | Add a comment to the selected item |
 | `N` or `Ctrl+N` | New issue |
+| `K` | Checks on the selected pull request |
+| `V` | Review it: approve, request changes, comment |
+| `D` | Draft ⇄ ready for review |
 | `Backspace` | Return to the labels list (only when the list is restricted to a label) |
 
 ### In the branches view

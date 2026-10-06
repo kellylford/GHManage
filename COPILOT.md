@@ -209,6 +209,10 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   turns `##[error]` into "ERROR:". `format_failure_report` / `format_job_log` are pure and
   tested. Annotations: a job's id is its check run's id (`check-runs/{id}/annotations`).
   J/L/E/X are in `on_char_hook` so they work from the details panel.
+- **Pull request actions** (Actions ▸ Pull Request; K/V/D in the issues list, list only
+  like C/O/M) — gh_data `fetch_pr_checks` reads `gh pr checks --json` **whatever gh exits
+  with** (1 = a check failed, 8 = still running); `review_pr` sends the message on stdin;
+  everything resolves the fork's upstream via `_pr_args`. `format_checks` is pure.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names

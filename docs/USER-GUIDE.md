@@ -326,6 +326,26 @@ The form names the repository the issue goes to. On a fork that is the upstream 
 
 Once GitHub has it, the issues list reloads with the new issue selected, unless you have moved to another view or repository in the meantime; then the status bar just says it was created. While one issue is being created, `Ctrl+N` waits for it, so the same text can't be filed twice. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
 
+### Pull requests
+
+On a pull request in the issues list:
+
+| Key | Action |
+|-----|--------|
+| `K` | Its checks: how many passed, failed or are still running, then each one, failures first, with its link |
+| `V` | Review it: approve, request changes, or comment, with a message |
+| `D` | Mark a draft ready for review, or an open pull request back to a draft |
+
+**Actions → Pull Request** has those three, and:
+
+- **Merge…** offers the ways the repository allows (a merge commit, squash, rebase) and whether to delete the branch afterwards. A draft has to be marked ready first. If GitHub won't merge it yet, because a required check or review is missing, the status bar gives GitHub's reason.
+- **Request Reviewers…** takes GitHub logins separated by commas, or a team as `org/team-name`.
+- **Update Branch…** merges the base branch into the pull request's branch, as the button on github.com does, after asking.
+
+The review form works like New Issue: `Ctrl+Enter` submits it from the message. Requesting changes or commenting needs a message; approving doesn't. After any of these the list reloads.
+
+When a check failed in a GitHub Actions workflow, Workflow Runs (`Ctrl+7`) and `L` on its run shows what failed.
+
 ### Go to an issue by number
 
 **File → Go To Issue…** (`Ctrl+G`) asks for a number and puts you on that issue or pull request, with focus in the details panel so you can start reading. It works in **Issues & PRs** only.
@@ -841,6 +861,7 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
 | New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
+| Pull Request ▸ Checks, Review…, Merge…, Ready for Review or Back to Draft, Request Reviewers…, Update Branch… | `K`, `V`, `D` in the list | Issues & PRs, on a pull request |
 | Watch Settings… | `Ctrl+Shift+U` | Any view of a repository, Starred and Watched |
 | Save Search… | `Ctrl+S` | Search results |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
@@ -910,6 +931,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `O` or `Ctrl+Shift+W` | Reopen |
 | `M` or `Ctrl+M` | Add a comment |
 | `N` or `Ctrl+N` | New issue |
+| `K` / `V` / `D` | On a pull request: checks / review / ready or draft |
 | `Backspace` | Back to the labels, Notifications, My Work, search results, the Activity feed, or the Starred or Watched list, when you came from one |
 
 ### In Branches and Commits
