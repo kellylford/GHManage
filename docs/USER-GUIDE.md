@@ -37,9 +37,9 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 ## System Requirements
 
 - **Windows:** Windows 10 or Windows 11, 64-bit.
-- **Mac:** an Apple Silicon Mac (M1 or later) on macOS 11 Big Sur or newer. There is no Intel build: the toolkit GHManage is built on ships a separate build for each kind of processor rather than one that covers both, so an Intel version would be a whole second build.
+- **Mac:** an Apple Silicon Mac (M1 or later) on macOS 11 Big Sur or newer.
 - **The GitHub CLI (`gh`)**, installed and signed in. GHManage has no sign-in of its own; see [Signing In with the GitHub CLI](#signing-in-with-the-github-cli).
-- **A screen reader is optional.** GHManage is tested with JAWS and NVDA on Windows and VoiceOver on the Mac, but works the same with none.
+- **A screen reader is optional.** GHManage is tested with JAWS and NVDA on Windows and VoiceOver on the Mac, but works the same with no screen reader in use.
 
 ---
 
@@ -66,7 +66,7 @@ Releases are signed, so Windows knows who published them and SmartScreen does no
 
 ### Installing on a Mac
 
-Open **GHManage-osx.dmg** and drag **GHManage** to **Applications**. The app is signed and notarized by Apple, so Gatekeeper opens it without complaint.
+Open **GHManage-osx.dmg** and move **GHManage** to **Applications**. The app is signed and notarized by Apple, so Gatekeeper opens it without complaint.
 
 You can keep the app anywhere, not just in Applications: a Mac app carries its own updater inside it, so it keeps updating wherever it lives.
 
@@ -110,6 +110,7 @@ Three command-line options work in every copy, installed or not:
 | `--repo OWNER/NAME` | Opens that repository straight away instead of starting on the repository list. |
 | `--version` | Prints the version and exits. |
 | `--debug` | Writes more detail to the update log. |
+KF:Please include an example.
 
 ---
 
