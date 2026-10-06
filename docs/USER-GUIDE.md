@@ -881,6 +881,14 @@ On a Mac, use `Cmd` for `Ctrl`.
 
 `Ctrl+D` follows the same rule as the menu item, and so does the bare `Delete` key, which also works from the details panel. In other views neither does anything. `Delete` never acts from the repository list.
 
+### Context menus
+
+The **Applications** key, `Shift+F10`, or a right-click opens a context menu (on a Mac, `VO+Shift+M` with VoiceOver, or `Ctrl`-click).
+
+In the item list it starts with what `Enter` does in that view, for example **Show Commits** on a branch or **Open Here** on a search result, and then offers everything the Actions menu offers in that view, with Copy and Pull Request as submenus. It is built from the Actions menu each time, so the two always agree.
+
+In the repository list, a repository's menu has **Open**, **Open on GitHub**, **New Issue…**, **Search This Repository…** (a search starting `repo:owner/name`), **Watch Settings…**, Copy, and **Remove from List…** for a repository you opened by address. New Issue opens the repository first, so the new issue shows in its list. A saved search's menu has **Run Search** and **Remove Saved Search**; Favorites and the other entries at the top have **Open**.
+
 ---
 
 ## Keyboard Shortcuts
@@ -912,6 +920,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Alt+N` / `Alt+P` | Next / previous comment in the details panel |
 | `Ctrl+Shift+U` | Watch settings for the repository |
 | `Ctrl+Shift+K` | Switch GitHub account |
+| Applications key or `Shift+F10` | Context menu for the selected item or repository |
 | `Ctrl+Q` | Quit |
 
 ### In the item list
