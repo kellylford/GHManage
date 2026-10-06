@@ -258,6 +258,12 @@ class CopyValues:
     text: str = ""
 
     @property
+    def spoken_noun(self) -> str:
+        """The noun as the status bar says it: lower case, acronyms kept,
+        so a screen reader says "S H A" and not "shah"."""
+        return " ".join(w if w.isupper() else w.lower() for w in self.ident_noun.split())
+
+    @property
     def markdown(self) -> str:
         """``[#12 Fix the thing](https://…)``, or "" when there is no link."""
         if not self.link:
@@ -296,7 +302,7 @@ def copy_values(item) -> CopyValues | None:
     if isinstance(item, Workflow):
         return CopyValues(item.url, item.name, item.path, "File Path", item.name)
     if isinstance(item, WorkflowRun):
-        return CopyValues(item.url, item.name, str(item.run_id), "Run ID",
+        return CopyValues(item.url, item.name, str(item.run_id) if item.run_id else "", "Run ID",
                           f"{item.name} #{item.run_number}")
     if isinstance(item, Artifact):
         # Artifacts have no page of their own on github.com.
@@ -304,7 +310,8 @@ def copy_values(item) -> CopyValues | None:
     if isinstance(item, Label):
         return CopyValues(item.url, item.name, item.name, "Label Name", item.name)
     if isinstance(item, PagesBuild):
-        return CopyValues(item.url, item.status, item.commit, "Commit", item.status)
+        text = f"{item.commit[:7]} {item.status}".strip()
+        return CopyValues(item.url, text, item.commit, "Commit", text)
     if isinstance(item, PagesFile):
         return CopyValues(item.url, item.path, item.path, "Path", item.path)
     if isinstance(item, RepoEntry):
@@ -317,9 +324,15 @@ def copy_values(item) -> CopyValues | None:
             text = f"{number} {item.title}".strip()
             return CopyValues(item.subject_url or item.url, item.title or item.action,
                               number, "Number", text)
+        if item.subject_kind == "release" and "/releases/tag/" in item.subject_url:
+            tag = item.subject_url.split("/releases/tag/", 1)[1]
+            text = f"{tag} {item.title}".strip()
+            return CopyValues(item.subject_url, item.title or tag, tag, "Tag", text)
         return CopyValues(item.subject_url or item.url, item.title or item.summary,
                           item.repo, "Repository Name", item.title or item.summary)
     if isinstance(item, FavoriteEntry):
+        # A favorite keeps no number or SHA of its own, only how it was
+        # titled, so Copy Name and Copy Title give the same thing.
         return CopyValues(item.url, item.title, item.title, "Name", item.title)
     return None
 
@@ -1183,8 +1196,10 @@ class GhViewerFrame(wx.Frame):
         # repository list has focus. The fourth entry is renamed per view for
         # what it copies there: Copy Number, Copy SHA, Copy Tag…
         copy_menu = wx.Menu()
-        copy_menu.Append(ID_COPY_LINK, "Copy Link\tCtrl+Shift+C")
-        copy_menu.Append(ID_COPY_MARKDOWN, "Copy Markdown Link\tCtrl+Shift+L")
+        self._act_copy_link = copy_menu.Append(ID_COPY_LINK, "Copy Link\tCtrl+Shift+C")
+        self._act_copy_markdown = copy_menu.Append(
+            ID_COPY_MARKDOWN, "Copy Markdown Link\tCtrl+Shift+L"
+        )
         copy_menu.Append(ID_COPY_TITLE, "Copy Title\tCtrl+Shift+T")
         self._act_copy_ident = copy_menu.Append(ID_COPY_IDENT, "Copy Number\tCtrl+Shift+I")
         copy_menu.Append(ID_COPY_DETAILS, "Copy Details\tCtrl+Shift+D")
@@ -1523,6 +1538,10 @@ class GhViewerFrame(wx.Frame):
         )
         self._act_select_branch.Enable(self.view_mode == VIEW_COMMITS)
         self._act_compare.Enable(self.view_mode == VIEW_BRANCHES)
+        # An artifact has no page of its own on github.com to link to.
+        linkable = self.view_mode != VIEW_ARTIFACTS
+        self._act_copy_link.Enable(linkable)
+        self._act_copy_markdown.Enable(linkable)
         noun = self._COPY_IDENT_NOUNS.get(self.view_mode, "Name")
         self._act_copy_ident.SetItemLabel(f"Copy {noun}\tCtrl+Shift+I")
 
@@ -2829,7 +2848,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_FAVORITES: "Name",
         VIEW_PAGES: "Commit",
         VIEW_PAGEFILES: "Path",
-        VIEW_ACTIVITY: "Number or Repository",
+        VIEW_ACTIVITY: "Number, Tag or Repository",
         VIEW_STARRED: "Repository Name",
         VIEW_WATCHED: "Repository Name",
     }
@@ -2844,7 +2863,7 @@ class GhViewerFrame(wx.Frame):
     def _copy_target(self) -> CopyValues | None:
         """What Copy acts on: the repository when the repo list has focus,
         else the item selected in the list."""
-        if self._current_focus() is self.repo_list:
+        if self._pane_index(self._current_focus()) == 0:
             idx = self.repo_list.GetSelection()
             name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
             if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
@@ -2864,10 +2883,13 @@ class GhViewerFrame(wx.Frame):
         else:
             values = self._copy_target()
             if values is None:
-                self._announce("Nothing selected to copy.")
+                if self._pane_index(self._current_focus()) == 0:
+                    self._announce("That entry is not a repository — nothing to copy.")
+                else:
+                    self._announce("Nothing selected to copy.")
                 return
             if what == "ident":
-                text, noun = values.ident, values.ident_noun.lower()
+                text, noun = values.ident, values.spoken_noun
             elif what == "markdown":
                 text, noun = values.markdown, "Markdown link"
             else:

@@ -569,15 +569,22 @@ The fourth item is named for what it copies in the view you are in:
 | Branches | Copy Branch Name | the branch name |
 | Commits | Copy SHA | the full 40-character SHA |
 | Tags, Releases | Copy Tag | the tag |
+| A release's files | Copy File Name | the file's name |
 | Workflows | Copy File Path | the workflow file, such as `.github/workflows/ci.yml` |
 | Workflow Runs | Copy Run ID | the run's id, as `gh run view` takes it |
+| A run's artifacts | Copy Name | the artifact's name |
 | Labels | Copy Label Name | the label |
-| Activity | Copy Number or Repository | the issue or pull request number, or the repository for events about a whole repository |
+| GitHub Pages | Copy Commit | the commit the publish was built from |
+| Published Pages | Copy Path | the page's path in the repository |
+| Favorites | Copy Name | the favorite's title, the same as Copy Title |
+| Activity | Copy Number, Tag or Repository | the issue or pull request number, the release's tag, or the repository for events about a whole repository |
 | Starred, Watched | Copy Repository Name | `owner/name` |
 
 In Activity, Copy Link and Copy Markdown Link copy what the event is about (the issue, pull request or release) rather than the event itself, the same thing `F` favorites.
 
-With focus in the repository list, the Copy commands copy that repository: its address, `owner/name`, or a Markdown link to it.
+Artifacts have no page of their own on github.com, so in a run's artifacts Copy Link and Copy Markdown Link are greyed out.
+
+With focus in the repository list, Copy Link, Copy Markdown Link, Copy Title and the fourth item copy that repository: its address, a Markdown link to it, or `owner/name`, whatever the fourth item is called at the time. Copy Details always copies the details panel.
 
 ---
 

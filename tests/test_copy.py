@@ -80,14 +80,66 @@ def test_ident_per_kind(item, ident, noun):
     assert v.link == "u"
 
 
-def test_every_view_noun_matches_its_items():
+# One item of the kind each view lists.
+VIEW_SAMPLES = {
+    ghviewer.VIEW_ISSUES: Item(1, "T", "open", "u", False),
+    ghviewer.VIEW_BRANCHES: Branch("main", "s", "m", "a", "d", url="u"),
+    ghviewer.VIEW_COMMITS: Commit("a" * 40, "aaaaaaa", "m", "me", "", url="u"),
+    ghviewer.VIEW_TAGS: Tag("v1", "s", url="u"),
+    ghviewer.VIEW_RELEASES: Release("v1", "One", False, False, "", url="u"),
+    ghviewer.VIEW_WORKFLOWS: Workflow(1, "CI", "ci.yml", "active", url="u"),
+    ghviewer.VIEW_WORKFLOW: WorkflowRun("CI", "", "", "", "", "", url="u", run_id=3),
+    ghviewer.VIEW_ARTIFACTS: Artifact(1, "build", 10, False, "", 9),
+    ghviewer.VIEW_ASSETS: ReleaseAsset(1, "a.exe", 1, 1, "", url="u"),
+    ghviewer.VIEW_LABELS: Label("bug", url="u"),
+    ghviewer.VIEW_FAVORITES: FavoriteEntry("o/r", "issue", "u", "#4 — T"),
+    ghviewer.VIEW_PAGES: PagesBuild(1, "built", "abc", "me", "", url="u"),
+    ghviewer.VIEW_PAGEFILES: PagesFile("index.md", "u"),
+    ghviewer.VIEW_STARRED: RepoEntry("o/r", url="u"),
+    ghviewer.VIEW_WATCHED: RepoEntry("o/r", url="u"),
+}
+
+
+def test_every_view_has_a_noun():
+    assert set(Frame._COPY_IDENT_NOUNS) == set(ghviewer.VIEW_COLUMNS)
+    assert set(VIEW_SAMPLES) | {ghviewer.VIEW_ACTIVITY} == set(ghviewer.VIEW_COLUMNS)
+
+
+@pytest.mark.parametrize("view", sorted(VIEW_SAMPLES))
+def test_menu_noun_matches_what_the_view_copies(view):
     # The menu label is chosen by view, the copied value by item; they
     # must name the same thing.
-    nouns = Frame._COPY_IDENT_NOUNS
-    assert nouns[ghviewer.VIEW_ISSUES] == "Number"
-    assert nouns[ghviewer.VIEW_COMMITS] == "SHA"
-    assert nouns[ghviewer.VIEW_WORKFLOW] == "Run ID"
-    assert set(nouns) == set(ghviewer.VIEW_COLUMNS)
+    assert Frame._COPY_IDENT_NOUNS[view] == copy_values(VIEW_SAMPLES[view]).ident_noun
+
+
+def test_activity_noun_covers_every_kind_of_event():
+    label = Frame._COPY_IDENT_NOUNS[ghviewer.VIEW_ACTIVITY]
+    for noun in ("Number", "Tag", "Repository"):
+        assert noun in label
+
+
+def test_spoken_noun_keeps_acronyms():
+    assert ghviewer.CopyValues(ident_noun="SHA").spoken_noun == "SHA"
+    assert ghviewer.CopyValues(ident_noun="Run ID").spoken_noun == "run ID"
+    assert ghviewer.CopyValues(ident_noun="Branch Name").spoken_noun == "branch name"
+
+
+def test_run_without_an_id_has_nothing_to_copy():
+    assert copy_values(WorkflowRun("CI", "", "", "", "", "")).ident == ""
+
+
+def test_pages_build_text_names_the_commit():
+    v = copy_values(PagesBuild(1, "built", "abcdef123", "me", "", url="u"))
+    assert v.markdown == "[abcdef1 built](u)"
+
+
+def test_activity_release_event_copies_the_tag():
+    ev = ActivityEvent("ReleaseEvent", "bob", "o/r", "published release v2.0", title="Big",
+                       url="https://github.com/o/r/releases/tag/v2.0", subject_kind="release",
+                       subject_url="https://github.com/o/r/releases/tag/v2.0")
+    v = copy_values(ev)
+    assert (v.ident, v.ident_noun) == ("v2.0", "Tag")
+    assert v.markdown == "[v2.0 Big](https://github.com/o/r/releases/tag/v2.0)"
 
 
 def test_activity_event_about_an_issue_copies_the_issue():
@@ -144,6 +196,7 @@ def _frame(item=None, details="", focus=None):
         _COPY_WHAT=Frame._COPY_WHAT,
     )
     frame._copy_target = lambda: Frame._copy_target(frame)
+    frame._pane_index = lambda w: 0 if w is not None and w is frame.repo_list else None
     return frame
 
 
@@ -201,3 +254,37 @@ def test_copy_from_a_category_entry_copies_nothing():
     f.repo_list = rl
     Frame._copy(f, "link")
     assert f.clipboard == []
+
+
+def test_copy_sha_is_announced_as_an_acronym():
+    f = _frame(Commit("a" * 40, "aaaaaaa", "m", "me", ""))
+    Frame._copy(f, "ident")
+    assert f.announced[-1].startswith("Copied SHA: ")
+
+
+def test_category_entry_explains_why_nothing_was_copied():
+    class RepoList:
+        def GetSelection(self): return 0
+        def GetClientData(self, i): return ghviewer.ACTIVITY_ENTRY
+    rl = RepoList()
+    f = _frame(focus=rl)
+    f.repo_list = rl
+    Frame._copy(f, "title")
+    assert f.announced == ["That entry is not a repository — nothing to copy."]
+
+
+@pytest.mark.skipif(not ghviewer.IS_MAC, reason="the macOS table only")
+def test_mac_item_list_accepts_row_numbers():
+    import wx
+    app = wx.App(False)  # noqa: F841
+    frame = wx.Frame(None)
+    try:
+        lst = ghviewer.ItemList(frame)
+        lst.InsertColumn(0, "a")
+        for i in range(3):
+            lst.InsertItem(i, str(i))
+        lst.EnsureVisible(2)          # a row number, as wx.ListCtrl takes
+        lst.EnsureVisible(99)         # out of range: ignored, not an error
+        lst.EnsureVisible(lst.RowToItem(1))  # an item still works
+    finally:
+        frame.Destroy()
