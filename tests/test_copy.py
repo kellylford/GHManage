@@ -102,7 +102,7 @@ VIEW_SAMPLES = {
 
 def test_every_view_has_a_noun():
     assert set(Frame._COPY_IDENT_NOUNS) == set(ghviewer.VIEW_COLUMNS)
-    assert set(VIEW_SAMPLES) | {ghviewer.VIEW_ACTIVITY} == set(ghviewer.VIEW_COLUMNS)
+    assert set(VIEW_SAMPLES) | {ghviewer.VIEW_ACTIVITY, ghviewer.VIEW_NOTIFICATIONS} == set(ghviewer.VIEW_COLUMNS)
 
 
 @pytest.mark.parametrize("view", sorted(VIEW_SAMPLES))

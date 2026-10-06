@@ -17,6 +17,7 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 - [Tags and Releases](#tags-and-releases)
 - [Workflows and Workflow Runs](#workflows-and-workflow-runs)
 - [GitHub Pages](#github-pages)
+- [Notifications](#notifications)
 - [Activity](#activity)
 - [Starred and Watched Repositories](#starred-and-watched-repositories)
 - [Favorites](#favorites)
@@ -143,7 +144,7 @@ If `gh` is installed but signed out, or its sign-in has expired, the error `gh` 
 
 The window has three panes and a status bar:
 
-1. **Repositories**, on the left: the repository list, with Favorites, Activity, Starred Repositories and Watched Repositories at the top. See [The Repository List](#the-repository-list).
+1. **Repositories**, on the left: the repository list, with Favorites, Notifications, Activity, Starred Repositories and Watched Repositories at the top. See [The Repository List](#the-repository-list).
 2. **The item list**, top right: whatever the current view shows, such as issues and pull requests, branches, or releases. Its label, and the name your screen reader announces for it, is the name of the view, for example "Issues", "Branches" or "Release Assets", so you hear where you are as you move into it.
 3. **Details**, bottom right: everything about the item you are on in the list, as read-only text you can move through line by line. See [The Details Panel and Comment Navigation](#the-details-panel-and-comment-navigation).
 4. **The status bar**, at the bottom: what the view is showing, the keys that work in it, and anything GHManage has just done.
@@ -172,11 +173,12 @@ Each repository has several views. `Ctrl` and a number jumps straight to one fro
 | `Ctrl+8` | Labels |
 | `Ctrl+9` | ★ Favorites |
 | `Ctrl+0` | GitHub Pages |
+| `Ctrl+Shift+N` | Notifications |
 | `Ctrl+Shift+A` | Activity |
 
 **Starred Repositories** and **Watched Repositories** are on the same menu, after Activity.
 
-Favorites, Activity, Starred Repositories and Watched Repositories are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
+Favorites, Notifications, Activity, Starred Repositories and Watched Repositories are not about one repository, so they work at any time. Every other view needs a repository: with none chosen, the status bar says "Select a repository first." and the view stays as it was.
 
 Several views lead into others. `Enter` on a branch shows its commits, on a release its files, on a workflow run its artifacts, on a label the issues that carry it. `Backspace` steps back up to where you came from.
 
@@ -220,15 +222,16 @@ The list on the left is where you choose what to look at. Arrow to an entry and 
 It is in this order:
 
 1. **★ Favorites**, with how many you have, for example "★ Favorites (12)". See [Favorites](#favorites).
-2. **Activity**: your GitHub feed. See [Activity](#activity).
-3. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
-4. **Watched Repositories**: the repositories you watch, with how many.
-5. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
-6. **Your own repositories**, up to 100, each followed by its description.
+2. **Notifications**, with how many are unread, for example "Notifications (12 unread)". See [Notifications](#notifications).
+3. **Activity**: your GitHub feed. See [Activity](#activity).
+4. **Starred Repositories**: the repositories you have starred, with how many, for example "Starred Repositories (7)". See [Starred and Watched Repositories](#starred-and-watched-repositories).
+5. **Watched Repositories**: the repositories you watch, with how many.
+6. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
+7. **Your own repositories**, up to 100, each followed by its description.
 
-The first four are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
+The first five are always there, so the same keystrokes from the top of the list always reach them. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
 
-The starred and watched counts are asked for once the list is up, so they appear a moment after the names, without moving you from the entry you are on. If GitHub can't be asked, the entry shows just its name rather than a number that might be wrong. Opening Starred or Watched, or pressing `R` in it, brings its count up to date, so a repository you starred on the web since GHManage started is counted then.
+The notification, starred and watched counts are asked for once the list is up, so they appear a moment after the names, without moving you from the entry you are on. If GitHub can't be asked, the entry shows just its name rather than a number that might be wrong. Opening Starred or Watched, or pressing `R` in it, brings its count up to date, so a repository you starred on the web since GHManage started is counted then.
 
 Opening a repository shows its **Issues & PRs**. Use `Ctrl+2` through `Ctrl+0` to reach its other views.
 
@@ -252,7 +255,7 @@ A person's or organisation's address says so on the status bar; GHManage has no 
 
 **File → Remove from List…** removes the selected repository from the list. It applies to repositories you opened by address; the status bar confirms with "Removed owner/name from the pinned list." It does not delete anything on GitHub.
 
-Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The four entries at the top are always there too.
+Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The five entries at the top are always there too.
 
 ### Forks
 
@@ -458,6 +461,43 @@ The publish history has the same split. Sites GitHub builds itself keep a full b
 
 ---
 
+## Notifications
+
+**Notifications** is your GitHub inbox: the issues, pull requests, releases, discussions and workflow runs GitHub has told you about, across every repository, most recently updated first. It lists the unread ones, as github.com does.
+
+Open it by choosing **Notifications** near the top of the repository list, with `Ctrl+Shift+N` (`Cmd+Shift+N` on a Mac), or from **View → View Mode → Notifications**. Like Activity, it keeps the repository you were in.
+
+Each row reads whether it is unread, why you were told, what kind of thing it is, its title, the repository and when it last changed:
+
+"unread, review requested, PR, #1587 Bump huggingface-hub, Community-Access/quill, 2026-10-05 18:41"
+
+Why you were told is GitHub's reason in words: review requested, mention, team mention, assigned, author, comment, state change, CI activity, security alert, or watching, when it comes from a repository you watch. The details panel has the same, with the address on a line of its own.
+
+### Keys in the Notifications view
+
+| Key | Action |
+|-----|--------|
+| `Enter` | An issue or pull request opens here in GHManage, selected in its repository's list; anything else opens on GitHub. Either way it is marked read |
+| `Backspace` | From the issue or pull request, come back to the same notification |
+| `M` | Mark it read |
+| `Delete` or `Ctrl+D` | Mark it done: it leaves your inbox, as the Done button on github.com does |
+| `U` | Unsubscribe from the thread: no more notifications about it unless you comment or are mentioned |
+| `I` | Include read notifications, or go back to unread only |
+| `G` or `Ctrl+Shift+G` | Open its repository here in GHManage |
+| `Ctrl+O` | Open it on GitHub, and mark it read |
+| `F` | Add it to favorites, or remove it |
+| `Ctrl++` | Load more |
+
+`M`, `U`, `I` and `G` work from the details panel as well as the list. The **Actions** menu has Mark as Read, Mark as Done, Unsubscribe from Thread and **Mark All as Read…**, which asks first and then marks every notification read, not only those loaded. **View → Include Read Notifications** is the same as `I`.
+
+A read notification stays in the list until you refresh, with its row no longer starting "unread", so marking several in a row doesn't move you about. Marking one done takes it out at once, and you land on the one that was below it.
+
+To see only some, use the quick filter (`Ctrl+F`): it matches the reason and the repository as well as the title, so "review requested" or "nvaccess/nvda" narrows the list to those.
+
+The count beside **Notifications** in the repository list goes down as you read, and is brought up to date whenever the whole of your unread list has loaded.
+
+---
+
 ## Activity
 
 **Activity** is your GitHub feed, the one github.com shows on your dashboard: what happens in the repositories you star or watch, and what the people you follow do. That covers pushes, pull requests, issues, comments, reviews, releases, stars and forks, newest first, across every repository.
@@ -587,6 +627,7 @@ The fourth item is named for what it copies in the view you are in:
 | GitHub Pages | Copy Commit | the commit the publish was built from |
 | Published Pages | Copy Path | the page's path in the repository |
 | Favorites | Copy Name | the favorite's title, the same as Copy Title |
+| Notifications | Copy Number or Repository | the issue or pull request number, or the repository for anything else |
 | Activity | Copy Number, Tag or Repository | the issue or pull request number, the release's tag, or the repository for events about a whole repository |
 | Starred, Watched | Copy Repository Name | `owner/name` |
 
@@ -632,6 +673,7 @@ The current mode is shown on the status bar, and the status bar says "Quick mode
 | GitHub Pages | status, commit, pusher, date, duration | kind, error, # |
 | Published Pages | page, url | size |
 | Favorites | type, repo, title, subtitle | |
+| Notifications | unread, reason, type, title, repo, updated | |
 | Activity | actor, action, repo, title, date | |
 | Starred and Watched Repositories | repo, description, language, stars, pushed | owner |
 
@@ -675,13 +717,15 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Add Comment… | `Ctrl+M` | Issues & PRs |
 | New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
-| Delete | `Ctrl+D` | Labels (reads **Delete Label…**) and Workflow Runs (reads **Delete Workflow Run…**) |
+| Delete | `Ctrl+D` | Labels (reads **Delete Label…**), Workflow Runs (reads **Delete Workflow Run…**) and Notifications (reads **Mark as Done**) |
 | Run Workflow on Branch… | | Workflows |
 | Download Artifact… | | A run's artifacts |
 | Open Published Site | | GitHub Pages, once a site is found |
 | Select Branch… | `Ctrl+B` | Commits |
 | Compare Branches… | `Ctrl+Shift+B` | Branches |
-| Go to Event's Repository | `Ctrl+Shift+G` | Activity |
+| Go to Event's Repository | `Ctrl+Shift+G` | Activity, and Notifications where it reads **Go to Notification's Repository** |
+| Mark as Read, Unsubscribe from Thread | `M`, `U` in the list | Notifications |
+| Mark All as Read… | | Notifications |
 
 On a Mac, use `Cmd` for `Ctrl`.
 
@@ -701,6 +745,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Tab` / `Shift+Tab` | Move between the repository list, item list and details panel |
 | `F1` | Open this guide in your browser |
 | `Ctrl+1` … `Ctrl+0` | Switch view; see [Views](#views) |
+| `Ctrl+Shift+N` | Notifications |
 | `Ctrl+Shift+A` | Activity |
 | `Ctrl+R` | Refresh the list |
 | `Ctrl++` | Load more |
@@ -732,7 +777,7 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `C` or `Ctrl+W` | Close |
 | `O` or `Ctrl+Shift+W` | Reopen |
 | `M` or `Ctrl+M` | Add a comment |
-| `Backspace` | Back to the labels, the Activity feed, or the Starred or Watched list, when you came from one |
+| `Backspace` | Back to the labels, Notifications, the Activity feed, or the Starred or Watched list, when you came from one |
 
 ### In Branches and Commits
 
@@ -777,6 +822,17 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Enter` on a page | Open it in your browser |
 | `S` | Open the site's home page |
 | `Backspace` | Pages back to the publish history |
+
+### In Notifications
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open it: an issue or pull request here, anything else on GitHub |
+| `M` | Mark read |
+| `Delete` or `Ctrl+D` | Mark done |
+| `U` | Unsubscribe from the thread |
+| `I` | Include read notifications, or not |
+| `G` or `Ctrl+Shift+G` | Open its repository in GHManage |
 
 ### In Activity
 

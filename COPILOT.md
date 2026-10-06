@@ -164,6 +164,17 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   Windows limit; it resolves the fork's upstream like every other issue action, and the
   dialog names that repo. Unsent text lives in `_issue_drafts[repo]` until created.
   After creation the list reloads with `_pending_target` on the new number.
+- **Notifications** (`VIEW_NOTIFICATIONS`, Ctrl+Shift+N, entry second in the repo list,
+  counted as "(N unread)"). Data: `fetch_notifications(limit, include_read)` pages **50**
+  at a time (GitHub's cap), `Notification` maps the subject's API address to a github.com
+  page and number (`_notification_url`). Enter on an issue/PR opens it via
+  `_open_repo_from_list` + `_pending_target`, so Backspace returns; anything else opens the
+  browser; both mark read. M/U/I/G live in `on_char_hook` (work from the details panel);
+  Delete/Ctrl+D is "Mark as Done" through `_delete_focused_item`. Changes run through
+  `_run_notification_change`, which looks the gh_data function up **by name at call time**
+  (`_NOTIFICATION_CHANGES`) — a dict of the functions themselves bound them at import and
+  a test stub of `mark_notification_read` did not take, which marked a real notification
+  read. Keep it by name. Read rows stay put until refresh; done rows leave at once.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
@@ -271,6 +282,9 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 | Starred repos (Starred view) | `user/starred?per_page=&page=` |
 | Watched repos (Watched view) | `user/subscriptions?per_page=&page=` |
 | Signed-in login | `user` (`-q .login`, cached) |
+| Notifications | `notifications?all=false|true&per_page=50&page=` |
+| Mark read / done / unsubscribe | `PATCH`/`DELETE notifications/threads/{id}`, `DELETE …/{id}/subscription` |
+| Mark all read | `PUT notifications -F read=true` |
 | Activity feed | `users/{login}/received_events?per_page=100&page=` (max 3 pages; page 4 is HTTP 422; pages are not reliably full) |
 | PR titles for the feed | GraphQL `repository(owner,name){ pN: pullRequest(number:N){title body} }`, batched, per repo on error |
 
