@@ -79,6 +79,14 @@ from gh_data import (
     add_comment,
     close_item,
     IssueCreatedUnreadable,
+    MissingScope,
+    WATCH_ALL,
+    WATCH_IGNORE,
+    WATCH_PARTICIPATING,
+    get_watch_level,
+    list_accounts,
+    set_watch_level,
+    switch_account,
     create_issue,
     create_label,
     detect_repo,
@@ -479,6 +487,8 @@ ID_RUN_WORKFLOW = wx.NewIdRef()
 ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
+ID_SWITCH_ACCOUNT = wx.NewIdRef()
+ID_WATCH_SETTINGS = wx.NewIdRef()
 ID_COPY_LINK = wx.NewIdRef()
 ID_COPY_MARKDOWN = wx.NewIdRef()
 ID_COPY_TITLE = wx.NewIdRef()
@@ -1365,6 +1375,8 @@ class GhViewerFrame(wx.Frame):
         file_menu.Append(ID_OPEN_REPO, "Open Repository or Address…\tCtrl+Shift+O")
         file_menu.Append(ID_REMOVE_REPO, "Remove from List…")
         file_menu.AppendSeparator()
+        file_menu.Append(ID_SWITCH_ACCOUNT, "Switch GitHub Account…\tCtrl+Shift+K")
+        file_menu.AppendSeparator()
         file_menu.Append(ID_REFRESH, "Refresh\tCtrl+R")
         file_menu.Append(ID_VIEW_MORE, "View More\tCtrl++")
         file_menu.AppendSeparator()
@@ -1400,6 +1412,7 @@ class GhViewerFrame(wx.Frame):
         self._act_reopen = actions_menu.Append(ID_REOPEN, "Reopen Issue/PR\tCtrl+Shift+W")
         self._act_comment = actions_menu.Append(ID_COMMENT, "Add Comment…\tCtrl+M")
         self._act_new_issue = actions_menu.Append(ID_NEW_ISSUE, "New Issue…\tCtrl+N")
+        self._act_watch = actions_menu.Append(ID_WATCH_SETTINGS, "Watch Settings…\tCtrl+Shift+U")
         actions_menu.AppendSeparator()
         # Ctrl+I and Ctrl+D are safe as accelerators; a bare Delete accelerator
         # would not be, since it would swallow the Delete key inside the list.
@@ -1732,6 +1745,7 @@ class GhViewerFrame(wx.Frame):
         in_repo = bool(self.repo) and self.view_mode not in REPOLESS_VIEWS
         self._act_new.Enable(in_repo)
         self._act_new_issue.Enable(in_repo)
+        self._act_watch.Enable(in_repo or self.view_mode in REPO_LIST_VIEWS)
         self._act_go_to_repo.Enable(self.view_mode in (VIEW_ACTIVITY, VIEW_NOTIFICATIONS))
         self._act_go_to_repo.SetItemLabel(
             "Go to Notification's Repository\tCtrl+Shift+G"
@@ -1875,6 +1889,8 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_reopen, id=ID_REOPEN)
         self.Bind(wx.EVT_MENU, self.on_comment, id=ID_COMMENT)
         self.Bind(wx.EVT_MENU, self.on_new_issue, id=ID_NEW_ISSUE)
+        self.Bind(wx.EVT_MENU, lambda e: self._switch_account_flow(), id=ID_SWITCH_ACCOUNT)
+        self.Bind(wx.EVT_MENU, lambda e: self._watch_settings_flow(), id=ID_WATCH_SETTINGS)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
         self.Bind(wx.EVT_MENU, self.on_filter, id=ID_FILTER)
         self.Bind(wx.EVT_MENU, self.on_new_label, id=ID_NEW_LABEL)
@@ -5171,6 +5187,182 @@ class GhViewerFrame(wx.Frame):
             self._load_items()
         self._announce("Including read notifications." if self._include_read
                        else "Unread notifications only.")
+
+    # ── Watching ────────────────────────────────────────────────────────
+
+    _WATCH_CHOICES = [
+        (WATCH_PARTICIPATING, "Participating and @mentions — only what you take part in"),
+        (WATCH_ALL, "All Activity — every issue, pull request, release and discussion"),
+        (WATCH_IGNORE, "Ignore — nothing, not even @mentions"),
+    ]
+
+    def _watch_target(self) -> str | None:
+        """The repository Watch Settings is about: the one selected in the
+        repo list when that has focus, the one selected in Starred or
+        Watched, else the one open."""
+        if self._pane_index(self._current_focus()) == 0:
+            idx = self.repo_list.GetSelection()
+            name = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
+            if name and name != FAVORITES_ENTRY and name not in ENTRY_VIEWS:
+                return name
+        item = self._focused_item()
+        if self.view_mode in REPO_LIST_VIEWS and isinstance(item, RepoEntry):
+            return item.name
+        if self.view_mode not in REPOLESS_VIEWS:
+            return self.repo
+        return None
+
+    def _watch_settings_flow(self) -> None:
+        """Actions ▸ Watch Settings (Ctrl+Shift+U): how GitHub notifies you
+        about a repository."""
+        repo = self._watch_target()
+        if not repo:
+            self._announce("Select a repository first.")
+            return
+        self._announce(f"Checking how you watch {repo}…")
+
+        def worker() -> None:
+            try:
+                level = get_watch_level(repo)
+            except GhError as exc:
+                wx.CallAfter(self._on_watch_error, repo, exc)
+                return
+            wx.CallAfter(self._choose_watch_level, repo, level)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_watch_error(self, repo: str, exc: GhError) -> None:
+        if isinstance(exc, MissingScope):
+            self._announce(f"Watch Settings needs gh's \"{exc.scope}\" permission; "
+                           "see the message for how to add it.")
+            wx.MessageBox(str(exc), "Watch Settings", wx.OK | wx.ICON_INFORMATION, self)
+        else:
+            self._announce(f"Couldn't check how you watch {repo}: {exc}")
+
+    def _choose_watch_level(self, repo: str, level: str) -> None:
+        labels = [label for _, label in self._WATCH_CHOICES]
+        current = next(i for i, (lv, _) in enumerate(self._WATCH_CHOICES) if lv == level)
+        dlg = wx.SingleChoiceDialog(
+            self,
+            f"How should GitHub notify you about {repo}?\n"
+            f"Now: {labels[current].split(' — ')[0]}.\n"
+            "For only some kinds of activity (Custom), use github.com.",
+            "Watch Settings",
+            labels,
+        )
+        dlg.SetSelection(current)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Watch settings unchanged.")
+                return
+            choice = dlg.GetSelection()
+        finally:
+            dlg.Destroy()
+        new_level, label = self._WATCH_CHOICES[choice]
+        name = label.split(" — ")[0]
+        if new_level == level:
+            self._announce(f"Already {name} for {repo}.")
+            return
+        self._announce(f"Setting {repo} to {name}…")
+
+        def worker() -> None:
+            try:
+                set_watch_level(repo, new_level)
+            except GhError as exc:
+                wx.CallAfter(self._on_watch_error, repo, exc)
+                return
+            wx.CallAfter(self._on_watch_set, repo, name)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_watch_set(self, repo: str, name: str) -> None:
+        self._announce(f"{repo} is now {name}.")
+        # Watching or not changes how many Watched holds; ask again.
+        threading.Thread(target=self._recount_watched, daemon=True).start()
+
+    def _recount_watched(self) -> None:
+        try:
+            n = COUNTED_ENTRIES[WATCHED_ENTRY]()
+        except GhError:
+            return
+        wx.CallAfter(self._on_category_counts, {WATCHED_ENTRY: n})
+
+    # ── Accounts ────────────────────────────────────────────────────────
+
+    def _switch_account_flow(self) -> None:
+        """File ▸ Switch GitHub Account (Ctrl+Shift+K): another account gh
+        is signed in to. gh keeps the accounts; this only chooses."""
+        self._announce("Asking gh which accounts it has…")
+
+        def worker() -> None:
+            try:
+                accounts = list_accounts()
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't list gh's accounts: {exc}")
+                return
+            wx.CallAfter(self._choose_account, accounts)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _choose_account(self, accounts: list) -> None:
+        if not accounts:
+            self._announce("gh isn't signed in to github.com. Run gh auth login in a terminal.")
+            return
+        if len(accounts) == 1:
+            msg = (f"gh is signed in to one github.com account, {accounts[0].login}.\n\n"
+                   "To add another, run this in a terminal, then come back here:\n\n"
+                   "gh auth login")
+            self._announce(f"Only one account: {accounts[0].login}.")
+            wx.MessageBox(msg, "Switch GitHub Account", wx.OK | wx.ICON_INFORMATION, self)
+            return
+        labels = [f"{a.login}{' — in use' if a.active else ''}" for a in accounts]
+        dlg = wx.SingleChoiceDialog(
+            self, "Use which github.com account?\n"
+            "gh in your terminal switches to it too.",
+            "Switch GitHub Account", labels,
+        )
+        dlg.SetSelection(0)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Account unchanged.")
+                return
+            chosen = accounts[dlg.GetSelection()]
+        finally:
+            dlg.Destroy()
+        if chosen.active:
+            self._announce(f"Already using {chosen.login}.")
+            return
+        self._announce(f"Switching to {chosen.login}…")
+
+        def worker() -> None:
+            try:
+                switch_account(chosen.login, chosen.host)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't switch account: {exc}")
+                return
+            wx.CallAfter(self._on_account_switched, chosen.login)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_account_switched(self, login: str) -> None:
+        """Start again as the new account: its repositories, counts and inbox.
+
+        Favorites and pinned repositories stay — they are this computer's,
+        not the account's.
+        """
+        self.repo = None
+        self._return_to = None
+        self._pending_target = None
+        self._issue_drafts.clear()
+        self._category_counts.clear()
+        self._load_repos()
+        if self.view_mode == VIEW_NOTIFICATIONS:
+            self.current_limit = self.page_size
+            self._load_items()
+        else:
+            self._switch_view(VIEW_NOTIFICATIONS)
+        self._update_title()
+        wx.CallLater(200, self._announce, f"Now using {login}. Showing their notifications.")
 
     # ── Labels ──────────────────────────────────────────────────────────
 

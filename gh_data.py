@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2710,3 +2711,102 @@ def mark_all_notifications_read(last_read_at: str = "") -> None:
 def unsubscribe_notification(thread_id: str) -> None:
     """Stop notifications for this thread until you comment or are mentioned."""
     _run_gh(["api", "-X", "DELETE", f"notifications/threads/{thread_id}/subscription"])
+
+
+# ── Accounts ───────────────────────────────────────────────────────────
+#
+# gh keeps the accounts; GHManage only asks which there are and which is in
+# use, and asks gh to switch. Only github.com accounts are offered: every
+# other call here talks to github.com.
+
+
+@dataclass
+class Account:
+    login: str
+    host: str = "github.com"
+    active: bool = False
+
+
+def list_accounts() -> list[Account]:
+    """The github.com accounts gh is signed in to, the one in use first."""
+    raw = _run_gh(["auth", "status", "--json", "hosts"])
+    try:
+        hosts = (json.loads(raw) or {}).get("hosts") or {}
+    except ValueError:
+        raise GhError("gh's account list couldn't be read.")
+    out = [
+        Account(a.get("login") or "", host, bool(a.get("active")))
+        for host, accounts in hosts.items() if host == "github.com"
+        for a in (accounts or []) if isinstance(a, dict) and a.get("login")
+    ]
+    out.sort(key=lambda a: not a.active)
+    return out
+
+
+def switch_account(login: str, host: str = "github.com") -> None:
+    """Make ``login`` the account gh uses — for GHManage and the terminal alike."""
+    global _login
+    _run_gh(["auth", "switch", "--hostname", host, "--user", login])
+    _login = None  # current_login() must ask again
+
+
+# ── Watching a repository ──────────────────────────────────────────────
+#
+# GitHub's three plain levels. The web's "Custom" (only issues, only
+# releases, …) is not in the API.
+
+WATCH_PARTICIPATING = "participating"
+WATCH_ALL = "all"
+WATCH_IGNORE = "ignore"
+
+
+class MissingScope(GhError):
+    """gh's sign-in lacks a permission this needs; ``scope`` names it."""
+
+    def __init__(self, scope: str) -> None:
+        super().__init__(
+            f'This needs gh\'s "{scope}" permission, which gh doesn\'t ask for '
+            f"when you sign in. Run this in a terminal, then try again:\n\n"
+            f"gh auth refresh -h github.com -s {scope}"
+        )
+        self.scope = scope
+
+
+def _scope_error(exc: GhError) -> Optional[MissingScope]:
+    text = str(exc)
+    if "needs the" in text and "scope" in text:
+        m = re.search(r'needs the "([^"]+)" scope', text)
+        return MissingScope(m.group(1) if m else "notifications")
+    return None
+
+
+def get_watch_level(repo: str) -> str:
+    """How you watch ``repo``: all activity, ignoring, or participating only."""
+    try:
+        raw = _run_gh(["api", f"repos/{repo}/subscription"])
+    except GhError as exc:
+        missing = _scope_error(exc)
+        if missing:
+            raise missing
+        if _is_not_found(exc):
+            return WATCH_PARTICIPATING  # no subscription: the default
+        raise
+    data = json.loads(raw) if raw.strip() else {}
+    if data.get("ignored"):
+        return WATCH_IGNORE
+    return WATCH_ALL if data.get("subscribed") else WATCH_PARTICIPATING
+
+
+def set_watch_level(repo: str, level: str) -> None:
+    if level == WATCH_PARTICIPATING:
+        args = ["api", "-X", "DELETE", f"repos/{repo}/subscription"]
+    elif level == WATCH_ALL:
+        args = ["api", "-X", "PUT", f"repos/{repo}/subscription", "-F", "subscribed=true"]
+    elif level == WATCH_IGNORE:
+        args = ["api", "-X", "PUT", f"repos/{repo}/subscription", "-F", "ignored=true"]
+    else:
+        raise ValueError(level)
+    try:
+        _run_gh(args)
+    except GhError as exc:
+        raise _scope_error(exc) or exc

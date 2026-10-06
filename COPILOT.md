@@ -181,6 +181,16 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   (`_NOTIFICATION_CHANGES`) — a dict of the functions themselves bound them at import and
   a test stub of `mark_notification_read` did not take, which marked a real notification
   read. Keep it by name. Read rows stay put until refresh; done rows leave at once.
+- **Switch GitHub Account** (File, Ctrl+Shift+K) — `list_accounts` (`gh auth status --json
+  hosts`, github.com only) and `switch_account` (`gh auth switch`, also resets the cached
+  login). `_on_account_switched` drops everything tied to the old account (repo, return
+  path, pending target, drafts, counts), reloads the repo list and lands on Notifications.
+- **Watch Settings** (Actions, Ctrl+Shift+U) — `get_watch_level`/`set_watch_level` on
+  `repos/{r}/subscription` (404 = participating, the default; DELETE sets it). These need
+  gh's **notifications** scope, which `gh auth login` does not request: `_scope_error`
+  turns gh's "needs the X scope" message into `MissingScope(scope)`, whose text gives the
+  `gh auth refresh` command. Use `MissingScope` for any future feature that needs an extra
+  scope (Follow needs `user:follow`, Projects `read:project`).
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names

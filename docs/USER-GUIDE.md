@@ -132,6 +132,22 @@ and follow its prompts. Choose **GitHub.com**, and sign in through the browser w
 
 You only do this once. GHManage picks up the sign-in the next time it starts.
 
+### More than one account
+
+`gh` can be signed in to several github.com accounts at once, a personal one and a work one say: run `gh auth login` again for each. **File → Switch GitHub Account…** (`Ctrl+Shift+K`) then lists them, the one in use first, and switching starts GHManage again as that account: its repositories, its counts and its Notifications, which is where you land. Favorites and repositories you opened by address stay, since they belong to this computer rather than to an account.
+
+Switching changes the account `gh` uses in your terminal too, exactly as `gh auth switch` does. With only one account signed in, the command says so and how to add another. Only github.com accounts are offered; GHManage does not work with GitHub Enterprise servers.
+
+### Permissions gh does not ask for
+
+When you sign in, `gh` asks GitHub for the permissions most commands need. A few GHManage features need one more, and say so when you use them, with the command that adds it. For example, **Watch Settings** needs the "notifications" permission:
+
+```
+gh auth refresh -h github.com -s notifications
+```
+
+`gh` opens your browser to approve it, once.
+
 ### When GHManage cannot find gh
 
 If `gh` is missing, the status bar says that the `gh` CLI was not found, with where to get it. On the Mac, an app started from Finder or the Dock does not see the `PATH` your terminal uses, so GHManage looks in the usual Homebrew and MacPorts folders itself (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`) as well as `~/.local/bin`. If you keep `gh` somewhere else, set the environment variable `GHMANAGE_GH_PATH` to its full path.
@@ -206,7 +222,7 @@ Lists load 100 items to begin with. `Ctrl++` (**File → View More**) loads the 
 
 | Menu | What is on it |
 |------|---------------|
-| **File** | Open Repository or Address, Remove from List, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
+| **File** | Open Repository or Address, Remove from List, Switch GitHub Account, Refresh, View More, Go To Issue, Quick Filter, Next and Previous Comment, Quit |
 | **Actions** | Everything that acts on the item you are on. See [The Actions Menu](#the-actions-menu). |
 | **View** | View Mode, List Mode, Sort Order, Columns, State, Filter |
 | **Help** | User Guide, Check for Updates, About GHManage |
@@ -566,6 +582,14 @@ Each row shows the repository's name, description, main language, stars, and whe
 | `Ctrl+F` | Filter the list |
 | `R` | Reload the list |
 
+### Watch settings
+
+**Actions → Watch Settings…** (`Ctrl+Shift+U`) sets how GitHub notifies you about a repository: **Participating and @mentions** (only what you take part in, GitHub's default), **All Activity** (watching: every issue, pull request, release and discussion), or **Ignore** (nothing, not even mentions). The current setting is selected when the list opens.
+
+It acts on the repository you have open, or on the repository selected in Starred or Watched, or in the repository list when that has focus. GitHub's **Custom** setting, to be told about only some kinds of activity, isn't available to programs, so for that use the repository's Watch button on github.com.
+
+The first time, it will most likely tell you it needs `gh`'s "notifications" permission; see [Permissions gh does not ask for](#permissions-gh-does-not-ask-for).
+
 These lists keep other people's repositories out of the main repository list, which stays short: just your own and the ones you opened by address. To keep a starred repository one keystroke away, favorite it with `F`, or open it by address with `Ctrl+Shift+O` to pin it in the repository list.
 
 ---
@@ -721,6 +745,7 @@ Everything that acts on what the list is showing is on the **Actions** menu, whi
 | Reopen Issue/PR | `Ctrl+Shift+W` | Issues & PRs |
 | Add Comment… | `Ctrl+M` | Issues & PRs |
 | New Issue… | `Ctrl+N` | Any view of a repository; shows the new issue in Issues & PRs |
+| Watch Settings… | `Ctrl+Shift+U` | Any view of a repository, Starred and Watched |
 | New Label… | `Ctrl+I` | Any view of a repository; switches to Labels to show the new one |
 | Delete | `Ctrl+D` | Labels (reads **Delete Label…**), Workflow Runs (reads **Delete Workflow Run…**) and Notifications (reads **Mark as Done**) |
 | Run Workflow on Branch… | | Workflows |
@@ -762,6 +787,8 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 | `Ctrl+Shift+T` / `Ctrl+Shift+I` / `Ctrl+Shift+D` | Copy its title / number, SHA or name / details |
 | `Ctrl+Shift+O` | Open a repository, or an issue, pull request, commit, release or run, by its address |
 | `Alt+N` / `Alt+P` | Next / previous comment in the details panel |
+| `Ctrl+Shift+U` | Watch settings for the repository |
+| `Ctrl+Shift+K` | Switch GitHub account |
 | `Ctrl+Q` | Quit |
 
 ### In the item list
