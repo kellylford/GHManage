@@ -2964,3 +2964,180 @@ def fetch_my_work(limit_each: int = 100) -> tuple[list[Item], set[str]]:
     out.sort(key=lambda it: it.updated_at, reverse=True)
     out.sort(key=lambda it: order.get(it.why, 99))
     return out, capped
+
+
+# ── Workflow run jobs, logs, rerun and cancel ─────────────────────────
+
+JOB_COLUMNS = ["name", "status", "result", "duration", "failed step"]
+JOB_DEFAULT_COLUMNS = ["name", "status", "result", "duration", "failed step"]
+
+
+@dataclass
+class JobStep:
+    number: int
+    name: str
+    status: str = ""
+    conclusion: str = ""
+
+
+@dataclass
+class WorkflowJob:
+    """One job of a workflow run, with its steps."""
+
+    id: int
+    name: str
+    status: str = ""
+    conclusion: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    url: str = ""
+    steps: list[JobStep] = field(default_factory=list)
+
+    @property
+    def duration(self) -> str:
+        from datetime import datetime
+        try:
+            start = datetime.fromisoformat(self.started_at.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(self.completed_at.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        seconds = int((end - start).total_seconds())
+        if seconds < 0:
+            return ""
+        return f"{seconds // 60}m {seconds % 60}s" if seconds >= 60 else f"{seconds}s"
+
+    @property
+    def failed_steps(self) -> list[JobStep]:
+        return [s for s in self.steps if s.conclusion == "failure"]
+
+    def to_row(self, columns: list[str]) -> dict[str, str]:
+        failed = self.failed_steps
+        mapping = {
+            "name": self.name,
+            "status": self.status,
+            "result": self.conclusion or "(running)",
+            "duration": self.duration,
+            "failed step": failed[0].name if failed else "",
+        }
+        return {col: mapping.get(col, "") for col in columns}
+
+    def to_accessible_string(self, columns: list[str]) -> str:
+        row = self.to_row(columns)
+        return ", ".join(f"{col}: {val}" for col, val in row.items() if val)
+
+
+def _repo_args(repo: Optional[str]) -> list[str]:
+    return ["-R", repo] if repo else []
+
+
+def fetch_run_jobs(repo: Optional[str], run_id: int) -> list[WorkflowJob]:
+    """The jobs of a run's latest attempt, in the order they ran."""
+    data = _api_json([f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs?per_page=100"], repo)
+    rows = data.get("jobs") if isinstance(data, dict) else None
+    jobs = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        steps = [
+            JobStep(int(s.get("number") or 0), s.get("name") or "",
+                    s.get("status") or "", s.get("conclusion") or "")
+            for s in r.get("steps") or [] if isinstance(s, dict)
+        ]
+        jobs.append(WorkflowJob(
+            id=int(r.get("id") or 0), name=r.get("name") or "",
+            status=r.get("status") or "", conclusion=r.get("conclusion") or "",
+            started_at=r.get("started_at") or "", completed_at=r.get("completed_at") or "",
+            url=r.get("html_url") or "", steps=steps,
+        ))
+    return jobs
+
+
+# Terminal colour codes, which logs keep from the tools that wrote them.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\^\[\[[0-9;]*m")
+# The timestamp GitHub puts at the start of every log line.
+_STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
+
+
+def clean_log_line(line: str) -> str:
+    """A log line as a person wants to read it: no colour codes, no stamp,
+    and GitHub's ##[error] / ##[warning] markers in words."""
+    line = _STAMP.sub("", _ANSI.sub("", line))
+    for marker, word in (("##[error]", "ERROR: "), ("##[warning]", "WARNING: "),
+                         ("##[group]", "▸ "), ("##[endgroup]", ""), ("##[notice]", "NOTE: ")):
+        if line.startswith(marker):
+            return word + line[len(marker):]
+    return line
+
+
+def parse_run_log(text: str) -> list[tuple[str, str, list[str]]]:
+    """``gh run view --log`` output as (job, step, cleaned lines), in order.
+
+    Each line arrives as job TAB step TAB stamped text.
+    """
+    out: list[tuple[str, str, list[str]]] = []
+    for raw in text.splitlines():
+        parts = raw.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        job, step, rest = parts
+        line = clean_log_line(rest)
+        if line == "" and rest.strip().endswith("##[endgroup]"):
+            continue
+        if out and out[-1][0] == job and out[-1][1] == step:
+            out[-1][2].append(line)
+        else:
+            out.append((job, step, [line]))
+    return out
+
+
+def fetch_failed_log(repo: Optional[str], run_id: int) -> list[tuple[str, str, list[str]]]:
+    """The log of every failed step in a run, grouped by job and step."""
+    try:
+        raw = _run_gh(["run", "view", str(run_id), "--log-failed", *_repo_args(repo)])
+    except GhError as exc:
+        if "log not found" in str(exc).lower():
+            return []
+        raise
+    return parse_run_log(raw)
+
+
+def fetch_job_log(repo: Optional[str], run_id: int, job_id: int) -> list[tuple[str, str, list[str]]]:
+    """One job's whole log, grouped by step."""
+    raw = _run_gh(["run", "view", str(run_id), "--job", str(job_id), "--log", *_repo_args(repo)])
+    return parse_run_log(raw)
+
+
+@dataclass
+class Annotation:
+    level: str        # failure, warning, notice
+    message: str
+    path: str = ""
+    line: int = 0
+    title: str = ""
+
+
+def fetch_job_annotations(repo: Optional[str], job_id: int) -> list[Annotation]:
+    """What GitHub flagged in a job: the errors and warnings shown on the run's page.
+
+    A job is a check run, and its id is the check run's id.
+    """
+    try:
+        data = _api_json([f"repos/{{owner}}/{{repo}}/check-runs/{job_id}/annotations"], repo)
+    except GhError:
+        return []  # a nicety; the logs still say what happened
+    return [
+        Annotation(a.get("annotation_level") or "", a.get("message") or "",
+                   a.get("path") or "", int(a.get("start_line") or 0), a.get("title") or "")
+        for a in (data if isinstance(data, list) else []) if isinstance(a, dict)
+    ]
+
+
+def rerun_workflow_run(repo: Optional[str], run_id: int, failed_only: bool = False) -> None:
+    args = ["run", "rerun", str(run_id), *_repo_args(repo)]
+    if failed_only:
+        args.append("--failed")
+    _run_gh(args)
+
+
+def cancel_workflow_run(repo: Optional[str], run_id: int) -> None:
+    _run_gh(["run", "cancel", str(run_id), *_repo_args(repo)])

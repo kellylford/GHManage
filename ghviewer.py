@@ -83,6 +83,15 @@ from gh_data import (
     add_comment,
     close_item,
     IssueCreatedUnreadable,
+    JOB_COLUMNS,
+    JOB_DEFAULT_COLUMNS,
+    WorkflowJob,
+    cancel_workflow_run,
+    fetch_failed_log,
+    fetch_job_annotations,
+    fetch_job_log,
+    fetch_run_jobs,
+    rerun_workflow_run,
     MY_WORK_COLUMNS,
     MY_WORK_DEFAULT_COLUMNS,
     SEARCH_ITEM_COLUMNS,
@@ -331,6 +340,78 @@ def parse_github_url(value: str) -> GitHubTarget | None:
     return GitHubTarget(repo, "inside")
 
 
+# ── Workflow run reports ────────────────────────────────────────────────
+
+# Lines of each failed step's log in the "what failed" report: enough to
+# hold the error and what led to it, short enough to read.
+FAILED_TAIL_LINES = 40
+# A job log longer than this keeps only its end, where failures are.
+JOB_LOG_MAX_LINES = 20000
+
+
+def format_failure_report(run, jobs: list, annotations: dict, failed_log: list) -> str:
+    """What failed in ``run``, as text to read top to bottom.
+
+    ``annotations`` maps job id to that job's annotations; ``failed_log`` is
+    fetch_failed_log's (job, step, lines).
+    """
+    failed = [j for j in jobs if j.conclusion in ("failure", "timed_out", "cancelled")]
+    head = f"Run #{run.run_number} {run.name} on {run.branch} — {run.conclusion or run.status}"
+    lines = [head]
+    if not failed:
+        lines.append("No job failed.")
+        return "\n".join(lines)
+    names = ", ".join(j.name for j in failed)
+    lines.append(f"{len(failed)} of {len(jobs)} jobs failed: {names}.")
+    for job in failed:
+        lines.append("")
+        lines.append("─" * 60)
+        steps = job.failed_steps
+        where = f" at step \"{steps[0].name}\"" if steps else ""
+        took = f" after {job.duration}" if job.duration else ""
+        lines.append(f"Job {job.name} — {job.conclusion}{where}{took}")
+        lines.append("─" * 60)
+        flagged = [a for a in annotations.get(job.id, []) if a.level == "failure"]
+        if flagged:
+            lines.append("")
+            lines.append("What GitHub flagged:")
+            for a in flagged:
+                place = f"{a.path} line {a.line}: " if a.path and a.path != ".github" else (
+                    f"Line {a.line}: " if a.line else "")
+                title = f"{a.title}: " if a.title else ""
+                lines.append(f"  {place}{title}{a.message}")
+        for log_job, step, step_lines in failed_log:
+            if log_job != job.name:
+                continue
+            tail = [ln for ln in step_lines if ln.strip()][-FAILED_TAIL_LINES:]
+            lines.append("")
+            shown = len(tail)
+            lines.append(f"Last {shown} lines of \"{step}\":" if shown < len(step_lines)
+                         else f"Log of \"{step}\":")
+            lines.extend(f"  {ln}" for ln in tail)
+    lines.append("")
+    lines.append("The whole log of a job: J for the jobs, then Enter on one.")
+    return "\n".join(lines)
+
+
+def format_job_log(job, log: list) -> tuple[str, int]:
+    """A job's log as text, and where its first error starts (or 0)."""
+    lines = [f"Log of job {job.name} — {job.conclusion or job.status}"]
+    body: list[str] = []
+    for _job, step, step_lines in log:
+        body.append("")
+        body.append(f"── Step: {step} ──")
+        body.extend(step_lines)
+    if len(body) > JOB_LOG_MAX_LINES:
+        dropped = len(body) - JOB_LOG_MAX_LINES
+        body = body[dropped:]
+        lines.append(f"(The first {dropped:,} lines are left out; this is the end of the log.)")
+    lines.extend(body)
+    text = "\n".join(lines)
+    at = text.find("\nERROR: ")
+    return text, (at + 1 if at >= 0 else 0)
+
+
 # ── Copy ────────────────────────────────────────────────────────────────
 
 
@@ -401,6 +482,8 @@ def copy_values(item) -> CopyValues | None:
     if isinstance(item, WorkflowRun):
         return CopyValues(item.url, item.name, str(item.run_id) if item.run_id else "", "Run ID",
                           f"{item.name} #{item.run_number}")
+    if isinstance(item, WorkflowJob):
+        return CopyValues(item.url, item.name, str(item.id) if item.id else "", "Job ID", item.name)
     if isinstance(item, Artifact):
         # Artifacts have no page of their own on github.com.
         return CopyValues("", item.name, item.name, "Name", item.name)
@@ -507,6 +590,10 @@ ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
 ID_SEARCH = wx.NewIdRef()
+ID_RUN_JOBS = wx.NewIdRef()
+ID_RUN_FAILED = wx.NewIdRef()
+ID_RUN_RERUN = wx.NewIdRef()
+ID_RUN_CANCEL = wx.NewIdRef()
 ID_SAVE_SEARCH = wx.NewIdRef()
 ID_VIEW_MY_WORK = wx.NewIdRef()
 ID_WATCH_SETTINGS = wx.NewIdRef()
@@ -526,6 +613,7 @@ VIEW_RELEASES = "releases"
 VIEW_WORKFLOWS = "workflows"   # workflow definitions (files)
 VIEW_WORKFLOW = "workflow"     # workflow runs
 VIEW_ARTIFACTS = "artifacts"   # artifacts of a single workflow run (drill-down)
+VIEW_JOBS = "jobs"             # jobs of a single workflow run (drill-down)
 VIEW_ASSETS = "assets"         # files attached to a single release (drill-down)
 VIEW_LABELS = "labels"
 VIEW_FAVORITES = "favorites"
@@ -600,6 +688,7 @@ USER_GUIDE_URL = "https://kellylford.github.io/GHManage/"
 PARENT_VIEW = {
     VIEW_COMMITS: VIEW_BRANCHES,
     VIEW_ARTIFACTS: VIEW_WORKFLOW,
+    VIEW_JOBS: VIEW_WORKFLOW,
     VIEW_ASSETS: VIEW_RELEASES,
     VIEW_PAGEFILES: VIEW_PAGES,
 }
@@ -618,6 +707,7 @@ VIEW_COLUMNS = {
     VIEW_WORKFLOWS: (WORKFLOW_DEF_DEFAULT_COLUMNS, WORKFLOW_DEF_COLUMNS),
     VIEW_WORKFLOW: (WORKFLOW_DEFAULT_COLUMNS, WORKFLOW_COLUMNS),
     VIEW_ARTIFACTS: (ARTIFACT_DEFAULT_COLUMNS, ARTIFACT_COLUMNS),
+    VIEW_JOBS: (JOB_DEFAULT_COLUMNS, JOB_COLUMNS),
     VIEW_ASSETS: (ASSET_DEFAULT_COLUMNS, ASSET_COLUMNS),
     VIEW_LABELS: (LABEL_DEFAULT_COLUMNS, LABEL_COLUMNS),
     VIEW_FAVORITES: (FAVORITES_DEFAULT_COLUMNS, FAVORITES_COLUMNS),
@@ -1256,6 +1346,7 @@ class GhViewerFrame(wx.Frame):
         self.git_items: list = []   # holds Branch/Commit/Tag/Release/WorkflowRun objects
         self.commit_branch: str = ""  # branch for commits view ("" = default branch)
         self.artifacts_run: WorkflowRun | None = None  # run whose artifacts are shown
+        self.jobs_run: WorkflowRun | None = None  # run whose jobs are shown
         self.assets_release: Release | None = None  # release whose assets are shown
         # Pages config for the current repo. Shared by both Pages views — the
         # published-file list is derived from it — so it survives the move
@@ -1547,6 +1638,11 @@ class GhViewerFrame(wx.Frame):
         self._act_download = actions_menu.Append(
             ID_ACT_DOWNLOAD_ARTIFACT, "Download Artifact…"
         )
+        # Workflow runs. J, L, E and X are the keys in the list.
+        self._act_run_jobs = actions_menu.Append(ID_RUN_JOBS, "Show Jobs (J)")
+        self._act_run_failed = actions_menu.Append(ID_RUN_FAILED, "Show What Failed (L)")
+        self._act_run_rerun = actions_menu.Append(ID_RUN_RERUN, "Rerun… (E)")
+        self._act_run_cancel = actions_menu.Append(ID_RUN_CANCEL, "Cancel Run… (X)")
         self._act_open_site = actions_menu.Append(
             ID_OPEN_PAGES_SITE, "Open Published Site"
         )
@@ -1899,6 +1995,10 @@ class GhViewerFrame(wx.Frame):
 
         self._act_run_workflow.Enable(self.view_mode == VIEW_WORKFLOWS)
         self._act_download.Enable(self.view_mode == VIEW_ARTIFACTS)
+        runs = self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS)
+        self._act_run_jobs.Enable(self.view_mode == VIEW_WORKFLOW)
+        for entry in (self._act_run_failed, self._act_run_rerun, self._act_run_cancel):
+            entry.Enable(runs)
         # Only offer the site once we know there is one — the Pages views are
         # reachable on a repo that publishes nothing.
         self._act_open_site.Enable(
@@ -1949,6 +2049,8 @@ class GhViewerFrame(wx.Frame):
             self.commit_branch = ""
         if mode != VIEW_ARTIFACTS:
             self.artifacts_run = None
+        if mode != VIEW_JOBS:
+            self.jobs_run = None
         if mode != VIEW_ASSETS:
             self.assets_release = None
         if mode != VIEW_ISSUES:
@@ -2020,6 +2122,10 @@ class GhViewerFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda e: self._switch_account_flow(), id=ID_SWITCH_ACCOUNT)
         self.Bind(wx.EVT_MENU, lambda e: self._watch_settings_flow(), id=ID_WATCH_SETTINGS)
         self.Bind(wx.EVT_MENU, lambda e: self._search_flow(), id=ID_SEARCH)
+        self.Bind(wx.EVT_MENU, lambda e: self._show_run_jobs(), id=ID_RUN_JOBS)
+        self.Bind(wx.EVT_MENU, lambda e: self._show_what_failed(), id=ID_RUN_FAILED)
+        self.Bind(wx.EVT_MENU, lambda e: self._rerun_run(), id=ID_RUN_RERUN)
+        self.Bind(wx.EVT_MENU, lambda e: self._cancel_run(), id=ID_RUN_CANCEL)
         self.Bind(wx.EVT_MENU, lambda e: self._save_search(), id=ID_SAVE_SEARCH)
         self.Bind(wx.EVT_MENU, lambda e: self._select_category(VIEW_MY_WORK), id=ID_VIEW_MY_WORK)
         self.Bind(wx.EVT_MENU, self.on_goto, id=ID_GOTO)
@@ -2389,6 +2495,10 @@ class GhViewerFrame(wx.Frame):
                         wx.CallAfter(self._on_git_items_loaded, token, arts, "artifacts")
                     else:
                         wx.CallAfter(self._on_git_items_loaded, token, [], "artifacts")
+                elif view == VIEW_JOBS:
+                    run = self.jobs_run
+                    jobs = fetch_run_jobs(self.repo, run.run_id) if run else []
+                    wx.CallAfter(self._on_git_items_loaded, token, jobs, "jobs")
                 elif view == VIEW_ASSETS:
                     if self.assets_release:
                         assets = fetch_release_assets(
@@ -2475,6 +2585,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOWS: "Workflows",
         VIEW_WORKFLOW: "Workflow Runs",
         VIEW_ARTIFACTS: "Artifacts",
+        VIEW_JOBS: "Jobs",
         VIEW_ASSETS: "Release Assets",
         VIEW_LABELS: "Labels",
         VIEW_FAVORITES: "Favorites",
@@ -2499,6 +2610,8 @@ class GhViewerFrame(wx.Frame):
         # Include the run being drilled into (artifacts view)
         if self.view_mode == VIEW_ARTIFACTS and self.artifacts_run:
             parts.append(f"run #{self.artifacts_run.run_number} {self.artifacts_run.name}")
+        if self.view_mode == VIEW_JOBS and self.jobs_run:
+            parts.append(f"run #{self.jobs_run.run_number} {self.jobs_run.name}")
         # Include the release being drilled into (assets view)
         if self.view_mode == VIEW_ASSETS and self.assets_release:
             parts.append(self.assets_release.tag or self.assets_release.name)
@@ -2644,7 +2757,11 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode == VIEW_WORKFLOWS:
             compare_hint = "  Enter=run on branch"
         elif self.view_mode == VIEW_WORKFLOW:
-            compare_hint = "  Enter=list artifacts  Delete/Ctrl+D=delete run"
+            compare_hint = ("  Enter=list artifacts  J=jobs  L=what failed  E=rerun  X=cancel"
+                            "  Delete/Ctrl+D=delete run")
+        elif self.view_mode == VIEW_JOBS:
+            compare_hint = ("  Enter=read log  L=what failed  E=rerun  X=cancel"
+                            "  Backspace=back to runs")
         elif self.view_mode == VIEW_ARTIFACTS:
             compare_hint = "  Enter=download  Backspace=back to runs"
         elif self.view_mode == VIEW_RELEASES:
@@ -3254,8 +3371,31 @@ class GhViewerFrame(wx.Frame):
             lines.append("")
             lines.append("─" * 60)
             lines.append("")
-            lines.append("Press Enter to list this run's artifacts.")
+            lines.append("Press Enter to list this run's artifacts, J for its jobs and steps.")
+            if item.conclusion in ("failure", "timed_out", "startup_failure"):
+                lines.append("L shows what failed: GitHub's errors and the end of each failed step's log.")
+            lines.append("E reruns it, X cancels it while it is running.")
             lines.append("Delete or Ctrl+D deletes this run — GHManage asks first.")
+        elif isinstance(item, WorkflowJob):
+            lines.append(f"Job: {item.name}")
+            lines.append(f"Status: {item.status}")
+            lines.append(f"Result: {item.conclusion or '(running)'}")
+            if item.duration:
+                lines.append(f"Took: {item.duration}")
+            lines.append(f"ID: {item.id}")
+            lines.append("URL:")
+            lines.append(item.url or "(none)")
+            lines.append("")
+            lines.append("─" * 60)
+            lines.append(f"Steps ({len(item.steps)}):")
+            lines.append("─" * 60)
+            for step in item.steps:
+                lines.append(f"  Step {step.number}, {step.name}: "
+                             f"{step.conclusion or step.status or 'not started'}")
+            lines.append("")
+            lines.append("Press Enter to read this job's log; it opens at the first error.")
+            lines.append("L shows only what failed, across the run.")
+            lines.append("Press Backspace to return to the workflow runs.")
         elif isinstance(item, Artifact):
             lines.append(f"Artifact: {item.name}")
             lines.append(f"Size: {item.size_human()}")
@@ -3448,6 +3588,7 @@ class GhViewerFrame(wx.Frame):
         VIEW_WORKFLOWS: "File Path",
         VIEW_WORKFLOW: "Run ID",
         VIEW_ARTIFACTS: "Name",
+        VIEW_JOBS: "Job ID",
         VIEW_ASSETS: "File Name",
         VIEW_LABELS: "Label Name",
         VIEW_FAVORITES: "Name",
@@ -3587,6 +3728,9 @@ class GhViewerFrame(wx.Frame):
             self.artifacts_run = item
             self._switch_view(VIEW_ARTIFACTS)
             self._announce(f"Showing artifacts for run #{item.run_number} {item.name}")
+            return
+        if self.view_mode == VIEW_JOBS and isinstance(item, WorkflowJob):
+            self._show_job_log(item)
             return
         # In Artifacts view, Enter downloads the selected artifact
         if self.view_mode == VIEW_ARTIFACTS and isinstance(item, Artifact):
@@ -3907,6 +4051,16 @@ class GhViewerFrame(wx.Frame):
                 and self.view_mode in GO_TO_REPO_VIEWS):
             self._go_to_event_repo()
             return
+        if self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS) and not event.HasAnyModifiers():
+            action = {
+                ord("J"): self._show_run_jobs,
+                ord("L"): self._show_what_failed,
+                ord("E"): self._rerun_run,
+                ord("X"): self._cancel_run,
+            }.get(key)
+            if action:
+                action()
+                return
         if self.view_mode == VIEW_NOTIFICATIONS and not event.HasAnyModifiers():
             action = {
                 ord("M"): self._mark_notification_read,
@@ -4194,6 +4348,10 @@ class GhViewerFrame(wx.Frame):
             item_type = "workflow run"
             title = f"#{item.run_number} {item.name}"
             subtitle = f"{item.conclusion or item.status} on {item.branch}"
+        elif isinstance(item, WorkflowJob):
+            item_type = "job"
+            title = item.name
+            subtitle = item.conclusion or item.status
         elif isinstance(item, PagesFile):
             item_type = "page"
             title = item.path
@@ -4901,7 +5059,7 @@ class GhViewerFrame(wx.Frame):
             lines.append("  (none)")
         return "\n".join(lines)
 
-    def _show_text_dialog(self, title: str, text: str) -> None:
+    def _show_text_dialog(self, title: str, text: str, start: int = 0) -> None:
         """Show read-only, focusable, scrollable text in a modal dialog.
 
         Used for content a screen reader needs to navigate line by line
@@ -4924,8 +5082,10 @@ class GhViewerFrame(wx.Frame):
         if btn_sizer:
             sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 8)
         dlg.SetSizer(sizer)
-        txt.SetInsertionPoint(0)
         wx.CallAfter(txt.SetFocus)
+        # After focus, or some platforms put the caret back at the start.
+        wx.CallAfter(txt.SetInsertionPoint, start)
+        wx.CallAfter(txt.ShowPosition, start)
         dlg.ShowModal()
         dlg.Destroy()
 
@@ -5546,6 +5706,152 @@ class GhViewerFrame(wx.Frame):
         self._refresh_repo_list()
         self._announce(f"Saved '{name}'. It is in the repository list, after Watched "
                        "Repositories; Enter there runs it again.")
+
+    # ── Workflow runs: jobs, logs, rerun, cancel ────────────────────────
+
+    def _focused_run(self) -> WorkflowRun | None:
+        """The run J, L, E and X act on: the selected one, or the one whose
+        jobs are listed."""
+        if self.view_mode == VIEW_JOBS and self.jobs_run:
+            return self.jobs_run
+        item = self._focused_item()
+        if self.view_mode == VIEW_WORKFLOW and isinstance(item, WorkflowRun):
+            return item
+        self._announce("Select a workflow run first.")
+        return None
+
+    def _show_run_jobs(self) -> None:
+        """J: the run's jobs, as a list to drill into (Backspace returns)."""
+        if self.view_mode != VIEW_WORKFLOW:
+            return
+        run = self._focused_run()
+        if run is None:
+            return
+        self.jobs_run = run
+        self._switch_view(VIEW_JOBS)
+        self._announce(f"Showing jobs for run #{run.run_number} {run.name}")
+
+    def _show_what_failed(self) -> None:
+        """L: GitHub's errors and the end of each failed step's log, in one text."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status != "completed":
+            self._announce(f"Run #{run.run_number} is still {run.status.replace('_', ' ')}.")
+            return
+        if run.conclusion == "success":
+            self._announce(f"Nothing failed in run #{run.run_number} — it succeeded.")
+            return
+        repo = self.repo
+        self._announce(f"Finding what failed in run #{run.run_number}…")
+
+        def worker() -> None:
+            try:
+                jobs = fetch_run_jobs(repo, run.run_id)
+                failed = [j for j in jobs if j.conclusion in ("failure", "timed_out", "cancelled")]
+                annotations = {j.id: fetch_job_annotations(repo, j.id) for j in failed}
+                log = fetch_failed_log(repo, run.run_id) if failed else []
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't read run #{run.run_number}: {exc}")
+                return
+            text = format_failure_report(run, jobs, annotations, log)
+            wx.CallAfter(self._on_report_ready, repo,
+                         f"What failed — run #{run.run_number} {run.name}", text, 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_job_log(self, job: WorkflowJob) -> None:
+        """Enter on a job: its whole log, opening at the first error."""
+        run = self.jobs_run
+        if not run or not self.repo:
+            return
+        repo = self.repo
+        self._announce(f"Loading the log of {job.name}…")
+
+        def worker() -> None:
+            try:
+                log = fetch_job_log(repo, run.run_id, job.id)
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't load the log of {job.name}: {exc}")
+                return
+            text, start = format_job_log(job, log)
+            wx.CallAfter(self._on_report_ready, repo, f"Log — {job.name}", text, start)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_report_ready(self, repo: str, title: str, text: str, start: int) -> None:
+        if self.repo != repo or self.view_mode not in (VIEW_WORKFLOW, VIEW_JOBS):
+            self._announce(f"{title} is ready, but you have moved on; ask again there.")
+            return
+        self._announce(title + (" — at the first error." if start else "."))
+        self._show_text_dialog(title, text, start)
+
+    def _rerun_run(self) -> None:
+        """E: run it again — every job, or only those that failed."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status != "completed":
+            self._announce(f"Run #{run.run_number} hasn't finished; cancel it (X) or wait.")
+            return
+        choices = ["Rerun all jobs"]
+        if run.conclusion in ("failure", "cancelled", "timed_out", "startup_failure"):
+            choices.insert(0, "Rerun failed jobs only")
+        dlg = wx.SingleChoiceDialog(
+            self, f"Rerun #{run.run_number} {run.name} on {run.branch}?", "Rerun", choices,
+        )
+        dlg.SetSelection(0)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self._announce("Rerun cancelled.")
+                return
+            failed_only = dlg.GetStringSelection() == "Rerun failed jobs only"
+        finally:
+            dlg.Destroy()
+        self._run_change(run, lambda: rerun_workflow_run(self.repo, run.run_id, failed_only),
+                         f"Rerunning {'the failed jobs of ' if failed_only else ''}"
+                         f"#{run.run_number} {run.name}")
+
+    def _cancel_run(self) -> None:
+        """X: stop a run that is queued or in progress."""
+        run = self._focused_run()
+        if run is None or not self.repo:
+            return
+        if run.status == "completed":
+            self._announce(f"Run #{run.run_number} has already finished.")
+            return
+        confirm = wx.MessageBox(
+            f"Cancel run #{run.run_number} {run.name} on {run.branch}?",
+            "Cancel Run", wx.YES_NO | wx.ICON_QUESTION, self,
+        )
+        if confirm != wx.YES:
+            return
+        self._run_change(run, lambda: cancel_workflow_run(self.repo, run.run_id),
+                         f"Cancelling #{run.run_number} {run.name}")
+
+    def _run_change(self, run: WorkflowRun, call, said: str) -> None:
+        self._announce(f"{said}…")
+        repo = self.repo
+
+        def worker() -> None:
+            try:
+                call()
+            except GhError as exc:
+                wx.CallAfter(self._announce, f"Couldn't do that to run #{run.run_number}: {exc}")
+                return
+            wx.CallAfter(self._on_run_changed, repo, said)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_run_changed(self, repo: str, said: str) -> None:
+        if self.repo == repo and self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS):
+            # GitHub takes a moment to show the new state; refresh after it.
+            wx.CallLater(3000, self._refresh_if_runs, repo)
+        self._announce(f"{said}. The list refreshes in a moment.")
+
+    def _refresh_if_runs(self, repo: str) -> None:
+        if self.repo == repo and self.view_mode in (VIEW_WORKFLOW, VIEW_JOBS):
+            self._load_items()
 
     # ── Watching ────────────────────────────────────────────────────────
 

@@ -440,10 +440,32 @@ A workflow can only be run by hand if its file has an `on: workflow_dispatch` tr
 | Key | Action |
 |-----|--------|
 | `Enter` | List the run's artifacts |
+| `J` | List the run's jobs, with their steps |
+| `L` | Show what failed |
+| `E` | Rerun it: every job, or only the ones that failed |
+| `X` | Cancel it, while it is queued or running |
 | `Ctrl+D` or `Delete` | Delete the run, after asking |
 | `Ctrl+O` | Open the run on GitHub |
 
-Deleting a run cannot be undone, and the question says so. On a Mac keyboard, use `Cmd+D`.
+Deleting a run cannot be undone, and the question says so. On a Mac keyboard, use `Cmd+D`. `J`, `L`, `E` and `X` work from the details panel too, and are on the **Actions** menu as Show Jobs, Show What Failed, Rerun… and Cancel Run….
+
+### What failed
+
+`L` on a failed run gathers what you would otherwise hunt for across the run's page and its logs, into one text to read from the top:
+
+- which jobs failed, at which step, after how long;
+- what GitHub flagged in each: the errors shown as annotations on the run's page, such as "Line 323: Process completed with exit code 1.", or a failing test's file and line;
+- the last 40 lines of each failed step's log, where the error usually is.
+
+Logs are tidied for reading: no colour codes, no timestamp on every line, and GitHub's error and warning markers read as "ERROR:" and "WARNING:". Warnings that are not failures are left out. On a run that succeeded, `L` just says so.
+
+### Jobs
+
+`J` on a run lists its jobs: each job's name, status, result, how long it took and the step that failed, if one did. The details panel lists every step with its result, "Step 4, Run tests: failure". `Enter` on a job opens its whole log, with the cursor on the first error when there is one; a very long log keeps its last 20,000 lines. `L`, `E` and `X` work here on the run the jobs belong to. `Backspace` returns to the runs.
+
+### Rerun and cancel
+
+`E` asks how to rerun a finished run: **Rerun failed jobs only**, offered when something failed, or **Rerun all jobs**. `X` cancels a run that is queued or in progress, after asking. Either way the list refreshes itself a few seconds later, once GitHub shows the change.
 
 ### Artifacts
 
@@ -715,6 +737,7 @@ The fourth item is named for what it copies in the view you are in:
 | A release's files | Copy File Name | the file's name |
 | Workflows | Copy File Path | the workflow file, such as `.github/workflows/ci.yml` |
 | Workflow Runs | Copy Run ID | the run's id, as `gh run view` takes it |
+| A run's jobs | Copy Job ID | the job's id |
 | A run's artifacts | Copy Name | the artifact's name |
 | Labels | Copy Label Name | the label |
 | GitHub Pages | Copy Commit | the commit the publish was built from |
@@ -762,6 +785,7 @@ The current mode is shown on the status bar, and the status bar says "Quick mode
 | Release files | name, downloads, size, date | # |
 | Workflows | name, state, path | # |
 | Workflow Runs | name, status, result, branch, date | event, # |
+| A run's jobs | name, status, result, duration, failed step | |
 | Artifacts | name, size, expired, date | # |
 | Labels | label, description, color | default |
 | GitHub Pages | status, commit, pusher, date, duration | kind, error, # |
@@ -907,9 +931,12 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 |-----|--------|
 | `Enter` on a workflow | Run it on a branch |
 | `Enter` on a run | List its artifacts |
+| `J` | The run's jobs; `Enter` on a job reads its log |
+| `L` | What failed |
+| `E` / `X` | Rerun / cancel |
 | `Ctrl+D` or `Delete` | Delete the run |
 | `Enter` on an artifact | Download it into a folder you choose |
-| `Backspace` | Artifacts back to runs |
+| `Backspace` | Artifacts or jobs back to runs |
 
 ### In Labels
 

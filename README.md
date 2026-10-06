@@ -318,6 +318,10 @@ After a run starts, switch to **Workflow Runs** and refresh to watch it.
 |-----|--------|
 | `Enter` | Drill into the selected run's artifacts (shown in the same list) |
 | `Ctrl+D` or `Delete` | Delete the selected run (asks first) |
+| `J` | List the run's jobs and steps; `Enter` on a job reads its log, opening at the first error |
+| `L` | Show what failed: GitHub's errors and the end of each failed step's log |
+| `E` | Rerun: all jobs, or only the failed ones |
+| `X` | Cancel a queued or running run |
 
 From a run's **Artifacts** list, press `Enter` (or right-click → Download…) on an
 artifact to download it into a folder you choose, and `Backspace` to return to the

@@ -202,6 +202,13 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   in priority order, dedups by URL and reports reasons that hit the 100 cap. Saved searches
   (`saved_searches.py`) are repo-list entries with client data `SEARCH_ENTRY_PREFIX+name`;
   use `is_repo_entry()` wherever a repo-list entry is treated as a repository.
+- **Workflow run jobs / logs / rerun / cancel** — `VIEW_JOBS` is a drill-down of
+  `VIEW_WORKFLOW` (J; `jobs_run` cleared on leaving). Logs come from `gh run view
+  --log-failed` / `--job ID --log`, whose lines are `job TAB step TAB stamped text`;
+  `parse_run_log` groups them and `clean_log_line` strips colour codes, timestamps and
+  turns `##[error]` into "ERROR:". `format_failure_report` / `format_job_log` are pure and
+  tested. Annotations: a job's id is its check run's id (`check-runs/{id}/annotations`).
+  J/L/E/X are in `on_char_hook` so they work from the details panel.
 - **Copy** (Actions ▸ Copy, Ctrl+Shift+C/L/T/I/D) — `copy_values(item)` is a pure,
   module-level function returning a `CopyValues` (link, title, ident, ident_noun, text)
   for every item type, so it is tested without a window. `_COPY_IDENT_NOUNS` names
