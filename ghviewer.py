@@ -7,11 +7,14 @@ Requires the `gh` CLI (https://cli.github.com/) and wxPython.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
+import unicodedata
 import webbrowser
 from dataclasses import dataclass
 from typing import Callable, Optional
+from urllib.parse import unquote, urlsplit
 
 import wx
 
@@ -75,6 +78,7 @@ from gh_data import (
     WorkflowInput,
     add_comment,
     close_item,
+    IssueCreatedUnreadable,
     create_issue,
     create_label,
     detect_repo,
@@ -161,6 +165,8 @@ class GitHubTarget:
 
     ``kind`` is one of:
       repo     the repository itself
+      inside   a page in the repository GHManage has no view for (a file,
+               the wiki, a discussion); it opens the repository
       item     an issue or pull request; ``ref`` is its number
       commit   a commit; ``ref`` is its SHA (possibly abbreviated)
       release  a release; ``ref`` is its tag
@@ -187,44 +193,89 @@ _URL_VIEWS = {
     "labels": "labels",
 }
 
-
 # github.com pages that are not OWNER/NAME, though they look like it.
 _SITE_PAGES = {
-    "settings", "notifications", "marketplace", "explore", "topics",
-    "sponsors", "search", "login", "features", "pulls", "issues", "codespaces",
-    "new", "organizations", "trending", "collections", "apps",
+    "about", "account", "advisories", "apps", "codespaces", "collections",
+    "copilot", "dashboard", "enterprise", "enterprises", "explore", "features",
+    "login", "logout", "marketplace", "new", "notifications", "organizations",
+    "pricing", "pulls", "issues", "search", "security", "settings", "signup",
+    "sponsors", "stars", "topics", "trending",
 }
+
+_GITHUB_HOSTS = ("github.com", "www.github.com")
+_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
+# Pasted from email, chat or Markdown, an address arrives wrapped or followed
+# by punctuation that is not part of it.
+_WRAPPERS = "<>()[]{}\"'`"
+_TRAILING = ".,;:!?"
+
+
+def _clean_address(value: str) -> str:
+    # Zero-width and other invisible format characters come along with
+    # text copied out of rich editors and web pages.
+    v = "".join(ch for ch in value if unicodedata.category(ch) != "Cf").strip()
+    for _ in range(3):
+        v = v.strip(_WRAPPERS).rstrip(_TRAILING).strip()
+    return v
+
+
+_URL_IN_TEXT = re.compile(r"https?://(?:www\.)?github\.com/[^\s<>\"'`]+", re.IGNORECASE)
+
+
+def first_github_url(text: str) -> str:
+    """The first github.com address in ``text`` that GHManage can open, or ""."""
+    for match in _URL_IN_TEXT.finditer(text[:10000]):
+        url = _clean_address(match.group(0))
+        if parse_github_url(url):
+            return url
+    return ""
 
 
 def parse_github_url(value: str) -> GitHubTarget | None:
-    """Work out what a GitHub address, or OWNER/NAME, points at.
+    """Work out what a github.com address, or OWNER/NAME, points at.
 
-    Anything inside a repository that GHManage has no view for — a file, a
-    wiki page, the settings — still opens the repository.
+    Addresses on other hosts (GitHub Enterprise, gists, raw files, the API)
+    are not read: GHManage works with github.com through gh.
     """
-    v = value.strip()
+    v = _clean_address(value)
     if not v:
         return None
-    if v.startswith("git@github.com:"):
-        return GitHubTarget(_parse_repo_spec(v)) if _parse_repo_spec(v) else None
-    is_url = "github.com/" in v
-    if is_url:
-        v = v.split("github.com/", 1)[1]
-    v = v.split("#", 1)[0].split("?", 1)[0].strip("/")
-    parts = [p for p in v.split("/") if p]
+    if v.lower().startswith("git@github.com:"):
+        repo = _parse_repo_spec(v)
+        return GitHubTarget(repo) if repo else None
+    if "://" in v or v.lower().startswith(("github.com/", "www.github.com/")):
+        if "://" not in v:
+            v = "https://" + v
+        parts_url = urlsplit(v)
+        if parts_url.scheme.lower() not in ("http", "https"):
+            return None
+        if (parts_url.hostname or "").lower() not in _GITHUB_HOSTS:
+            return None
+        is_url = True
+        path = parts_url.path
+    elif "@" in v or ":" in v:
+        return None
+    else:
+        is_url = False
+        path = v.split("#", 1)[0].split("?", 1)[0]
+    parts = [unquote(p) for p in path.split("/") if p]
     if not parts:
         return None
-    if is_url and parts[0] in ("orgs", "users") and len(parts) > 1:
+    if is_url and parts[0].lower() in ("orgs", "users") and len(parts) > 1:
         return GitHubTarget("", "user", parts[1])
-    if is_url and parts[0] in _SITE_PAGES:
+    if is_url and parts[0].lower() in _SITE_PAGES:
         return None
     if len(parts) == 1:
         # github.com/someone is a profile. A bare word is not an address.
-        return GitHubTarget("", "user", parts[0]) if is_url else None
+        if is_url and _OWNER_RE.match(parts[0]):
+            return GitHubTarget("", "user", parts[0])
+        return None
     owner, name = parts[0], parts[1]
     if name.endswith(".git"):
         name = name[:-4]
-    if not owner or not name:
+    if not _OWNER_RE.match(owner) or not _NAME_RE.match(name) or name in (".", ".."):
         return None
     repo = f"{owner}/{name}"
     rest = parts[2:]
@@ -235,18 +286,27 @@ def parse_github_url(value: str) -> GitHubTarget | None:
     if section in ("issues", "pull") and arg.isdigit():
         return GitHubTarget(repo, "item", arg)
     if section == "commit" and arg:
-        return GitHubTarget(repo, "commit", arg)
+        sha = arg
+        for suffix in (".patch", ".diff"):
+            if sha.endswith(suffix):
+                sha = sha[: -len(suffix)]
+        if _SHA_RE.match(sha):
+            return GitHubTarget(repo, "commit", sha)
+        return GitHubTarget(repo, "inside")
     if section == "releases" and arg == "tag" and len(rest) > 2:
         return GitHubTarget(repo, "release", "/".join(rest[2:]))
     if section == "actions" and arg == "runs" and len(rest) > 2 and rest[2].isdigit():
         return GitHubTarget(repo, "run", rest[2])
-    if section == "tree" and len(rest) == 2:
-        # tree/<name> is a branch. With more after it, it is a folder, and
-        # where the branch name ends and the path begins can't be told apart.
+    if section == "actions" and arg == "workflows":
+        return GitHubTarget(repo, "view", "workflows")
+    if section in ("tree", "commits") and len(rest) == 2:
+        # tree/<name> is a branch, and commits/<name> its history. With more
+        # after it, it is a folder, and where a branch name ends and the path
+        # begins can't be told apart.
         return GitHubTarget(repo, "branch", arg)
-    if section in _URL_VIEWS:
+    if section in _URL_VIEWS and len(rest) == 1:
         return GitHubTarget(repo, "view", _URL_VIEWS[section])
-    return GitHubTarget(repo)
+    return GitHubTarget(repo, "inside")
 
 
 # ── Copy ────────────────────────────────────────────────────────────────
@@ -969,7 +1029,7 @@ class NewIssueDialog(wx.Dialog):
     field and a matching SetName. The body is plain multi-line text, written
     in Markdown as on github.com. In it Enter starts a new line, so Ctrl+Enter
     (Cmd+Enter on a Mac) creates the issue from anywhere in the dialog; Tab
-    still moves between the fields.
+    still moves between the fields. Enter in the title moves to the body.
     """
 
     def __init__(self, parent: wx.Window, repo: str, title: str = "", body: str = "") -> None:
@@ -982,22 +1042,28 @@ class NewIssueDialog(wx.Dialog):
         outer = wx.BoxSizer(wx.VERTICAL)
         outer.Add(wx.StaticText(self, label=f"Create an issue in {repo}"), 0, wx.ALL, 10)
 
-        label = "Title (required)"
+        # The & marks Alt+T and Alt+D on Windows; the accessible name is the
+        # label without it.
+        label = "&Title (required)"
         outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT, 10)
-        self.title_ctrl = wx.TextCtrl(self, value=title)
-        self.title_ctrl.SetName(label)
+        # Enter in the title goes on to the description, as a person filling
+        # in the form expects, rather than filing an issue with no body.
+        self.title_ctrl = wx.TextCtrl(self, value=title, style=wx.TE_PROCESS_ENTER)
+        self.title_ctrl.SetName(label.replace("&", ""))
+        self.title_ctrl.Bind(wx.EVT_TEXT_ENTER, lambda e: self.body_ctrl.SetFocus())
         outer.Add(self.title_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
-        label = "Description (Markdown, optional)"
+        label = "&Description (Markdown, optional)"
         outer.Add(wx.StaticText(self, label=label), 0, wx.LEFT | wx.RIGHT, 10)
         self.body_ctrl = wx.TextCtrl(self, value=body, style=wx.TE_MULTILINE)
-        self.body_ctrl.SetName(label)
+        self.body_ctrl.SetName(label.replace("&", ""))
         outer.Add(self.body_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
         buttons = self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
         ok = self.FindWindow(wx.ID_OK)
         if ok:
-            ok.SetLabel("&Create Issue")
+            # Not "&Create": the stock Cancel button already has Alt+C.
+            ok.SetLabel("C&reate Issue")
         outer.Add(buttons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
         self.SetSizer(outer)
         self.SetMinSize((420, 320))
@@ -1104,11 +1170,15 @@ class GhViewerFrame(wx.Frame):
         self._return_to: tuple | None = None
         # Something to select once the view now loading arrives — set when a
         # GitHub address names one thing in a list (an issue, a release, a
-        # run): (view, kind, ref). Taken by the first load of that view.
-        self._pending_target: tuple[str, str, str] | None = None
+        # run): (fetch token, view, kind, ref). Bound to the load it was set
+        # for, so it can only ever land on that load; see _take_pending_row.
+        self._pending_target: tuple[int, str, str, str] | None = None
         # Unsent new-issue text per repo, (title, body): kept when the dialog
         # is cancelled or creating fails, so nothing typed is lost.
         self._issue_drafts: dict[str, tuple[str, str]] = {}
+        # True from Ctrl+N until the issue exists or the form is abandoned, so
+        # a second Ctrl+N can't open the same draft and file it twice.
+        self._issue_busy: bool = False
         # The items in the list control, in row order. With a quick filter on
         # this is a subset of the view's items, and row N is _shown[N], not
         # items[N] — everything that turns a row into an item goes through it.
@@ -2321,7 +2391,7 @@ class GhViewerFrame(wx.Frame):
             f"{label_hint}",
         )
         self._update_title()
-        row = self._take_pending_row(items)
+        row = self._take_pending_row(items, token)
         if filtered:
             wx.CallLater(100, self._focus_list, row)
 
@@ -2424,7 +2494,7 @@ class GhViewerFrame(wx.Frame):
             f"Ctrl++=view more  R=refresh{branch_hint}  Ctrl+F=filter{compare_hint}",
         )
         self._update_title()
-        row = self._take_pending_row(items)
+        row = self._take_pending_row(items, token)
         if filtered:
             wx.CallLater(100, self._focus_list, row)
 
@@ -2552,18 +2622,30 @@ class GhViewerFrame(wx.Frame):
             self.list_ctrl.EnsureVisible(row)
         self._show_details(row)
 
-    def _take_pending_row(self, items: list) -> int:
+    def _set_pending_target(self, view: str, kind: str, ref: str) -> None:
+        """Select ``ref`` when the load just started for ``view`` lands.
+
+        Call right after starting that load (``_select_repo``,
+        ``_switch_view``, ``_load_items``), whose token it takes.
+        """
+        self._pending_target = (self._fetch_token, view, kind, ref)
+
+    def _take_pending_row(self, items: list, token: int) -> int:
         """The row to land on for a pending GitHub address, else the first.
 
-        Takes the target only when this load is of the view it was for. When
-        the thing isn't among what loaded, an issue or PR is fetched by number
+        Only the load the target was set for can take it. Any other load
+        that lands means that one was superseded — the user moved on — so the
+        target goes with it rather than firing on some later visit. When the
+        thing isn't among what loaded, an issue or PR is fetched by number
         (Go To does the same), a commit by SHA; anything else is announced.
         """
         target = self._pending_target
-        if not target or target[0] != self.view_mode:
+        if not target:
             return 0
         self._pending_target = None
-        _, kind, ref = target
+        target_token, view, kind, ref = target
+        if target_token != token or view != self.view_mode:
+            return 0
 
         def matches(it) -> bool:
             if kind == "item":
@@ -2577,10 +2659,8 @@ class GhViewerFrame(wx.Frame):
             return False
 
         found = next((it for it in items if matches(it)), None)
-        if found is not None:
-            row = self._row_of(found)
-            if row < 0:  # filtered out; a filter can't be on yet, but be safe
-                return 0
+        row = self._row_of(found) if found is not None else -1
+        if row >= 0:
             wx.CallLater(150, self._announce, self._describe_landing(found))
             return row
         if kind == "item":
@@ -2589,13 +2669,16 @@ class GhViewerFrame(wx.Frame):
             wx.CallLater(150, self._goto_issue, int(ref))
         elif kind == "commit":
             wx.CallLater(150, self._goto_commit, ref)
-        elif kind == "release":
-            wx.CallLater(150, self._announce,
-                         f"Release {ref} isn't among the {len(items)} newest releases.")
-        elif kind == "run":
-            wx.CallLater(150, self._announce,
-                         f"Run {ref} isn't among the {len(items)} newest runs. "
-                         "Ctrl++ loads more.")
+        elif kind in ("release", "run"):
+            what = f"Release {ref}" if kind == "release" else f"Run {ref}"
+            plural = "releases" if kind == "release" else "workflow runs"
+            if found is not None:
+                said = f"{what} is hidden by the quick filter. Escape clears it."
+            elif items:
+                said = f"{what} isn't among the {len(items)} newest {plural}."
+            else:
+                said = f"{what} wasn't found: there are no {plural} to show."
+            wx.CallLater(150, self._announce, said)
         return 0
 
     @staticmethod
@@ -2615,7 +2698,7 @@ class GhViewerFrame(wx.Frame):
         if self.view_mode != VIEW_COMMITS or not self.repo:
             return
         self._announce(f"Commit {sha[:7]} isn't among the newest on this branch, fetching…")
-        repo = self.repo
+        repo, token = self.repo, self._fetch_token
 
         def worker() -> None:
             try:
@@ -2623,13 +2706,15 @@ class GhViewerFrame(wx.Frame):
             except GhError as exc:
                 wx.CallAfter(self._on_items_error, f"Couldn't fetch commit {sha[:7]}: {exc}")
                 return
-            wx.CallAfter(self._on_commit_fetched, commit, repo)
+            wx.CallAfter(self._on_commit_fetched, commit, repo, token)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_commit_fetched(self, commit: Commit, repo: str) -> None:
-        if self.view_mode != VIEW_COMMITS or self.repo != repo:
-            return  # moved on while it was fetched
+    def _on_commit_fetched(self, commit: Commit, repo: str, token: int) -> None:
+        # The list it was meant for must still be the one on screen: not
+        # another repo, view or branch, nor a refresh of it since.
+        if self.view_mode != VIEW_COMMITS or self.repo != repo or token != self._fetch_token:
+            return
         self.filter_text = ""
         self.git_items = [commit] + [c for c in self.git_items if c.sha != commit.sha]
         self._populate_filtered_list(self.git_items, use_favorite_prefix=True)
@@ -2655,6 +2740,7 @@ class GhViewerFrame(wx.Frame):
             self._activity_more = False  # not loading any more; R tries again
         if self.view_mode == VIEW_NOTIFICATIONS and self._notif_more is None:
             self._notif_more = False
+        self._pending_target = None  # its load failed; don't let it fire later
         self._on_items_error(msg)
 
     # ── Details panel ──────────────────────────────────────────────────
@@ -3976,20 +4062,30 @@ class GhViewerFrame(wx.Frame):
             self._open_address(value)
 
     def _clipboard_github_url(self) -> str:
-        """The clipboard's text when it is a single GitHub address, else ""."""
-        clip = wx.TheClipboard
-        if not clip.Open():
-            return ""
+        """The first github.com address on the clipboard, or "".
+
+        Quiet whatever the clipboard holds: another program may have it open,
+        or it may hold a picture, and on Windows wx reports either with an
+        error box of its own unless logging is suppressed.
+        """
         try:
-            data = wx.TextDataObject()
-            if not clip.GetData(data):
-                return ""
-            text = data.GetText().strip()
-        finally:
-            clip.Close()
-        if "\n" in text or len(text) > 500 or "github.com/" not in text:
+            with wx.LogNull():
+                clip = wx.TheClipboard
+                if not clip.Open():
+                    return ""
+                try:
+                    if not clip.IsSupported(wx.DataFormat(wx.DF_UNICODETEXT)) and \
+                            not clip.IsSupported(wx.DataFormat(wx.DF_TEXT)):
+                        return ""
+                    data = wx.TextDataObject()
+                    if not clip.GetData(data):
+                        return ""
+                    text = data.GetText()
+                finally:
+                    clip.Close()
+        except Exception:  # noqa: BLE001 — a convenience; never stop the dialog
             return ""
-        return text if parse_github_url(text) else ""
+        return first_github_url(text)
 
     def _open_address(self, value: str) -> None:
         target = parse_github_url(value)
@@ -4003,6 +4099,15 @@ class GhViewerFrame(wx.Frame):
             )
             return
         repo = target.repo
+        if target.kind == "inside":
+            # A file, the wiki, a discussion: no view of its own here, so the
+            # repository opens — without pinning, as for any link opened
+            # from an email.
+            self._select_repo(repo)
+            self._select_in_repo_list(repo)
+            wx.CallLater(150, self._announce,
+                         f"GHManage has no view for that page, so {repo} is open on its issues.")
+            return
         if target.kind == "repo":
             # Pin it so it shows in the left list across sessions. Only a
             # repository's own address does this: links to single issues,
@@ -4024,11 +4129,20 @@ class GhViewerFrame(wx.Frame):
             self.commit_branch = target.ref if target.kind == "branch" else ""
         self._select_repo(repo, view)
         if target.kind in ("item", "commit", "release", "run"):
-            self._pending_target = (view, target.kind, target.ref)
-        # Select it in the repo list when it is there; otherwise nothing.
+            self._set_pending_target(view, target.kind, target.ref)
+        self._select_in_repo_list(repo)
+
+    def _select_in_repo_list(self, repo: str) -> None:
+        """Select ``repo`` in the repository list when it is there, else nothing.
+
+        Not case-sensitive: GitHub isn't, and an address typed or pasted
+        need not match the case the list shows.
+        """
         self.repo_list.SetSelection(wx.NOT_FOUND)
+        wanted = repo.lower()
         for i in range(self.repo_list.GetCount()):
-            if self.repo_list.GetClientData(i) == repo:
+            data = self.repo_list.GetClientData(i)
+            if isinstance(data, str) and data.lower() == wanted:
                 self.repo_list.SetSelection(i)
                 break
 
@@ -4165,12 +4279,17 @@ class GhViewerFrame(wx.Frame):
                 wx.CallLater(100, self.details_text.SetFocus)
                 self._announce(f"Jumped to #{number} — {item.title}")
                 return
+        if self.view_mode != VIEW_ISSUES or not self.repo:
+            return  # left the issues list before this ran (it may be scheduled)
         # Not in the current list — fetch it on-demand in the background
         self._announce(f"#{number} not in current list, fetching…")
+        # Read here, on the UI thread: by the time the worker runs, another
+        # repository may be open, and its #number is a different item.
+        repo = self.repo
 
         def worker() -> None:
             try:
-                item = fetch_item_by_number(number, self.repo)
+                item = fetch_item_by_number(number, repo)
             except GhError as exc:
                 wx.CallAfter(self._goto_error, number, str(exc))
                 return
@@ -4181,7 +4300,7 @@ class GhViewerFrame(wx.Frame):
                 wx.CallAfter(self._goto_error, number,
                              f"Unexpected error ({type(exc).__name__}: {exc})")
                 return
-            wx.CallAfter(self._on_goto_fetched, item, number)
+            wx.CallAfter(self._on_goto_fetched, item, number, repo)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -4195,11 +4314,13 @@ class GhViewerFrame(wx.Frame):
             self,
         )
 
-    def _on_goto_fetched(self, item: Optional[Item], number: int) -> None:
+    def _on_goto_fetched(self, item: Optional[Item], number: int,
+                         repo: Optional[str] = None) -> None:
         """Called when an on-demand fetch for Go To completes."""
-        # Go To inserts into the issues list. If the view moved on while the
-        # fetch was running, that list is not what is on screen any more.
-        if self.view_mode != VIEW_ISSUES:
+        # Go To inserts into the issues list. If the view or the repository
+        # moved on while the fetch was running, that list is not what is on
+        # screen any more.
+        if self.view_mode != VIEW_ISSUES or (repo is not None and repo != self.repo):
             self._announce(f"Left the issues list before #{number} arrived.")
             return
         if item is None:
@@ -4701,6 +4822,10 @@ class GhViewerFrame(wx.Frame):
         if not self.repo or self.view_mode in REPOLESS_VIEWS:
             self._announce("Select a repository first.")
             return
+        if self._issue_busy:
+            self._announce("Already creating an issue — wait for it to finish.")
+            return
+        self._issue_busy = True
         repo = self.repo
         self._announce("Preparing a new issue…")
 
@@ -4712,15 +4837,22 @@ class GhViewerFrame(wx.Frame):
 
     def _show_new_issue_dialog(self, repo: str, target: str) -> None:
         if self.repo != repo:
+            self._issue_busy = False
             return  # moved to another repository while it was looked up
         title, body = self._issue_drafts.get(repo, ("", ""))
-        dlg = NewIssueDialog(self, target, title, body)
+        submitted_from = self.view_mode
         try:
-            ok = dlg.ShowModal() == wx.ID_OK
-            title, body = dlg.values()
-        finally:
-            dlg.Destroy()
+            dlg = NewIssueDialog(self, target, title, body)
+            try:
+                ok = dlg.ShowModal() == wx.ID_OK
+                title, body = dlg.values()
+            finally:
+                dlg.Destroy()
+        except Exception:
+            self._issue_busy = False
+            raise
         if not ok:
+            self._issue_busy = False
             if title or body:
                 self._issue_drafts[repo] = (title, body)
                 self._announce("New issue cancelled. What you typed is kept for next time.")
@@ -4733,15 +4865,24 @@ class GhViewerFrame(wx.Frame):
 
         def worker() -> None:
             try:
-                number, _url = create_issue(repo, title, body)
+                number, _url = create_issue(repo, title, body, effective=target)
+            except IssueCreatedUnreadable:
+                # It exists; only its number is unknown. Treat as created —
+                # keeping the draft would invite filing it a second time.
+                wx.CallAfter(self._on_issue_created, repo, 0, title, submitted_from)
+                return
             except GhError as exc:
                 wx.CallAfter(self._on_issue_error, str(exc))
                 return
-            wx.CallAfter(self._on_issue_created, repo, number, title)
+            except Exception as exc:  # noqa: BLE001 — never leave "Creating…" hanging
+                wx.CallAfter(self._on_issue_error, f"{type(exc).__name__}: {exc}")
+                return
+            wx.CallAfter(self._on_issue_created, repo, number, title, submitted_from)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_issue_error(self, msg: str) -> None:
+        self._issue_busy = False
         self._announce(f"Couldn't create the issue: {msg} What you typed is kept; "
                        "Ctrl+N opens it again.")
         wx.MessageBox(
@@ -4750,19 +4891,26 @@ class GhViewerFrame(wx.Frame):
             "New Issue", wx.OK | wx.ICON_WARNING, self,
         )
 
-    def _on_issue_created(self, repo: str, number: int, title: str) -> None:
+    def _on_issue_created(self, repo: str, number: int, title: str,
+                          submitted_from: str = VIEW_ISSUES) -> None:
+        self._issue_busy = False
         self._issue_drafts.pop(repo, None)
-        if self.repo != repo:
-            self._announce(f"Created issue #{number} — {title}")
+        said = f"Created issue #{number} — {title}" if number else f"Created issue: {title}"
+        # Show it — the issues list, reloaded, landing on the new one — but
+        # only if you are where you were when you made it. Having moved on
+        # since, you are left there.
+        if self.repo != repo or self.view_mode != submitted_from:
+            self._announce(said)
             return
-        # Show it: the issues list, reloaded, landing on the new one.
+        self.filter_text = ""  # the new issue must not be hidden by it
         if self.view_mode != VIEW_ISSUES:
             self._switch_view(VIEW_ISSUES)
         else:
             self.current_limit = self.page_size
             self._load_items()
-        self._pending_target = (VIEW_ISSUES, "item", str(number))
-        self._announce(f"Created issue #{number} — {title}")
+        if number:
+            self._set_pending_target(VIEW_ISSUES, "item", str(number))
+        self._announce(said)
 
     def _on_action_done(self, msg: str) -> None:
         self._announce(f"{msg}. Refreshing…")
@@ -4790,7 +4938,7 @@ class GhViewerFrame(wx.Frame):
         if note.is_item and not in_browser:
             number = note.number
             self._open_repo_from_list(note.repo, note)
-            self._pending_target = (VIEW_ISSUES, "item", str(number))
+            self._set_pending_target(VIEW_ISSUES, "item", str(number))
             return
         if note.url:
             webbrowser.open(note.url)

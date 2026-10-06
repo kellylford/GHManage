@@ -245,9 +245,13 @@ Opening a repository shows its **Issues & PRs**. Use `Ctrl+2` through `Ctrl+0` t
 - A release (`…/releases/tag/v1.2`), a workflow run (`…/actions/runs/<id>`) or a branch (`…/tree/<branch>`) to open the releases, the workflow runs or that branch's commits.
 - A list (`…/releases`, `…/pulls`, `…/actions`, `…/labels`, `…/branches`, `…/tags`, `…/commits`) to open that view.
 
-Any other address inside a repository, a file or the wiki say, opens the repository. Only a repository's own address pins it: an issue link from an email opens without adding to your list.
+- A branch's history (`…/commits/<branch>`) opens that branch's commits; a workflow file (`…/actions/workflows/ci.yml`) opens Workflows.
 
-When the clipboard already holds a GitHub address, the box starts with it filled in, so opening a link you have copied is `Ctrl+Shift+O` and `Enter`.
+Any other address inside a repository, a file, the wiki or a discussion say, opens the repository on its issues, and the status bar says GHManage has no view for that page. A branch whose name has a `/` in it can't be told apart from a folder in a `…/tree/` address, so that opens the repository too. Only a repository's own address pins it: a link from an email to an issue, a file or anything else in a repository opens without adding to your list.
+
+Addresses can be pasted as they come: wrapped in `<…>` or brackets, followed by a full stop or comma, in any mix of upper and lower case. Only github.com is read; addresses on other GitHub hosts, gists, raw files and the API get the "Couldn't read that" message.
+
+When the clipboard already holds a GitHub address, the box starts with it filled in, so opening a link you have copied is `Ctrl+Shift+O` and `Enter`. If you copied a whole sentence or paragraph, the first GitHub address in it is the one offered.
 
 A person's or organisation's address says so on the status bar; GHManage has no profile view. An address it cannot read at all gets "Couldn't read that. Use a github.com address or OWNER/NAME."
 
@@ -289,18 +293,17 @@ Both reload the list from GitHub, so they reach items that were never in the lis
 | `N` or `Ctrl+N` | New issue |
 | `F` | Add it to favorites, or remove it |
 | `Ctrl+G` | Go to an issue or pull request by number |
-| `Ctrl+N` | New issue in the current repository |
 | `Ctrl+O` | Open it on GitHub |
 
 Closing and reopening ask first, naming the item: "Close issue #12?" with its title. A comment is typed into the **Add Comment** box, which takes several lines. When the change has gone through, the status bar says so, for example "Closed #12. Refreshing…", and the list reloads.
 
 ### Creating an issue
 
-**Actions → New Issue…** (`Ctrl+N`, or `N` in the issues list) opens a form with a title and a description. Write the description in Markdown, as on github.com. In the description `Enter` starts a new line, so `Ctrl+Enter` (`Cmd+Enter` on a Mac) creates the issue from anywhere in the form, as does the **Create Issue** button; `Tab` moves between the fields.
+**Actions → New Issue…** (`Ctrl+N`, or `N` in the issues list) opens a form with a title and a description. Write the description in Markdown, as on github.com. `Enter` in the title moves on to the description. In the description `Enter` starts a new line, so `Ctrl+Enter` (`Cmd+Enter` on a Mac) creates the issue from anywhere in the form, as does the **Create Issue** button; `Tab` moves between the fields, and on Windows `Alt+T` and `Alt+D` jump to them.
 
 The form names the repository the issue goes to. On a fork that is the upstream repository, since that is where the issues you see in the list live.
 
-Once GitHub has it, the issues list reloads with the new issue selected. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
+Once GitHub has it, the issues list reloads with the new issue selected, unless you have moved to another view or repository in the meantime; then the status bar just says it was created. While one issue is being created, `Ctrl+N` waits for it, so the same text can't be filed twice. If you cancel the form with something typed, or GitHub refuses the issue, what you typed is kept and `Ctrl+N` brings it back, until you quit GHManage.
 
 ### Go to an issue by number
 

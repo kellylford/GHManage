@@ -153,11 +153,17 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
   doing so. A new action belongs there, with an entry in that method.
 - **Open Repository or Address** (Ctrl+Shift+O) — `parse_github_url` (pure, module
   level) turns an address into a `GitHubTarget(repo, kind, ref)`. `_open_address` picks
-  the view, calls `_select_repo(repo, view)` and then sets `_pending_target =
-  (view, kind, ref)`. Every list load passes its items through `_take_pending_row`, which
-  consumes the target only on a load of the view it was for and returns the row to land
-  on — or schedules the fallback (`_goto_issue` for an issue not in the list,
-  `_goto_commit` for a commit). Only a repository's own address pins it.
+  the view, calls `_select_repo(repo, view)` and then `_set_pending_target(view, kind,
+  ref)`, which records the **fetch token of the load just started**. `_on_items_loaded`
+  and `_on_git_items_loaded` pass their items and token through `_take_pending_row`: the
+  target is consumed by the first load that lands, and only acts if that load is the one
+  it was set for — otherwise the user moved on and it is dropped, never fired later.
+  Fallbacks: `_goto_issue` for an issue not in the list (or hidden by the filter),
+  `_goto_commit` for a commit; both capture repo (and token, for commits) on the UI thread
+  and drop stale results. Any other async path that wants to land on an item after a
+  load should use `_set_pending_target` the same way (New Issue and Notifications do).
+  `parse_github_url` only reads github.com; a page inside a repo GHManage has no view for
+  is kind `inside`, which opens the repo **without pinning** — only kind `repo` pins.
 - **New Issue** (Ctrl+N / N) — `NewIssueDialog` (title + multiline Markdown body,
   Ctrl+Enter submits). `create_issue` sends the body on **stdin** (`--body-file -`,
   `_run_gh(args, stdin=…)`) because a long body on the command line can exceed the

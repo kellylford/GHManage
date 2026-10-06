@@ -541,15 +541,23 @@ def add_comment(item: Item, comment: str, repo: Optional[str]) -> None:
     _run_gh(args)
 
 
-def create_issue(repo: Optional[str], title: str, body: str) -> tuple[int, str]:
+class IssueCreatedUnreadable(GhError):
+    """The issue was created, but gh's reply didn't say which number it got."""
+
+
+def create_issue(
+    repo: Optional[str], title: str, body: str, effective: Optional[str] = None,
+) -> tuple[int, str]:
     """Open a new issue and return its number and address.
 
     Goes to the repo the issues list shows, so on a fork that is the
-    upstream, the same as every other issue action here. The body goes in on
-    stdin rather than the command line, where a long one could exceed the
-    length Windows allows.
+    upstream, the same as every other issue action here. A caller that has
+    already worked that out — to tell the user where it is going — passes it
+    as ``effective``, so the issue goes exactly where it said. The body goes
+    in on stdin rather than the command line, where a long one could exceed
+    the length Windows allows.
     """
-    effective = resolve_issue_repo(repo)
+    effective = effective or resolve_issue_repo(repo)
     args = ["issue", "create", "--title", title, "--body-file", "-"]
     if effective:
         args += ["--repo", effective]
@@ -558,7 +566,9 @@ def create_issue(repo: Optional[str], title: str, body: str) -> tuple[int, str]:
     url = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
     tail = url.rstrip("/").rsplit("/", 1)[-1]
     if not tail.isdigit():
-        raise GhError(f"The issue was created, but gh didn't say where: {out.strip()!r}")
+        raise IssueCreatedUnreadable(
+            f"The issue was created, but gh didn't say where: {out.strip()!r}"
+        )
     return int(tail), url
 
 
@@ -938,7 +948,9 @@ class Commit:
     def to_row(self, columns: list[str]) -> dict[str, str]:
         mapping = {
             "sha": self.short_sha,
-            "message": self.message[:80],
+            # First line only: a commit fetched on its own carries its whole
+            # message, and a row should not read the body out.
+            "message": (self.message.splitlines() or [""])[0][:80],
             "author": self.author,
             "date": self.date[:10] if self.date else "",
             "files": str(self.files_changed) if self.files_changed else "",
