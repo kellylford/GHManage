@@ -177,3 +177,29 @@ def test_repo_actions_on_a_category_entry_say_so():
     f._announce = f.announced.append
     Frame._repo_entry_action(f, "browser")
     assert f.announced == ["Select a repository first."]
+
+
+def test_no_duplicate_of_enter_from_the_actions_menu():
+    from gh_data import Workflow
+    actions = FakeMenu(FakeItem(ghviewer.ID_ACT_RUN_WORKFLOW, "Run Workflow on Branch…"),
+                       FakeItem(9, "Open in Browser"))
+    f = _frame(ghviewer.VIEW_WORKFLOWS, Workflow(1, "CI", "ci.yml", "active"), actions)
+    labels = [e[2] for e in Frame._context_entries(f) if e[0] == "item"]
+    assert labels == ["Run on a Branch…\tEnter", "Open in Browser"]
+
+
+def test_an_expired_artifact_offers_no_download():
+    from gh_data import Artifact
+    actions = FakeMenu(FakeItem(ghviewer.ID_ACT_DOWNLOAD_ARTIFACT, "Download Artifact…"),
+                       FakeItem(9, "Copy"))
+    f = _frame(ghviewer.VIEW_ARTIFACTS, Artifact(1, "build", 10, True, "", 9), actions)
+    assert Frame._context_entries(f) == [("item", 9, "Copy")]
+
+
+def test_new_issue_from_the_repo_list_switches_to_issues_even_in_the_same_repo():
+    events = []
+    f = SimpleNamespace(repo="o/r", view_mode=ghviewer.VIEW_BRANCHES, repo_list=RepoList("o/r"))
+    f._select_repo = lambda r: events.append(("open", r))
+    f._do_new_issue = lambda: events.append("new issue")
+    Frame._repo_entry_action(f, "new_issue")
+    assert events == [("open", "o/r"), "new issue"]

@@ -606,11 +606,8 @@ ID_USER_GUIDE = wx.NewIdRef()
 ID_GO_TO_EVENT_REPO = wx.NewIdRef()
 ID_NEW_LABEL = wx.NewIdRef()
 ID_DELETE_LABEL = wx.NewIdRef()
-ID_BROWSE_LABEL = wx.NewIdRef()
 # Actions menu. ID_DELETE_ITEM is one item that deletes whatever the current
 # view can delete, so a single Ctrl+D covers labels and workflow runs alike.
-# The Run Workflow / Download Artifact entries get their own ids because the
-# right-click menus bind ID_RUN_WORKFLOW and ID_DOWNLOAD_ARTIFACT on the popup.
 ID_DELETE_ITEM = wx.NewIdRef()
 ID_ACT_RUN_WORKFLOW = wx.NewIdRef()
 ID_ACT_DOWNLOAD_ARTIFACT = wx.NewIdRef()
@@ -620,8 +617,6 @@ ID_SELECT_BRANCH = wx.NewIdRef()
 ID_COMPARE_BRANCHES = wx.NewIdRef()
 ID_OPEN_REPO = wx.NewIdRef()
 ID_REMOVE_REPO = wx.NewIdRef()
-ID_RUN_WORKFLOW = wx.NewIdRef()
-ID_DOWNLOAD_ARTIFACT = wx.NewIdRef()
 ID_CHECK_UPDATES = wx.NewIdRef()
 ID_NEW_ISSUE = wx.NewIdRef()
 ID_SWITCH_ACCOUNT = wx.NewIdRef()
@@ -4060,10 +4055,19 @@ class GhViewerFrame(wx.Frame):
         """
         self._update_actions_menu()  # the enables must be this view's, now
         entries: list = []
+        item = self._focused_item()
         label = self._OPEN_LABELS.get(self.view_mode)
-        if label and self._focused_item() is not None:
+        if isinstance(item, Artifact) and item.expired:
+            label = None  # gone from GitHub; Enter would only say so
+        # Actions entries that do what the Enter entry already does.
+        same_as_enter = {ID_ACT_RUN_WORKFLOW, ID_ACT_DOWNLOAD_ARTIFACT}
+        if label and item is not None:
             entries.append(("item", ID_CTX_OPEN, f"{label}\tEnter"))
             entries.append(("sep",))
+        else:
+            same_as_enter = set()
+        if isinstance(item, Artifact) and item.expired:
+            same_as_enter = {ID_ACT_DOWNLOAD_ARTIFACT}
 
         def walk(menu) -> list:
             out: list = []
@@ -4072,7 +4076,7 @@ class GhViewerFrame(wx.Frame):
                     if out and out[-1] != ("sep",):
                         out.append(("sep",))
                     continue
-                if not mi.IsEnabled():
+                if not mi.IsEnabled() or mi.GetId() in same_as_enter:
                     continue
                 sub = mi.GetSubMenu()
                 if sub is not None:
@@ -4111,12 +4115,32 @@ class GhViewerFrame(wx.Frame):
         if from_keyboard and window is self.list_ctrl and not IS_MAC:
             row = self.list_ctrl.GetFirstSelected()
             if row >= 0:
+                self.list_ctrl.EnsureVisible(row)
                 pos = self.list_ctrl.GetItemRect(row).GetBottomLeft()
         window.PopupMenu(menu, pos)
         menu.Destroy()
 
     def on_item_context_menu(self, event) -> None:  # ContextMenuEvent / DataViewEvent
         """Applications key, Shift+F10 or right-click in the item list."""
+        if IS_MAC and hasattr(event, "GetItem"):
+            # A right- or Ctrl-click acts on the row clicked, which on macOS
+            # is not selected by the click itself.
+            clicked = event.GetItem()
+            if clicked and clicked.IsOk():
+                row = self.list_ctrl.ItemToRow(clicked)
+                if row >= 0 and row != self.list_ctrl.GetFirstSelected():
+                    self.list_ctrl.Select(row)
+                    self._show_details(row)
+        # Copy and Watch Settings act on the pane with focus; a click doesn't
+        # always move it, so the menu's commands could otherwise reach the
+        # other list.
+        self.list_ctrl.SetFocus()
+        clicked_off_rows = (
+            not IS_MAC and hasattr(event, "GetPosition")
+            and event.GetPosition() != wx.DefaultPosition and self._focused_item() is None
+        )
+        if clicked_off_rows:
+            return  # a click on empty space: nothing there to act on
         entries = self._context_entries()
         if not entries:
             self._announce("Nothing to do here.")
@@ -4141,7 +4165,7 @@ class GhViewerFrame(wx.Frame):
                 ]),
             ]
             if data in self._pinned_repos:
-                entries += [("sep",), ("item", ID_REMOVE_REPO, "Remove from List…")]
+                entries += [("sep",), ("item", ID_REMOVE_REPO, "Remove from List")]
             return entries
         if isinstance(data, str) and data.startswith(SEARCH_ENTRY_PREFIX):
             return [("item", ID_REPO_OPEN, "Run Search\tEnter"),
@@ -4159,6 +4183,9 @@ class GhViewerFrame(wx.Frame):
             hit = self.repo_list.HitTest(self.repo_list.ScreenToClient(pos))
             if hit != wx.NOT_FOUND:
                 self.repo_list.SetSelection(hit)
+        # Copy and Watch Settings act on the pane with focus, and a right-click
+        # on a list box doesn't move it there by itself.
+        self.repo_list.SetFocus()
         idx = self.repo_list.GetSelection()
         data = self.repo_list.GetClientData(idx) if idx != wx.NOT_FOUND else None
         entries = self._repo_context_entries(data)
@@ -4178,8 +4205,9 @@ class GhViewerFrame(wx.Frame):
             webbrowser.open(url)
             self._announce(f"Opened {name} on GitHub")
         elif action == "new_issue":
-            # Open it here first, so the new issue lands in a list you can see.
-            if self.repo != name or self.view_mode in REPOLESS_VIEWS:
+            # Open it on its issues first, so the new issue lands in a list
+            # you can see.
+            if self.repo != name or self.view_mode != VIEW_ISSUES:
                 self._select_repo(name)
             self._do_new_issue()
         elif action == "search":
