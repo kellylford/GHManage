@@ -197,7 +197,8 @@ the repository you are in, so `Ctrl+1` takes you back to it.
 The repository list starts with six entries that aren't single repositories:
 **★ Favorites**, **Activity**, **Starred Repositories**, **Watched Repositories**,
 **Notifications** and **My Work**. After them come your saved searches, any
-repositories you opened by address, then your own. Starred and Watched are also on View ▸ View Mode.
+repositories you opened by address, then your own repositories and those of
+organizations you belong to. Starred and Watched are also on View ▸ View Mode.
 
 - **Starred Repositories** — the repositories you have starred, most recently
   starred first.

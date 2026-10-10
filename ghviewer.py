@@ -2441,7 +2441,7 @@ class GhViewerFrame(wx.Frame):
                     break
             label = f"📌 {name} — {desc}" if desc else f"📌 {name}"
             self.repo_list.Append(label, clientData=name)
-        # Then the user's own repos from gh
+        # Then the user's own repos and their organizations'
         for repo in repos:
             name = repo.get("nameWithOwner", "")
             if name in shown:
@@ -5039,7 +5039,7 @@ class GhViewerFrame(wx.Frame):
             return
         if name not in self._pinned_repos:
             self._announce(
-                f"{name} is one of your own repositories and can't be removed from here."
+                f"{name} comes from your GitHub account and can't be removed from here."
             )
             return
         self._pinned_repos = remove_pinned(name)
