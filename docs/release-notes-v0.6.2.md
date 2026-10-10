@@ -30,7 +30,7 @@ Two honest caveats:
 ## Everything else
 
 No functional changes. If you are coming from 0.6.0, the
-[0.6.1 notes](https://github.com/kellylford/GHManage/releases/tag/v0.6.1) cover
+[0.6.1 notes](https://github.com/TheIdeaPlace/GHManage/releases/tag/v0.6.1) cover
 the Actions menu, `Ctrl+I` / `Ctrl+D`, and the label-key fixes.
 
 ## Install

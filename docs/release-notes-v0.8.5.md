@@ -59,7 +59,7 @@ straight back to it.
 ## A user guide
 
 GHManage has a full user guide at
-<https://kellylford.github.io/GHManage/>, one page per topic or all on one
+<https://theideaplace.github.io/GHManage/>, one page per topic or all on one
 page. **Help ▸ User Guide**, or `F1` (`fn+F1` on a Mac keyboard), opens it in
 your browser.
 
