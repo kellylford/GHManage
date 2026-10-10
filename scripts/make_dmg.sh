@@ -123,7 +123,7 @@ ACCESSIBILITY
   GHManage is built for screen reader users: full VoiceOver support and
   complete keyboard navigation.
 
-https://github.com/kellylford/GHManage
+https://github.com/TheIdeaPlace/GHManage
 EOF
 
 # ----------------------------------------------------------------------------

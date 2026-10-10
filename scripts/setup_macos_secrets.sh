@@ -24,7 +24,7 @@
 #
 set -euo pipefail
 
-REPO="kellylford/GHManage"
+REPO="TheIdeaPlace/GHManage"
 ASC_JSON="$HOME/.fastweather-keys/asc.json"
 IDENTITY="Developer ID Application: Kelly Ford (P887QF74N8)"
 

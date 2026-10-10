@@ -326,7 +326,7 @@ the mistake.
 
 Done:
 
-- The **`azure-signing` environment** exists on `kellylford/GHManage`, with no
+- The **`azure-signing` environment** exists on `TheIdeaPlace/GHManage`, with no
   protection rules. It must stay unprotected; protection rules would make every
   build, including PRs, wait for approval.
 - **`environment: azure-signing`** is declared on the `build` job. This is what
@@ -343,15 +343,15 @@ Done:
 
   | Name | Subject |
   |------|---------|
-  | `gh-ghmanage-signing` | `repo:kellylford/GHManage:environment:azure-signing` |
-  | `gh-ghmanage-immutable` | `repo:kellylford@44002405/GHManage@1295265237:environment:azure-signing` |
+  | `gh-ghmanage-signing` | `repo:TheIdeaPlace/GHManage:environment:azure-signing` |
+  | `gh-ghmanage-immutable` | `repo:TheIdeaPlace@340125137/GHManage@1295265237:environment:azure-signing` (edited in place when the repo moved to TheIdeaPlace, 2026-10-10) |
 
   Two are needed because GitHub may issue either the plain subject or the
   immutable one built from the numeric owner and repo IDs. Every other signed
   repo in this tenant (QuickMail, WeatherFast, LiveCaptions, Image-Description-
   Toolkit) carries the same pair; matching only one leaves signing working until
   the day the other form is issued. The numeric IDs come from
-  `gh api repos/kellylford/GHManage --jq '{id, owner_id: .owner.id}'`.
+  `gh api repos/TheIdeaPlace/GHManage --jq '{id, owner_id: .owner.id}'`.
 
 - Repo secret **`AZURE_CLIENT_ID`** = `da30172c-ceb4-412c-b1fa-3c3a3808c631`, the
   `github-artifact-signing` app ID. Set last, on purpose: it is the switch that

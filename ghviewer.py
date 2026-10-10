@@ -725,7 +725,7 @@ COUNTED_ENTRIES = {
     WATCHED_ENTRY: count_watched_repos,
 }
 
-USER_GUIDE_URL = "https://kellylford.github.io/GHManage/"
+USER_GUIDE_URL = "https://theideaplace.github.io/GHManage/"
 
 # Drill-down views: pressing Backspace in the key view returns to its parent.
 # These are the views you reach by activating an item in another view

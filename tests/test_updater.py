@@ -93,7 +93,7 @@ def test_update_found_downloads_and_applies(velopack):
     svc = velopack.service(update=_update("1.2.3"))
     info = svc.check_for_update()
     assert info.version == "1.2.3"
-    assert info.whats_new_url == "https://github.com/kellylford/GHManage/releases/tag/v1.2.3"
+    assert info.whats_new_url == "https://github.com/TheIdeaPlace/GHManage/releases/tag/v1.2.3"
     assert svc.is_update_pending
     svc._download_thread.join(5)
     assert svc.is_download_complete

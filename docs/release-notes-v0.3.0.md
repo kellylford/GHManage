@@ -69,7 +69,7 @@ GitHub in your browser.
 includes field names in each row ("number: 208, type: PR, state: OPEN, title: …")
 so a screen reader announces what each value means. Columns are configurable per
 view, and every action has a keybinding — the
-[README](https://github.com/kellylford/GHManage#keybindings) has the full table.
+[README](https://github.com/TheIdeaPlace/GHManage#keybindings) has the full table.
 
 ## Also in this release
 

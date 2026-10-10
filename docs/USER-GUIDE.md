@@ -47,7 +47,7 @@ GHManage is a keyboard-driven desktop app for your GitHub repositories, built fo
 
 ### Which download do you want?
 
-Every release is published on the [GHManage releases page](https://github.com/kellylford/GHManage/releases). Take the first file listed for your computer unless you have a reason not to.
+Every release is published on the [GHManage releases page](https://github.com/TheIdeaPlace/GHManage/releases). Take the first file listed for your computer unless you have a reason not to.
 
 | File | Use it if |
 |------|-----------|
@@ -1078,19 +1078,19 @@ On a Mac, use `Cmd` in place of `Ctrl` for every shortcut that has one, `Option`
 
 ## Release History
 
-Every version of GHManage has release notes saying what was added, changed and fixed in it. They are all on the web, newest first, at [GHManage Release History](https://kellylford.github.io/GHManage/releases.html), starting with version 0.1.0 in July 2026.
+Every version of GHManage has release notes saying what was added, changed and fixed in it. They are all on the web, newest first, at [GHManage Release History](https://theideaplace.github.io/GHManage/releases.html), starting with version 0.1.0 in July 2026.
 
 Each version has its own page there, and every page links to the versions either side of it, so you can read back as far as you like.
 
 To find out which version you are running, open **Help → About GHManage**. If you installed GHManage rather than using a portable copy, it updates itself, so you are normally on the newest version already.
 
-The same notes are on each version's own page on GitHub, alongside its downloads, at [github.com/kellylford/GHManage/releases](https://github.com/kellylford/GHManage/releases).
+The same notes are on each version's own page on GitHub, alongside its downloads, at [github.com/TheIdeaPlace/GHManage/releases](https://github.com/TheIdeaPlace/GHManage/releases).
 
 ---
 
 ## Reporting Issues
 
-Found a bug, or have an idea? Open an issue at [github.com/kellylford/GHManage/issues](https://github.com/kellylford/GHManage/issues). You can do it from GHManage itself: open the repository with `Ctrl+Shift+O` and `kellylford/GHManage`, then **Open in Browser** (`Ctrl+O`) on any issue to reach the site.
+Found a bug, or have an idea? Open an issue at [github.com/TheIdeaPlace/GHManage/issues](https://github.com/TheIdeaPlace/GHManage/issues). You can do it from GHManage itself: open the repository with `Ctrl+Shift+O` and `TheIdeaPlace/GHManage`, then **Open in Browser** (`Ctrl+O`) on any issue to reach the site.
 
 A good report says:
 

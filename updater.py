@@ -27,7 +27,7 @@ from typing import Optional
 
 logger = logging.getLogger("ghmanage.updater")
 
-REPO_URL = "https://github.com/kellylford/GHManage"
+REPO_URL = "https://github.com/TheIdeaPlace/GHManage"
 RELEASES_URL = f"{REPO_URL}/releases"
 
 

@@ -47,7 +47,7 @@ from html.parser import HTMLParser
 GUIDE_TITLE = "GHManage User Guide"
 DESCRIPTION = ("GHManage is a keyboard-driven desktop app for your GitHub repositories, "
                "built for screen reader users, on Windows and Apple Silicon Macs.")
-REPO_URL = "https://github.com/kellylford/GHManage"
+REPO_URL = "https://github.com/TheIdeaPlace/GHManage"
 RELEASE_TAG_URL = REPO_URL + "/releases/tag/"
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July",

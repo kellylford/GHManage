@@ -1,7 +1,7 @@
 name: Publish User Guide
 
 # Builds docs/USER-GUIDE.md and the release notes into the site at
-# https://kellylford.github.io/GHManage/ and deploys it with the official Pages
+# https://theideaplace.github.io/GHManage/ and deploys it with the official Pages
 # actions. Pages must be set to "GitHub Actions" as its source (Settings → Pages
 # → Build and deployment), not to a branch: nothing here pushes a gh-pages branch.
 #

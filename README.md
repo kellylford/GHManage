@@ -4,7 +4,7 @@ A **wxPython GUI** for viewing and managing GitHub issues, pull requests, and gi
 
 Built with [wxPython](https://www.wxpython.org/) and the [GitHub CLI (`gh`)](https://cli.github.com/).
 
-**The full user guide is at <https://kellylford.github.io/GHManage/>**, and Help ▸
+**The full user guide is at <https://theideaplace.github.io/GHManage/>**, and Help ▸
 User Guide (`F1`) opens it from the app. This README is a summary.
 
 ## Features
@@ -63,7 +63,7 @@ User Guide (`F1`) opens it from the app. This README is a summary.
 ### Windows
 
 Download **GHManage-win-Setup.exe** from the
-[latest release](https://github.com/kellylford/GHManage/releases) and run it. It
+[latest release](https://github.com/TheIdeaPlace/GHManage/releases) and run it. It
 installs per-user, with no administrator prompt, and keeps itself up to date:
 new versions download in the background and install the next time you start
 GHManage. Help ▸ Check for Updates checks on demand.
@@ -78,7 +78,7 @@ Releases are code-signed. See [docs/INSTALLER.md](docs/INSTALLER.md) for how.
 Apple Silicon (M1 or later), macOS 11 Big Sur or newer.
 
 Download **GHManage-osx.dmg** from the
-[latest release](https://github.com/kellylford/GHManage/releases), open it, and
+[latest release](https://github.com/TheIdeaPlace/GHManage/releases), open it, and
 drag GHManage to Applications. **GHManage-osx-Portable.zip** contains the same
 app if you prefer to unzip it yourself.
 

@@ -30,7 +30,7 @@ jobs:
     runs-on: windows-latest
 
     # This pins the OIDC token subject to
-    # repo:kellylford/GHManage:environment:azure-signing, which is the string
+    # repo:TheIdeaPlace@340125137/GHManage@1295265237:environment:azure-signing (numeric-id form; moved from kellylford on 2026-10-10), which is the string
     # the Azure federated credential has to trust — the tenant does not support
     # wildcard tag subjects. It is ONLY a claim-matching mechanism, not a
     # deployment gate; the environment must stay unprotected or every build,
@@ -105,7 +105,7 @@ jobs:
         shell: pwsh
         run: >
           vpk download github
-          --repoUrl https://github.com/kellylford/GHManage
+          --repoUrl https://github.com/TheIdeaPlace/GHManage
           --token ${{ secrets.GITHUB_TOKEN }}
           --outputDir installer/Releases
 
@@ -350,7 +350,7 @@ jobs:
         continue-on-error: true
         run: >
           vpk download github
-          --repoUrl https://github.com/kellylford/GHManage
+          --repoUrl https://github.com/TheIdeaPlace/GHManage
           --token ${{ secrets.GITHUB_TOKEN }}
           --channel osx
           --outputDir installer/Releases

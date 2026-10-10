@@ -479,7 +479,7 @@ def test_user_guide_opens_in_the_browser(monkeypatch):
     monkeypatch.setattr(ghviewer.webbrowser, "open", lambda url: opened.append(url) or True)
     f = _frame()
     Frame.on_user_guide(f, None)
-    assert opened == ["https://kellylford.github.io/GHManage/"]
+    assert opened == ["https://theideaplace.github.io/GHManage/"]
     assert f.announced[-1] == "Opened the user guide in your browser."
 
 
@@ -487,7 +487,7 @@ def test_user_guide_without_a_browser_says_where_it_is(monkeypatch):
     monkeypatch.setattr(ghviewer.webbrowser, "open", lambda url: False)
     f = _frame()
     Frame.on_user_guide(f, None)
-    assert f.announced[-1].endswith("https://kellylford.github.io/GHManage/")
+    assert f.announced[-1].endswith("https://theideaplace.github.io/GHManage/")
 
 
 class StrictListBox(FakeListBox):
