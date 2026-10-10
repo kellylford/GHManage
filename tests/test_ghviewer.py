@@ -460,7 +460,7 @@ def test_a_later_load_keeps_focus_in_the_repo_list():
 
 
 @pytest.mark.parametrize("name, spoken", [
-    ("me/a", "me/a is one of your own repositories"),
+    ("me/a", "me/a comes from your GitHub account"),
     (ghviewer.ACTIVITY_ENTRY, "That entry is always in the list."),
     (ghviewer.STARRED_ENTRY, "That entry is always in the list."),
     (ghviewer.FAVORITES_ENTRY, "That entry is always in the list."),

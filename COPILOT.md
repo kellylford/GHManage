@@ -306,7 +306,7 @@ UI thread via `wx.CallAfter`. Never touch wx widgets from a worker thread.
 
 - Issues/PRs: use `gh issue list` / `gh pr list` / `gh issue view` / `gh pr view` with `--json`.
 - Actions: `gh issue close` / `gh issue reopen` / `gh issue comment` (same for `pr`).
-- Repos: `gh repo list` / `gh repo view`.
+- Repos: GraphQL `viewer.repositories` (own and organization repos; `gh repo list` lists only your own) / `gh repo view`.
 - Git metadata: use `gh api` (REST API) — branches, commits, tags, compare, releases, workflow runs.
 - Always pass `--repo OWNER/NAME` when `repo` is not None.
 - `gh` returns newest-first by default for issue/pr lists.

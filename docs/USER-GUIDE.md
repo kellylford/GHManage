@@ -270,7 +270,7 @@ It is in this order:
 6. **My Work**: open issues and pull requests that need you, with how many once it has loaded. See [My Work](#my-work).
 7. **Your saved searches**, each marked with a magnifying glass, for example "🔍 NVDA braille bugs". See [Saved searches](#saved-searches).
 8. **Repositories you opened by address**, each marked with a pin, for example "📌 nvaccess/nvda — NVDA, the free and open source screen reader".
-9. **Your own repositories**, up to 100, each followed by its description.
+9. **Your repositories, and your organizations'**, most recently pushed first, each followed by its description: up to 100 of your own and up to 100 from organizations you belong to. An organization repository is listed when you have more than read access to it, for example as a member of a team that can write to it. One you can only read through the organization's base permission isn't; open it by address to add it.
 
 The first six are always there, so the same keystrokes from the top of the list always reach them. The first four are where they were before Notifications and My Work arrived. When the list first loads, the status bar says how many repositories it found: "Loaded 42 repositories. Select one to view issues and PRs."
 
@@ -302,7 +302,7 @@ A person's or organisation's address says so on the status bar; GHManage has no 
 
 **File → Remove from List…** removes the selected repository from the list. It applies to repositories you opened by address; the status bar confirms with "Removed owner/name from the pinned list." It does not delete anything on GitHub.
 
-Your own repositories are always listed, so asking to remove one says it is "one of your own repositories and can't be removed from here". The six entries at the top are always there too. A saved search can be removed the same way.
+Your own and your organizations' repositories are always listed, so asking to remove one says it "comes from your GitHub account and can't be removed from here". The six entries at the top are always there too. A saved search can be removed the same way.
 
 ### Forks
 

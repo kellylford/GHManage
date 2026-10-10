@@ -288,12 +288,70 @@ def test_detect_repo_failure_is_none(fake_gh, reply):
     assert gh_data.detect_repo() is None
 
 
-def test_list_repos(fake_gh):
-    fake_gh.route("repo list", [{"nameWithOwner": "o/a"}])
-    assert gh_data.list_repos(5) == [{"nameWithOwner": "o/a"}]
-    fake_gh.routes.clear()
-    fake_gh.route("repo list", "")
-    assert gh_data.list_repos() == []
+def _repos_reply(own, org=()):
+    return {"data": {"viewer": {"own": {"nodes": list(own)},
+                                "org": {"nodes": list(org)}}}}
+
+
+def test_list_repos_includes_organization_repos(monkeypatch):
+    queries = []
+    own = [{"nameWithOwner": "me/a", "pushedAt": "2026-01-01T00:00:00Z"}]
+    org = [{"nameWithOwner": "myorg/b", "pushedAt": "2026-02-01T00:00:00Z"}]
+    monkeypatch.setattr(gh_data, "_graphql",
+                        lambda q: queries.append(q) or _repos_reply(own, org))
+    # Merged, most recently pushed first
+    assert [r["nameWithOwner"] for r in gh_data.list_repos(5)] == ["myorg/b", "me/a"]
+    [query] = queries
+    # Your own and your organizations' asked for separately, so neither
+    # can crowd the other out
+    assert "ownerAffiliations: [OWNER]" in query
+    assert "ownerAffiliations: [ORGANIZATION_MEMBER]" in query
+    assert query.count("first: 5,") == 2
+    assert "PUSHED_AT" in query
+
+
+def test_list_repos_lists_a_repo_once(monkeypatch):
+    repo = {"nameWithOwner": "me/a", "pushedAt": "2026-01-01T00:00:00Z"}
+    monkeypatch.setattr(gh_data, "_graphql", lambda q: _repos_reply([repo], [dict(repo)]))
+    assert gh_data.list_repos() == [repo]
+
+
+@pytest.mark.parametrize("limit, first", [(0, 1), (250, 100)])
+def test_list_repos_keeps_to_one_page_each(monkeypatch, limit, first):
+    queries = []
+    monkeypatch.setattr(gh_data, "_graphql",
+                        lambda q: queries.append(q) or _repos_reply([]))
+    assert gh_data.list_repos(limit) == []
+    assert queries[0].count(f"first: {first},") == 2
+
+
+def test_list_repos_drops_repos_it_was_refused(monkeypatch):
+    # An organization that blocks the app comes back as null, with an error
+    reply = _repos_reply([{"nameWithOwner": "me/a"}], [None])
+    reply["errors"] = [{"message": "OAuth App access restrictions"}]
+    monkeypatch.setattr(gh_data, "_graphql", lambda q: reply)
+    assert gh_data.list_repos() == [{"nameWithOwner": "me/a"}]
+
+
+def test_list_repos_one_half_failing_still_lists_the_other(monkeypatch):
+    reply = {"data": {"viewer": {"own": {"nodes": [{"nameWithOwner": "me/a"}]}, "org": None}},
+             "errors": [{"message": "Something went wrong"}]}
+    monkeypatch.setattr(gh_data, "_graphql", lambda q: reply)
+    assert gh_data.list_repos() == [{"nameWithOwner": "me/a"}]
+
+
+@pytest.mark.parametrize("reply, message", [
+    ({"data": None, "errors": [{"message": "Bad credentials"}]}, "Bad credentials"),
+    # An expired token gets a REST-style 401 body, with no data or errors
+    ({"message": "Bad credentials", "status": "401"},
+     "Bad credentials. Run gh auth login to sign in again."),
+    ({"data": {}}, "Couldn't list your repositories"),
+    ({"errors": ["not a dict"]}, "Couldn't list your repositories"),
+])
+def test_list_repos_with_nothing_back_is_an_error(monkeypatch, reply, message):
+    monkeypatch.setattr(gh_data, "_graphql", lambda q: reply)
+    with pytest.raises(GhError, match=message):
+        gh_data.list_repos()
 
 
 # ── Labels ─────────────────────────────────────────────────────────────

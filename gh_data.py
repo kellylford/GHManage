@@ -602,19 +602,47 @@ def detect_repo() -> Optional[str]:
 
 
 def list_repos(limit: int = 100) -> list[dict]:
-    """List the user's GitHub repositories via `gh repo list`.
+    """List the repositories you own and those of organizations you're in.
 
-    Includes ``isFork`` and ``parent`` so callers can detect forks and
-    resolve the upstream repo that actually hosts issues/PRs.
+    Not `gh repo list`: with no owner it lists only the repos your own
+    account owns, so moving a repo into an organization made it vanish from
+    the list. GraphQL's ownerAffiliations reaches both.
+
+    Up to ``limit`` of each, asked for separately, so that a busy
+    organization can't push your own repos off the list; then the two are
+    merged, most recently pushed first. Organization repos you can only read
+    (through the organization's base permission) aren't included: GitHub
+    counts those as neither yours nor your organization membership's.
     """
-    args = [
-        "repo", "list", "--limit", str(limit),
-        "--json", "nameWithOwner,description,isArchived,isFork,parent",
-    ]
-    raw = _run_gh(args)
-    if not raw.strip():
-        return []
-    return json.loads(raw)
+    first = max(1, min(limit, 100))
+    fields = ("orderBy: {field: PUSHED_AT, direction: DESC}) "
+              "{ nodes { nameWithOwner description pushedAt } }")
+    query = (
+        "{ viewer { "
+        "own: repositories(first: %d, ownerAffiliations: [OWNER], %s "
+        "org: repositories(first: %d, ownerAffiliations: [ORGANIZATION_MEMBER], %s "
+        "} }" % (first, fields, first, fields)
+    )
+    reply = _graphql(query)
+    viewer = (reply.get("data") or {}).get("viewer") or {}
+    own = (viewer.get("own") or {}).get("nodes")
+    org = (viewer.get("org") or {}).get("nodes")
+    if own is None and org is None:
+        # A GraphQL error, or a plain REST one such as a 401 for a token
+        # that has expired, which comes back with only a message.
+        errors = reply.get("errors") or []
+        first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+        message = (first_error.get("message") or reply.get("message")
+                   or "Couldn't list your repositories")
+        if str(reply.get("status")) == "401":
+            message += ". Run gh auth login to sign in again."
+        raise GhError(message)
+    repos: dict[str, dict] = {}
+    # An organization that blocks gh's access leaves nulls in its place.
+    for repo in (own or []) + (org or []):
+        if repo and repo.get("nameWithOwner"):
+            repos.setdefault(repo["nameWithOwner"], repo)
+    return sorted(repos.values(), key=lambda r: r.get("pushedAt") or "", reverse=True)
 
 
 def _api_pages(endpoint: str, limit: int) -> list[dict]:
